@@ -1,2 +1,2 @@
 # projects
-Open Projects made by me. Focused on Automotive Engineering, ML &amp; others interest objects.
+Open Projects made by me. Focused on Automotive Engineering, ML & others interest subbjects.

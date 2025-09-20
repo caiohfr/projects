@@ -1,0 +1,5 @@
+standard,make,model,year,size_class,mass_kg,A,B,C,Cx,Af_m2,notes
+EPA,Toyota,Corolla,2018,Compact,1420,28.0,0.75,0.105,0.29,2.10,Example EPA-like coefficients
+EPA,Ford,Focus,2017,Compact,1360,30.0,0.80,0.120,0.30,2.15,Example EPA-like coefficients
+WLTP,Volkswagen,Golf,2019,C-Segment,1380,27.0,0.70,0.100,0.29,2.20,Example WLTP-like coefficients
+WLTP,BMW,320i,2020,D-Segment,1550,32.0,0.85,0.130,0.27,2.22,Example WLTP-like coefficients

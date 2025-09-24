@@ -42,3 +42,27 @@ def f_road(v_kph, abc):
 def power_patch(F_N, m_test_kg, v_kph, a_ms2):
     v_ms = v_kph / 3.6
     return (F_N + m_test_kg * a_ms2) * v_ms  # [W]
+
+
+def deriv_accel(t_s: np.ndarray, v_ms: np.ndarray) -> np.ndarray:
+    dt = np.diff(t_s, prepend=t_s[0])
+    dt[dt <= 0] = 1e-6
+    a = np.diff(v_ms, prepend=v_ms[0]) / dt
+    return a
+
+def road_force(A_N: float, B_N_per_kph: float, C_N_per_kph2: float, v_ms: np.ndarray) -> np.ndarray:
+    v_kph = v_ms * 3.6
+    return A_N + B_N_per_kph * v_kph + C_N_per_kph2 * (v_kph**2)
+
+def vde_from_trace(t_s: np.ndarray, v_ms: np.ndarray, A: float, B: float, C: float, mass_kg: float):
+    a = deriv_accel(t_s, v_ms)
+    F_total = road_force(A, B, C, v_ms) + mass_kg * a
+    P_W = F_total * v_ms
+    dt = np.diff(t_s, prepend=t_s[0]); dt[dt<=0]=1e-6
+    E_J = np.sum(P_W * dt)
+    dist_m = np.sum(v_ms * dt)
+    Wh = E_J / 3600.0
+    km = dist_m / 1000.0
+    Wh_km = Wh / max(km, 1e-9)
+    MJ_km = Wh_km * 0.0036
+    return {"MJ_km": MJ_km, "Wh_km": Wh_km, "km": km}

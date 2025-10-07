@@ -18,6 +18,61 @@ FUEL_DEFAULTS = {
 }
 
 GRID_DEFAULT_gCO2_per_kWh = 0.0  # ajuste se quiser contabilizar CO2 da rede (BEV)
+def vde_picker_dialog():
+    """
+    Mantém um seletor de VDE aberto até o usuário confirmar.
+    Usa st.session_state['vde_picker_open'] para controlar a visibilidade.
+    Ao confirmar, grava st.session_state['vde_id'] e dá st.rerun().
+    """
+    if not st.session_state.get("vde_picker_open"):
+        return  # nada a mostrar
+
+    # carrega os snapshots
+    rows = fetchall("""
+        SELECT id, legislation, category, make, model, year, vde_net_mj_per_km
+        FROM vde_db
+        ORDER BY id DESC
+        LIMIT 200
+    """)
+    if not rows:
+        st.warning("No VDE snapshots found. Go back to Page 1 and save one.")
+        # fecha o “modal”
+        st.session_state["vde_picker_open"] = False
+        return
+
+    ids = [r["id"] for r in rows]
+    labels = [
+        f'#{r["id"]} — {r["legislation"]} | {r["category"]} | '
+        f'{r["make"]} {r["model"]} ({r.get("year","")})'
+        for r in rows
+    ]
+
+    # índice default: o VDE atual (se existir)
+    cur_id = st.session_state.get("vde_id")
+    try:
+        default_idx = ids.index(cur_id) if cur_id in ids else 0
+    except Exception:
+        default_idx = 0
+
+    st.subheader("Choose VDE snapshot")
+    sel_idx = st.selectbox(
+        "VDE snapshots",
+        options=list(range(len(labels))),
+        format_func=lambda i: labels[i],
+        index=default_idx,
+        key="vde_picker_idx"  # key dedicada para não conflitar
+    )
+
+    col_ok, col_cancel = st.columns(2)
+    if col_ok.button("✅ Confirm"):
+        st.session_state["vde_id"] = ids[sel_idx]
+        st.session_state["vde_picker_open"] = False
+        st.success(f'VDE changed to #{ids[sel_idx]}')
+        st.rerun()
+
+    if col_cancel.button("✖ Cancel"):
+        st.session_state["vde_picker_open"] = False
+        st.rerun()
 
 
 # ---------------------------
@@ -91,23 +146,33 @@ def main():
     st.title("⚙️ PWT & Fuel/Energy (Page 2)")
     ensure_db()
 
-    # 1) Escolher VDE snapshot (pega do session_state ou escolha manual)
+    # --- Header: mostra o atual e botão para trocar ---
+    cur_id = st.session_state.get("vde_id")
+    colL, colR = st.columns([1,1])
+    if cur_id:
+        colL.success(f"Using VDE #{cur_id}")
+    if colR.button("Change VDE…"):
+        st.session_state["vde_picker_open"] = True
+   # desenha o “dialog” se necessário
+    vde_picker_dialog()
+
+    # depois disso, sempre leia o id atual do session_state
     vde_id = st.session_state.get("vde_id")
     if not vde_id:
-        st.info("No vde_id in session. Pick one from DB:")
-        vde_id = pick_vde_from_db()
-        if vde_id:
-            st.session_state["vde_id"] = vde_id
-        else:
-            return
+        st.info("Select a VDE snapshot to proceed.")
+        return
 
+    # --- Daqui pra baixo, SEMPRE use o id que está no session_state ---
+    vde_id = st.session_state["vde_id"]
     vde = fetchone("SELECT * FROM vde_db WHERE id=?", (vde_id,))
     if not vde:
         st.error("VDE not found.")
-        return
+        st.stop()
 
-    st.success(f'Using VDE #{vde_id} — {vde["legislation"]} | {vde["category"]} | '
-               f'{vde["make"]} {vde["model"]} ({vde.get("year","")})')
+    st.success(
+        f'Using VDE #{vde_id} — {vde["legislation"]} | {vde["category"]} | '
+        f'{vde["make"]} {vde["model"]} ({vde.get("year","")})'
+    )
     st.metric("VDE_NET", f'{vde["vde_net_mj_per_km"]:.4f} MJ/km')
 
     st.markdown("---")
@@ -217,6 +282,8 @@ def main():
 
     with st.expander("Current VDE row (debug)"):
         st.json(vde)
+
+
 
 if __name__ == "__main__":
     main()

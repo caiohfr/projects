@@ -5,10 +5,10 @@ def cycle_kpis(df: pd.DataFrame) -> dict:
     """Return basic KPIs from a cycle (duration, distance, avg speed, samples)."""
     df = df.sort_values("t")
     t = df["t"].to_numpy()
-    v = 1/3.6 * df["v"].to_numpy()
+    v = df["v"].to_numpy()
 
     if len(t) == 0:
-        return {"duration_s": 0.0, "distance_km": 0.0, "v_mean_kmh": 0.0, "n_points": 0}
+        return {"duration_s": 0.0, "distance_km": 0.0, "v_mean_ms": 0.0, "n_points": 0}
 
     duration_s = float(t[-1] - t[0])
     dist_m = float(np.trapz(v, t))

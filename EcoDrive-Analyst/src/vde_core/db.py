@@ -16,7 +16,7 @@
 import sqlite3
 from pathlib import Path
 from datetime import datetime
-
+from .services import autoresolve_test_mass
 # -----------------------------------------------------------------------------
 # EN: Database file path. We make sure the folder "data/db" exists.
 # PT: Caminho do arquivo do banco. Garantimos que a pasta "data/db" exista.
@@ -36,6 +36,41 @@ def _con():
     con.execute("PRAGMA foreign_keys = ON")
     return con
 
+# --- Lightweight, idempotent migrations -------------------------------------
+def ensure_columns(table: str, spec: dict[str, str]) -> list[str]:
+    """
+    Cria colunas que não existirem em 'table'.
+    spec: {col_name: "SQL_TYPE"}  -> ex.: {"vde_urb_mj_per_km": "REAL"}
+    Retorna a lista de colunas adicionadas.
+    """
+    with _con() as con:
+        cur = con.cursor()
+        cur.execute(f"PRAGMA table_info({table});")
+        existing = {row[1] for row in cur.fetchall()}
+        missing = [(c, t) for c, t in spec.items() if c not in existing]
+        for col, typ in missing:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ};")
+        con.commit()
+    return [c for c, _ in missing]
+
+def ensure_migrations() -> None:
+    """Aplica migrações idempotentes necessárias ao schema atual."""
+    added = []
+    added += ensure_columns("vde_db", {
+        "drive_type": "TEXT",
+        "mro_kg": "REAL",
+        "options_kg": "REAL",
+        "wltp_category": "INT",
+        "vde_urb_mj_per_km": "REAL",
+        "vde_hw_mj_per_km": "REAL",
+        "parasitic_A_coef_N": "REAL",
+        "parasitic_B_coef_Npkph": "REAL",
+        "parasitic_C_coef_Npkph2": "REAL",
+    })
+    added += ensure_columns("fuelcons_db", {})  # nada por enquanto
+    # opcional: log
+    if added:
+        print("[db] migrações aplicadas:", added)
 
 def ensure_db():
     """
@@ -113,7 +148,7 @@ def ensure_db():
             rr_load_kpa          REAL,
 
             -- ciclo
-            cycle_name           TEXT,                      -- 'FTP-75','WLTC Class 3','custom'
+            cycle_name           TEXT,                      -- 'FTP-75_HWFET','WLTC Class 3','custom'
             cycle_source         TEXT,                      -- 'standard:EPA','standard:WLTP','custom:upload'
 
             -- resultados agregados
@@ -247,6 +282,12 @@ def ensure_db():
 
         con.commit()
 
+        con.commit()
+
+        # --- migrations idempotentes (sem engolir erro) ---
+        ensure_migrations()
+
+
 
 # -----------------------------------------------------------------------------
 # INSERT / UPDATE helpers (CS50 style)
@@ -260,6 +301,7 @@ def insert_vde(row: dict) -> int:
         Você pode passar só as colunas que tiver; o resto vira NULL/default.
     """
     ensure_db()
+    row = autoresolve_test_mass(row)  # << NEW: autofill mass if needed
     cols = list(row.keys())
     vals = [row[c] for c in cols]
     placeholders = ",".join(["?"] * len(cols))
@@ -280,6 +322,7 @@ def update_vde(vde_id: int, updates: dict) -> None:
     # Add/Atualiza carimbo de atualização
     updates = dict(updates)
     updates["updated_at"] = datetime.utcnow().isoformat()
+    updates = autoresolve_test_mass(updates)  # << NEW: autofill mass if needed
 
     # Build "SET col1=?, col2=?, ..." and value list
     # Monta "SET col1=?, col2=?, ..." e lista de valores
@@ -444,3 +487,49 @@ def update_row(table: str, row_id: int, updates: dict) -> None:
     with _con() as con:
         con.execute(f"UPDATE {table} SET {set_clause} WHERE id=?", vals)
 
+# --- Dangerous helpers: truncate or delete the DB file -----------------------
+import os
+
+# --- Dangerous helpers (explicit db_path): truncate or delete the DB file ----
+import os
+from typing import Union
+
+PathLike = Union[str, os.PathLike]
+
+def truncate_db(db_path: PathLike) -> None:
+    """
+    Apaga TODAS as linhas das tabelas (mantém o arquivo .db), zera AUTOINCREMENT
+    e executa VACUUM. Requer que o schema já exista.
+    """
+    db_path = Path(db_path)
+    with sqlite3.connect(str(db_path), timeout=30) as con:
+        cur = con.cursor()
+        cur.execute("PRAGMA foreign_keys=ON;")
+        cur.execute("PRAGMA busy_timeout=5000;")
+        cur.execute("PRAGMA journal_mode=WAL;")
+        cur.execute("BEGIN IMMEDIATE;")  # toma lock de escrita
+
+        # limpa tabelas (cascata apaga fuelcons ligados)
+        cur.execute("DELETE FROM fuelcons_db;")
+        cur.execute("DELETE FROM vde_db;")
+        # zera autoincrement
+        cur.execute("DELETE FROM sqlite_sequence WHERE name IN ('vde_db','fuelcons_db');")
+
+        con.commit()
+        cur.execute("VACUUM;")  # compacta arquivo
+    print(f"✔️ DB truncado: {db_path}")
+
+def delete_db_file(db_path: PathLike) -> None:
+    """
+    Deleta o arquivo do banco e arquivos auxiliares (-wal/-shm).
+    TODAS as conexões devem estar fechadas.
+    """
+    db_path = Path(db_path)
+    for ext in ("", "-wal", "-shm"):
+        p = Path(f"{db_path}{ext}")
+        if p.exists():
+            try:
+                os.remove(p)
+                print(f"✔️ Removido: {p}")
+            except PermissionError:
+                raise RuntimeError(f"Arquivo em uso/bloqueado: {p}. Feche processos e tente novamente.")

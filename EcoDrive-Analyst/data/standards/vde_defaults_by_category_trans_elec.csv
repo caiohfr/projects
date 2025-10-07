@@ -1,0 +1,256 @@
+category,electrification,transmission_type,cdA_default_m2,rrc_N_per_kN,crr1_frac_at_120kph,press_front_psi,press_rear_psi,trans_A_N,trans_B_Npkph,brake_A_N,brake_B_Npkph,weight_dist_fr_pct,notes
+Two Seaters,ICE,MT,0.56,8.2,0.12,33,33,10.0,0.0015,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,ICE,AT,0.56,8.2,0.12,33,33,26.0,0.005,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,ICE,AMT,0.56,8.2,0.12,33,33,12.0,0.0018,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,ICE,CVT,0.56,8.2,0.12,33,33,20.0,0.003,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,ICE,OT,0.56,8.2,0.12,33,33,17.0,0.0025,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,ICE,SS,0.56,8.2,0.12,33,33,11.0,0.0018,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,HEV,MT,0.56,7.6259999999999994,0.12,33,33,10.0,0.0015,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,HEV,AT,0.56,7.6259999999999994,0.12,33,33,26.0,0.005,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,HEV,AMT,0.56,7.6259999999999994,0.12,33,33,12.0,0.0018,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,HEV,CVT,0.56,7.6259999999999994,0.12,33,33,20.0,0.003,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,HEV,OT,0.56,7.6259999999999994,0.12,33,33,17.0,0.0025,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,PHEV,MT,0.56,8.036,0.12,33,33,10.0,0.0015,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,PHEV,AT,0.56,8.036,0.12,33,33,26.0,0.005,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,PHEV,AMT,0.56,8.036,0.12,33,33,12.0,0.0018,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,PHEV,CVT,0.56,8.036,0.12,33,33,20.0,0.003,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,PHEV,OT,0.56,8.036,0.12,33,33,17.0,0.0025,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Two Seaters,BEV,SS,0.56,7.953999999999999,0.12,33,33,11.0,0.0018,5.0,0.0005,53,defaults_v2.3_elec+AMT
+Minicompact Cars,ICE,MT,0.58,8.4,0.12,33,33,10.0,0.0015,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,ICE,AT,0.58,8.4,0.12,33,33,26.0,0.005,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,ICE,AMT,0.58,8.4,0.12,33,33,12.0,0.0018,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,ICE,CVT,0.58,8.4,0.12,33,33,20.0,0.003,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,ICE,OT,0.58,8.4,0.12,33,33,17.0,0.0025,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,ICE,SS,0.58,8.4,0.12,33,33,11.0,0.0018,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,HEV,MT,0.58,7.812000000000001,0.12,33,33,10.0,0.0015,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,HEV,AT,0.58,7.812000000000001,0.12,33,33,26.0,0.005,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,HEV,AMT,0.58,7.812000000000001,0.12,33,33,12.0,0.0018,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,HEV,CVT,0.58,7.812000000000001,0.12,33,33,20.0,0.003,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,HEV,OT,0.58,7.812000000000001,0.12,33,33,17.0,0.0025,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,PHEV,MT,0.58,8.232,0.12,33,33,10.0,0.0015,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,PHEV,AT,0.58,8.232,0.12,33,33,26.0,0.005,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,PHEV,AMT,0.58,8.232,0.12,33,33,12.0,0.0018,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,PHEV,CVT,0.58,8.232,0.12,33,33,20.0,0.003,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,PHEV,OT,0.58,8.232,0.12,33,33,17.0,0.0025,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Minicompact Cars,BEV,SS,0.58,8.148,0.12,33,33,11.0,0.0018,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,ICE,MT,0.6,8.6,0.12,33,33,10.0,0.0015,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,ICE,AT,0.6,8.6,0.12,33,33,26.0,0.005,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,ICE,AMT,0.6,8.6,0.12,33,33,12.0,0.0018,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,ICE,CVT,0.6,8.6,0.12,33,33,20.0,0.003,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,ICE,OT,0.6,8.6,0.12,33,33,17.0,0.0025,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,ICE,SS,0.6,8.6,0.12,33,33,11.0,0.0018,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,HEV,MT,0.6,7.998,0.12,33,33,10.0,0.0015,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,HEV,AT,0.6,7.998,0.12,33,33,26.0,0.005,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,HEV,AMT,0.6,7.998,0.12,33,33,12.0,0.0018,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,HEV,CVT,0.6,7.998,0.12,33,33,20.0,0.003,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,HEV,OT,0.6,7.998,0.12,33,33,17.0,0.0025,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,PHEV,MT,0.6,8.427999999999999,0.12,33,33,10.0,0.0015,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,PHEV,AT,0.6,8.427999999999999,0.12,33,33,26.0,0.005,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,PHEV,AMT,0.6,8.427999999999999,0.12,33,33,12.0,0.0018,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,PHEV,CVT,0.6,8.427999999999999,0.12,33,33,20.0,0.003,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,PHEV,OT,0.6,8.427999999999999,0.12,33,33,17.0,0.0025,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Subcompact Cars,BEV,SS,0.6,8.341999999999999,0.12,33,33,11.0,0.0018,6.0,0.0005,60,defaults_v2.3_elec+AMT
+Compact Cars,ICE,MT,0.63,8.8,0.12,33,33,10.0,0.0015,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,ICE,AT,0.63,8.8,0.12,33,33,26.0,0.005,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,ICE,AMT,0.63,8.8,0.12,33,33,12.0,0.0018,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,ICE,CVT,0.63,8.8,0.12,33,33,20.0,0.003,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,ICE,OT,0.63,8.8,0.12,33,33,17.0,0.0025,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,ICE,SS,0.63,8.8,0.12,33,33,11.0,0.0018,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,HEV,MT,0.63,8.184000000000001,0.12,33,33,10.0,0.0015,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,HEV,AT,0.63,8.184000000000001,0.12,33,33,26.0,0.005,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,HEV,AMT,0.63,8.184000000000001,0.12,33,33,12.0,0.0018,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,HEV,CVT,0.63,8.184000000000001,0.12,33,33,20.0,0.003,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,HEV,OT,0.63,8.184000000000001,0.12,33,33,17.0,0.0025,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,PHEV,MT,0.63,8.624,0.12,33,33,10.0,0.0015,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,PHEV,AT,0.63,8.624,0.12,33,33,26.0,0.005,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,PHEV,AMT,0.63,8.624,0.12,33,33,12.0,0.0018,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,PHEV,CVT,0.63,8.624,0.12,33,33,20.0,0.003,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,PHEV,OT,0.63,8.624,0.12,33,33,17.0,0.0025,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Compact Cars,BEV,SS,0.63,8.536,0.12,33,33,11.0,0.0018,7.0,0.0006,59,defaults_v2.3_elec+AMT
+Midsize Cars,ICE,MT,0.66,9.0,0.12,33,33,10.0,0.0015,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,ICE,AT,0.66,9.0,0.12,33,33,26.0,0.005,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,ICE,AMT,0.66,9.0,0.12,33,33,12.0,0.0018,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,ICE,CVT,0.66,9.0,0.12,33,33,20.0,0.003,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,ICE,OT,0.66,9.0,0.12,33,33,17.0,0.0025,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,ICE,SS,0.66,9.0,0.12,33,33,11.0,0.0018,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,HEV,MT,0.66,8.370000000000001,0.12,33,33,10.0,0.0015,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,HEV,AT,0.66,8.370000000000001,0.12,33,33,26.0,0.005,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,HEV,AMT,0.66,8.370000000000001,0.12,33,33,12.0,0.0018,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,HEV,CVT,0.66,8.370000000000001,0.12,33,33,20.0,0.003,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,HEV,OT,0.66,8.370000000000001,0.12,33,33,17.0,0.0025,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,PHEV,MT,0.66,8.82,0.12,33,33,10.0,0.0015,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,PHEV,AT,0.66,8.82,0.12,33,33,26.0,0.005,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,PHEV,AMT,0.66,8.82,0.12,33,33,12.0,0.0018,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,PHEV,CVT,0.66,8.82,0.12,33,33,20.0,0.003,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,PHEV,OT,0.66,8.82,0.12,33,33,17.0,0.0025,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Cars,BEV,SS,0.66,8.73,0.12,33,33,11.0,0.0018,8.0,0.0006,58,defaults_v2.3_elec+AMT
+Large Cars,ICE,MT,0.69,9.2,0.12,33,33,10.0,0.0015,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,ICE,AT,0.69,9.2,0.12,33,33,26.0,0.005,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,ICE,AMT,0.69,9.2,0.12,33,33,12.0,0.0018,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,ICE,CVT,0.69,9.2,0.12,33,33,20.0,0.003,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,ICE,OT,0.69,9.2,0.12,33,33,17.0,0.0025,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,ICE,SS,0.69,9.2,0.12,33,33,11.0,0.0018,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,HEV,MT,0.69,8.556,0.12,33,33,10.0,0.0015,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,HEV,AT,0.69,8.556,0.12,33,33,26.0,0.005,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,HEV,AMT,0.69,8.556,0.12,33,33,12.0,0.0018,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,HEV,CVT,0.69,8.556,0.12,33,33,20.0,0.003,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,HEV,OT,0.69,8.556,0.12,33,33,17.0,0.0025,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,PHEV,MT,0.69,9.016,0.12,33,33,10.0,0.0015,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,PHEV,AT,0.69,9.016,0.12,33,33,26.0,0.005,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,PHEV,AMT,0.69,9.016,0.12,33,33,12.0,0.0018,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,PHEV,CVT,0.69,9.016,0.12,33,33,20.0,0.003,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,PHEV,OT,0.69,9.016,0.12,33,33,17.0,0.0025,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Large Cars,BEV,SS,0.69,8.924,0.12,33,33,11.0,0.0018,9.0,0.0007,52,defaults_v2.3_elec+AMT
+Small Station Wagons,ICE,MT,0.66,9.0,0.12,33,33,10.0,0.0015,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,ICE,AT,0.66,9.0,0.12,33,33,26.0,0.005,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,ICE,AMT,0.66,9.0,0.12,33,33,12.0,0.0018,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,ICE,CVT,0.66,9.0,0.12,33,33,20.0,0.003,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,ICE,OT,0.66,9.0,0.12,33,33,17.0,0.0025,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,ICE,SS,0.66,9.0,0.12,33,33,11.0,0.0018,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,HEV,MT,0.66,8.370000000000001,0.12,33,33,10.0,0.0015,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,HEV,AT,0.66,8.370000000000001,0.12,33,33,26.0,0.005,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,HEV,AMT,0.66,8.370000000000001,0.12,33,33,12.0,0.0018,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,HEV,CVT,0.66,8.370000000000001,0.12,33,33,20.0,0.003,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,HEV,OT,0.66,8.370000000000001,0.12,33,33,17.0,0.0025,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,PHEV,MT,0.66,8.82,0.12,33,33,10.0,0.0015,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,PHEV,AT,0.66,8.82,0.12,33,33,26.0,0.005,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,PHEV,AMT,0.66,8.82,0.12,33,33,12.0,0.0018,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,PHEV,CVT,0.66,8.82,0.12,33,33,20.0,0.003,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,PHEV,OT,0.66,8.82,0.12,33,33,17.0,0.0025,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Small Station Wagons,BEV,SS,0.66,8.73,0.12,33,33,11.0,0.0018,7.0,0.0006,58,defaults_v2.3_elec+AMT
+Midsize Station Wagons,ICE,MT,0.7,9.2,0.12,33,33,10.0,0.0015,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,ICE,AT,0.7,9.2,0.12,33,33,26.0,0.005,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,ICE,AMT,0.7,9.2,0.12,33,33,12.0,0.0018,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,ICE,CVT,0.7,9.2,0.12,33,33,20.0,0.003,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,ICE,OT,0.7,9.2,0.12,33,33,17.0,0.0025,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,ICE,SS,0.7,9.2,0.12,33,33,11.0,0.0018,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,HEV,MT,0.7,8.556,0.12,33,33,10.0,0.0015,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,HEV,AT,0.7,8.556,0.12,33,33,26.0,0.005,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,HEV,AMT,0.7,8.556,0.12,33,33,12.0,0.0018,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,HEV,CVT,0.7,8.556,0.12,33,33,20.0,0.003,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,HEV,OT,0.7,8.556,0.12,33,33,17.0,0.0025,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,PHEV,MT,0.7,9.016,0.12,33,33,10.0,0.0015,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,PHEV,AT,0.7,9.016,0.12,33,33,26.0,0.005,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,PHEV,AMT,0.7,9.016,0.12,33,33,12.0,0.0018,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,PHEV,CVT,0.7,9.016,0.12,33,33,20.0,0.003,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,PHEV,OT,0.7,9.016,0.12,33,33,17.0,0.0025,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Midsize Station Wagons,BEV,SS,0.7,8.924,0.12,33,33,11.0,0.0018,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Small SUVs,ICE,MT,0.77,9.8,0.12,35,35,10.0,0.0015,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,ICE,AT,0.77,9.8,0.12,35,35,26.0,0.005,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,ICE,AMT,0.77,9.8,0.12,35,35,12.0,0.0018,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,ICE,CVT,0.77,9.8,0.12,35,35,20.0,0.003,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,ICE,OT,0.77,9.8,0.12,35,35,17.0,0.0025,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,ICE,SS,0.77,9.8,0.12,35,35,11.0,0.0018,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,HEV,MT,0.77,9.31,0.12,35,35,10.0,0.0015,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,HEV,AT,0.77,9.31,0.12,35,35,26.0,0.005,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,HEV,AMT,0.77,9.31,0.12,35,35,12.0,0.0018,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,HEV,CVT,0.77,9.31,0.12,35,35,20.0,0.003,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,HEV,OT,0.77,9.31,0.12,35,35,17.0,0.0025,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,PHEV,MT,0.77,9.8,0.12,35,35,10.0,0.0015,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,PHEV,AT,0.77,9.8,0.12,35,35,26.0,0.005,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,PHEV,AMT,0.77,9.8,0.12,35,35,12.0,0.0018,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,PHEV,CVT,0.77,9.8,0.12,35,35,20.0,0.003,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,PHEV,OT,0.77,9.8,0.12,35,35,17.0,0.0025,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Small SUVs,BEV,SS,0.77,9.8,0.12,35,35,11.0,0.0018,9.0,0.0007,58,defaults_v2.3_elec+AMT
+Standard SUVs,ICE,MT,0.82,10.2,0.12,35,35,10.0,0.0015,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,ICE,AT,0.82,10.2,0.12,35,35,26.0,0.005,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,ICE,AMT,0.82,10.2,0.12,35,35,12.0,0.0018,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,ICE,CVT,0.82,10.2,0.12,35,35,20.0,0.003,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,ICE,OT,0.82,10.2,0.12,35,35,17.0,0.0025,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,ICE,SS,0.82,10.2,0.12,35,35,11.0,0.0018,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,HEV,MT,0.82,9.69,0.12,35,35,10.0,0.0015,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,HEV,AT,0.82,9.69,0.12,35,35,26.0,0.005,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,HEV,AMT,0.82,9.69,0.12,35,35,12.0,0.0018,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,HEV,CVT,0.82,9.69,0.12,35,35,20.0,0.003,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,HEV,OT,0.82,9.69,0.12,35,35,17.0,0.0025,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,PHEV,MT,0.82,10.2,0.12,35,35,10.0,0.0015,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,PHEV,AT,0.82,10.2,0.12,35,35,26.0,0.005,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,PHEV,AMT,0.82,10.2,0.12,35,35,12.0,0.0018,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,PHEV,CVT,0.82,10.2,0.12,35,35,20.0,0.003,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,PHEV,OT,0.82,10.2,0.12,35,35,17.0,0.0025,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Standard SUVs,BEV,SS,0.82,10.2,0.12,35,35,11.0,0.0018,11.0,0.0008,56,defaults_v2.3_elec+AMT
+Minivans,ICE,MT,0.84,10.0,0.12,35,35,10.0,0.0015,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,ICE,AT,0.84,10.0,0.12,35,35,26.0,0.005,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,ICE,AMT,0.84,10.0,0.12,35,35,12.0,0.0018,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,ICE,CVT,0.84,10.0,0.12,35,35,20.0,0.003,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,ICE,OT,0.84,10.0,0.12,35,35,17.0,0.0025,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,ICE,SS,0.84,10.0,0.12,35,35,11.0,0.0018,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,HEV,MT,0.84,9.5,0.12,35,35,10.0,0.0015,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,HEV,AT,0.84,9.5,0.12,35,35,26.0,0.005,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,HEV,AMT,0.84,9.5,0.12,35,35,12.0,0.0018,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,HEV,CVT,0.84,9.5,0.12,35,35,20.0,0.003,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,HEV,OT,0.84,9.5,0.12,35,35,17.0,0.0025,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,PHEV,MT,0.84,10.0,0.12,35,35,10.0,0.0015,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,PHEV,AT,0.84,10.0,0.12,35,35,26.0,0.005,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,PHEV,AMT,0.84,10.0,0.12,35,35,12.0,0.0018,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,PHEV,CVT,0.84,10.0,0.12,35,35,20.0,0.003,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,PHEV,OT,0.84,10.0,0.12,35,35,17.0,0.0025,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Minivans,BEV,SS,0.84,10.0,0.12,35,35,11.0,0.0018,11.0,0.0008,55,defaults_v2.3_elec+AMT
+Vans,ICE,MT,0.9,10.5,0.12,36,36,10.0,0.0015,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,ICE,AT,0.9,10.5,0.12,36,36,26.0,0.005,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,ICE,AMT,0.9,10.5,0.12,36,36,12.0,0.0018,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,ICE,CVT,0.9,10.5,0.12,36,36,20.0,0.003,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,ICE,OT,0.9,10.5,0.12,36,36,17.0,0.0025,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,ICE,SS,0.9,10.5,0.12,36,36,11.0,0.0018,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,HEV,MT,0.9,9.975,0.12,36,36,10.0,0.0015,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,HEV,AT,0.9,9.975,0.12,36,36,26.0,0.005,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,HEV,AMT,0.9,9.975,0.12,36,36,12.0,0.0018,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,HEV,CVT,0.9,9.975,0.12,36,36,20.0,0.003,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,HEV,OT,0.9,9.975,0.12,36,36,17.0,0.0025,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,PHEV,MT,0.9,10.5,0.12,36,36,10.0,0.0015,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,PHEV,AT,0.9,10.5,0.12,36,36,26.0,0.005,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,PHEV,AMT,0.9,10.5,0.12,36,36,12.0,0.0018,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,PHEV,CVT,0.9,10.5,0.12,36,36,20.0,0.003,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,PHEV,OT,0.9,10.5,0.12,36,36,17.0,0.0025,13.0,0.001,55,defaults_v2.3_elec+AMT
+Vans,BEV,SS,0.9,10.5,0.12,36,36,11.0,0.0018,13.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,ICE,MT,0.95,11.0,0.12,36,36,10.0,0.0015,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,ICE,AT,0.95,11.0,0.12,36,36,26.0,0.005,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,ICE,AMT,0.95,11.0,0.12,36,36,12.0,0.0018,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,ICE,CVT,0.95,11.0,0.12,36,36,20.0,0.003,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,ICE,OT,0.95,11.0,0.12,36,36,17.0,0.0025,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,ICE,SS,0.95,11.0,0.12,36,36,11.0,0.0018,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,HEV,MT,0.95,10.78,0.12,36,36,10.0,0.0015,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,HEV,AT,0.95,10.78,0.12,36,36,26.0,0.005,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,HEV,AMT,0.95,10.78,0.12,36,36,12.0,0.0018,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,HEV,CVT,0.95,10.78,0.12,36,36,20.0,0.003,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,HEV,OT,0.95,10.78,0.12,36,36,17.0,0.0025,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,PHEV,MT,0.95,11.22,0.12,36,36,10.0,0.0015,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,PHEV,AT,0.95,11.22,0.12,36,36,26.0,0.005,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,PHEV,AMT,0.95,11.22,0.12,36,36,12.0,0.0018,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,PHEV,CVT,0.95,11.22,0.12,36,36,20.0,0.003,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,PHEV,OT,0.95,11.22,0.12,36,36,17.0,0.0025,11.0,0.001,55,defaults_v2.3_elec+AMT
+Small Pickup Trucks,BEV,SS,0.95,11.22,0.12,36,36,11.0,0.0018,11.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,ICE,MT,1.02,11.8,0.12,38,38,10.0,0.0015,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,ICE,AT,1.02,11.8,0.12,38,38,26.0,0.005,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,ICE,AMT,1.02,11.8,0.12,38,38,12.0,0.0018,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,ICE,CVT,1.02,11.8,0.12,38,38,20.0,0.003,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,ICE,OT,1.02,11.8,0.12,38,38,17.0,0.0025,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,ICE,SS,1.02,11.8,0.12,38,38,11.0,0.0018,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,HEV,MT,1.02,11.564,0.12,38,38,10.0,0.0015,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,HEV,AT,1.02,11.564,0.12,38,38,26.0,0.005,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,HEV,AMT,1.02,11.564,0.12,38,38,12.0,0.0018,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,HEV,CVT,1.02,11.564,0.12,38,38,20.0,0.003,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,HEV,OT,1.02,11.564,0.12,38,38,17.0,0.0025,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,PHEV,MT,1.02,12.0,0.12,38,38,10.0,0.0015,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,PHEV,AT,1.02,12.0,0.12,38,38,26.0,0.005,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,PHEV,AMT,1.02,12.0,0.12,38,38,12.0,0.0018,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,PHEV,CVT,1.02,12.0,0.12,38,38,20.0,0.003,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,PHEV,OT,1.02,12.0,0.12,38,38,17.0,0.0025,13.0,0.001,55,defaults_v2.3_elec+AMT
+Standard Pickup Trucks,BEV,SS,1.02,12.0,0.12,38,38,11.0,0.0018,13.0,0.001,55,defaults_v2.3_elec+AMT
+Unknown,ICE,MT,0.75,9.5,0.12,34,34,10.0,0.0015,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,ICE,AT,0.75,9.5,0.12,34,34,26.0,0.005,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,ICE,AMT,0.75,9.5,0.12,34,34,12.0,0.0018,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,ICE,CVT,0.75,9.5,0.12,34,34,20.0,0.003,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,ICE,OT,0.75,9.5,0.12,34,34,17.0,0.0025,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,ICE,SS,0.75,9.5,0.12,34,34,11.0,0.0018,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,HEV,MT,0.75,8.835,0.12,34,34,10.0,0.0015,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,HEV,AT,0.75,8.835,0.12,34,34,26.0,0.005,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,HEV,AMT,0.75,8.835,0.12,34,34,12.0,0.0018,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,HEV,CVT,0.75,8.835,0.12,34,34,20.0,0.003,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,HEV,OT,0.75,8.835,0.12,34,34,17.0,0.0025,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,PHEV,MT,0.75,9.31,0.12,34,34,10.0,0.0015,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,PHEV,AT,0.75,9.31,0.12,34,34,26.0,0.005,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,PHEV,AMT,0.75,9.31,0.12,34,34,12.0,0.0018,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,PHEV,CVT,0.75,9.31,0.12,34,34,20.0,0.003,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,PHEV,OT,0.75,9.31,0.12,34,34,17.0,0.0025,8.0,0.0006,57,defaults_v2.3_elec+AMT
+Unknown,BEV,SS,0.75,9.215,0.12,34,34,11.0,0.0018,8.0,0.0006,57,defaults_v2.3_elec+AMT

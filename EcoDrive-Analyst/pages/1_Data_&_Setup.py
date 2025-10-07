@@ -7,12 +7,14 @@ from pathlib import Path
 from src.vde_app.state import ensure_defaults
 from src.vde_app.plots import cycle_chart
 from src.vde_core.utils import cycle_kpis
-from src.vde_core.db import ensure_db, fetchall, fetchone, insert_vde, delete_row, update_vde
+# topo do arquivo (imports)
+from src.vde_core.db import ensure_db, fetchall, fetchone, insert_vde, update_vde, delete_row
 from src.vde_core.services import (
-    default_cycle_for_legislation,
-    load_cycle_csv,
-    compute_vde_net_mj_per_km,  # retorna dict: {"MJ_km","Wh_km","km"}
+    default_cycle_for_legislation, load_cycle_csv,
+    compute_vde_net_mj_per_km, compute_vde_net,
+    epa_city_hwy_from_phase, wltp_phases_from_phase
 )
+
 import plotly.express as px
 
 # ===========================
@@ -123,6 +125,7 @@ def _vehicle_basics():
     st.session_state["vb_category"] = category
     st.session_state["vb_legislation"] = legislation
     st.session_state["vb_notes"] = notes
+
 
 # ===========================
 # PWT mínimo (sem sidebar)
@@ -341,25 +344,29 @@ def main():
     meta = st.session_state["vehicle_meta"]
     leg = meta["legislation"]; cat = meta["category"]
     make = meta["make"]; model = meta["desc"]; year = meta["year"]; notes = meta["notes"]
-    cycle_name = "FTP-75" if leg == "EPA" else "WLTC Class 3"
+    cycle_name = "FTP-75_HWFET" if leg == "EPA" else "WLTC Class 3"
     cycle_source = st.session_state.get("cycle_source", "standard:"+leg)
     abc = st.session_state.get("abc"); mass = st.session_state.get("manual_mass")
 
     if st.button("Compute VDE_NET and Save"):
         try:
-            if st.session_state.get("cycle_df") is None:
+            df_cycle = st.session_state.get("cycle_df")
+            if df_cycle is None:
                 st.error("Cycle not loaded. Pick standard or upload a CSV.")
-                return
+                st.stop()
+
             if not abc or mass is None:
                 st.error("Missing A/B/C or mass. Provide in FROM_TEST or pick a DB baseline.")
-                return
+                st.stop()
 
             A = float(abc["A"]); B = float(abc["B"]); C = float(abc["C"]); mass_kg = float(mass)
-            r = compute_vde_net_mj_per_km(st.session_state["cycle_df"], A, B, C, mass_kg)
-            vde_mjkm, wh_km, dist_km = r["MJ_km"], r["Wh_km"], r["km"]
+  
+            # 1) Calcula o NET do ciclo inteiro (para exibir feedback imediato)
+            r_all = compute_vde_net_mj_per_km(df_cycle, A, B, C, mass_kg)
+            vde_mjkm_all, wh_km_all, dist_km_all = r_all["MJ_km"], r_all["Wh_km"], r_all["km"]
+            st.success(f"VDE_NET (cycle total) ≈ {vde_mjkm_all:.4f} MJ/km  ({wh_km_all:.1f} Wh/km)  | Distance: {dist_km_all:.2f} km")
 
-            st.success(f"VDE_NET ≈ {vde_mjkm:.4f} MJ/km  ({wh_km:.1f} Wh/km)  | Distance: {dist_km:.2f} km")
-
+            # 2) Insere linha base em vde_db
             row = {
                 "legislation": leg, "category": cat,
                 "make": make, "model": model, "year": year, "notes": notes,
@@ -368,11 +375,34 @@ def main():
                 "mass_kg": mass_kg,
                 "coast_A_N": A, "coast_B_N_per_kph": B, "coast_C_N_per_kph2": C,
                 "cycle_name": cycle_name, "cycle_source": cycle_source,
-                "vde_net_mj_per_km": vde_mjkm
-                # campos de fase ficam None por enquanto
+                "vde_net_mj_per_km": vde_mjkm_all  # por padrão, NET do ciclo inteiro
             }
-            vde_id = insert_vde({k:v for k,v in row.items() if v is not None})
+            vde_id = insert_vde({k: v for k, v in row.items() if v is not None})
             st.session_state["vde_id"] = vde_id
+
+            # 3) Se existir coluna 'phase', preenche campos por fase
+            if "phase" in df_cycle.columns:
+                if leg == "EPA":
+                    res = epa_city_hwy_from_phase(df_cycle, A, B, C, mass_kg)
+                    upd = {}
+                    if res["urb_MJ"] is not None:
+                        upd["vde_urb_mj"] = float(res["urb_MJ"])
+                    if res["hw_MJ"] is not None:
+                        upd["vde_hw_mj"] = float(res["hw_MJ"])
+                    # Se você quiser que o campo principal vde_net_mj_per_km seja o combinado 55/45, descomente:
+                    if res["net_comb_MJ_km"] is not None:
+                        upd["vde_net_mj_per_km"] = float(res["net_comb_MJ_km"])
+
+                    if upd:
+                        update_vde(vde_id, upd)
+                        st.info("EPA phases saved (urban MJ, highway MJ, combined NET ready).")
+
+                elif leg == "WLTP":
+                    res = wltp_phases_from_phase(df_cycle, A, B, C, mass_kg)
+                    if res:
+                        update_vde(vde_id, res)
+                        st.info("WLTP phase VDEs saved (low/mid/high/xhigh MJ/km).")
+
             st.success(f"VDE snapshot saved to DB (id={vde_id}). Go to Page 2 to estimate fuel/CO₂.")
 
         except Exception as e:
@@ -427,6 +457,7 @@ def main():
             save_btn = st.form_submit_button("💾 Save changes")
             if save_btn:
                 try:
+                    # 1) Persistir alterações básicas
                     update_vde(vde_id_edit, {
                         "coast_A_N": A_edit,
                         "coast_B_N_per_kph": B_edit,
@@ -437,10 +468,47 @@ def main():
                         "year": int(year_edit),
                         "notes": notes_edit,
                     })
-                    st.success("Row updated.")
+
+                    # 2) Recalcular VDEs a partir do ciclo
+                    leg = sel.get("legislation", "EPA")
+                    # tentamos carregar o ciclo pela legislação (padrão da casa)
+                    df_cycle = None
+                    try:
+                        df_cycle = load_cycle_csv(default_cycle_for_legislation(leg))
+                    except Exception:
+                        df_cycle = None
+
+                    if df_cycle is not None:
+                        # 2a) VDE NET do ciclo inteiro (feedback + campo principal)
+                        r_all = compute_vde_net(df_cycle, A_edit, B_edit, C_edit, M_edit)
+                        upd = {"vde_net_mj_per_km": float(r_all["MJ_km"])}
+
+                        # 2b) Se existir coluna phase, preencher campos de fase
+                        if "phase" in df_cycle.columns:
+                            if leg == "EPA":
+                                res = epa_city_hwy_from_phase(df_cycle, A_edit, B_edit, C_edit, M_edit)
+                                if res["urb_MJ"] is not None: upd["vde_urb_mj"] = float(res["urb_MJ"])
+                                if res["hw_MJ"]  is not None: upd["vde_hw_mj"]  = float(res["hw_MJ"])
+                                # Se quiser que vde_net_mj_per_km seja o combinado 55/45, descomente:
+                                # if res["net_comb_MJ_km"] is not None:
+                                #     upd["vde_net_mj_per_km"] = float(res["net_comb_MJ_km"])
+                            elif leg == "WLTP":
+                                res = wltp_phases_from_phase(df_cycle, A_edit, B_edit, C_edit, M_edit)
+                                upd.update({k: float(v) for k, v in res.items() if v is not None})
+
+                        # 2c) Aplicar atualizações calculadas
+                        if upd:
+                            update_vde(vde_id_edit, upd)
+
+                        st.success("Row updated and VDE recomputed.")
+                    else:
+                        st.warning("Row updated, but cycle could not be reloaded; VDE per phase not recomputed.")
+
                     st.experimental_rerun()
+
                 except Exception as e:
                     st.error(f"Failed to update: {e}")
+
 
 
         # 8) bloco de delete (com confirmação)
@@ -460,5 +528,7 @@ def main():
             keys = sorted(list(st.session_state.keys()))
             st.write({k: st.session_state.get(k, None) for k in keys})
 
+
 if __name__ == "__main__":
     main()
+

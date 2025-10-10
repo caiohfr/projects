@@ -270,13 +270,49 @@ def baseline_picker_and_editor():
 
     # 4) Compact grid with VDE metrics (+ tire info)
     cols_to_show = [
-        "id","legislation","category","make","model","year",
-        "A","B","C","mass_kg",
-        "rrc_N_per_kN","crr1_frac_at_120kph","tire_size",
-        "vde_net_mj_per_km",
-        "vde_urb_mj_per_km","vde_hw_mj_per_km",
-        "vde_low_mj_per_km","vde_mid_mj_per_km","vde_high_mj_per_km","vde_extra_high_mj_per_km",
-    ]
+                    # meta
+                    "id","created_at","updated_at",
+                    "legislation","category","make","model","year","notes",
+
+                    # powertrain
+                    "engine_type","engine_model","engine_size_l","engine_aspiration",
+                    "transmission_type","transmission_model","drive_type",
+
+                    # massa / aero
+                    "mass_kg","inertia_class","cda_m2","weight_dist_fr_pct","payload_kg",
+                    "mro_kg","options_kg","wltp_category",
+
+                    # pneus / RR
+                    "tire_size","tire_rr_note","smerf","front_pressure_psi","rear_pressure_psi",
+                    "rrc_N_per_kN","crr1_frac_at_120kph","rr_load_kpa",
+
+                    # coastdown principais
+                    "coast_A_N","coast_B_N_per_kph","coast_C_N_per_kph2",
+
+                    # coef. adicionais (transmissão/freio/aero)
+                    "trans_A_coef_N","trans_B_Npkph","trans_C_coef_Npkph2",
+                    "brake_A_coef_N","brake_B_Npkph","brake_C_coef_Npkph2",
+                    "aero_C_coef_Npkph2",
+
+                    # modelo RR avançado (opcional)
+                    "rr_alpha_N","rr_beta_Npkph","rr_a_Npkph2","rr_b_N","rr_c_Npkph",
+
+                    # ciclo
+                    "cycle_name","cycle_source",
+
+                    # resultados agregados
+                    "vde_urb_mj","vde_hw_mj",
+                    "vde_net_mj_per_km","vde_total_mj_per_km",
+                    "vde_urb_mj_per_km","vde_hw_mj_per_km",
+                    "vde_low_mj_per_km","vde_mid_mj_per_km","vde_high_mj_per_km","vde_extra_high_mj_per_km",
+
+                    # rastreabilidade mínima de baseline
+                    "vde_id_parent","baseline_A_N","baseline_B_N_per_kph","baseline_C_N_per_kph2","baseline_mass_kg",
+
+                    # deltas aplicados sobre o baseline
+                    "delta_rr_N","delta_brake_N","delta_parasitics_N","delta_aero_Npkph2",
+                ]
+
     cols_to_show = [c for c in cols_to_show if c in dfv.columns]
     st.dataframe(
         dfv[cols_to_show].sort_values("id", ascending=False),
@@ -288,14 +324,43 @@ def baseline_picker_and_editor():
     sel_id = st.selectbox("Pick baseline id", options)
     base = dfv[dfv["id"] == sel_id].iloc[0].to_dict()
 
+
     # Guardar baseline para o fluxo de deltas/save
     st.session_state.ctx["vde_id_parent"] = int(sel_id)
     st.session_state.ctx["baseline_dict"] = {
+        # core coastdown
         "A": base.get("A", base.get("coast_A_N")),
         "B": base.get("B", base.get("coast_B_N_per_kph")),
         "C": base.get("C", base.get("coast_C_N_per_kph2")),
         "mass_kg": base.get("mass_kg", base.get("inertia_class")),
+
+        # contexto mínimo
+        "legislation": base.get("legislation"),
+        "category":    base.get("category"),
+
+        # pneus / RR
+        "tire_size":           base.get("tire_size"),
+        "rrc_N_per_kN":        base.get("rrc_N_per_kN"),
+        "crr1_frac_at_120kph": base.get("crr1_frac_at_120kph"),
+        "front_pressure_psi":  base.get("front_pressure_psi"),
+        "rear_pressure_psi":   base.get("rear_pressure_psi"),
+        "rr_load_kpa":         base.get("rr_load_kpa"),
+        "smerf":               base.get("smerf"),
+
+        # parasitics & brake (se existirem no registro)
+        "parasitic_A_coef_N":      base.get("parasitic_A_coef_N"),
+        "parasitic_B_Npkph":       base.get("parasitic_B_Npkph"),
+        "parasitic_C_coef_Npkph2": base.get("parasitic_C_coef_Npkph2"),
+        "brake_A_coef_N":          base.get("brake_A_coef_N"),
+        "brake_B_Npkph":           base.get("brake_B_Npkph"),
+        "brake_C_coef_Npkph2":     base.get("brake_C_coef_Npkph2"),
+
+        # opcionais p/ serviços de defaults/decompose
+        "electrification":   base.get("electrification"),
+        "transmission_type": base.get("transmission_type"),
+        "cda_m2":            base.get("cda_m2"),
     }
+
 
     # 6) Choose how to proceed on top of baseline
     ctx["from_delta"] = st.radio(
@@ -312,10 +377,18 @@ def baseline_picker_and_editor():
         ctx["C"] = float(base.get("C", base.get("coast_C_N_per_kph2", 0.0)) or 0.0)
         ctx["mass_kg"] = float(base.get("mass_kg", base.get("inertia_class", 0.0)) or 0.0)
 
+        # adições diretas (sem helper), úteis pro ΔB e consistência
+        if base.get("crr1_frac_at_120kph") is not None:
+            ctx["crr1_frac_at_120kph"] = float(base["crr1_frac_at_120kph"])
+        if base.get("rrc_N_per_kN") is not None:
+            ctx["rrc_N_per_kN"] = float(base["rrc_N_per_kN"])
+        if base.get("tire_size"):
+            ctx["tire_size"] = str(base["tire_size"])
+
         with st.expander("Δ Deltas from baseline"):
             c1, c2 = st.columns(2)
             ctx["delta_rr_N"]         = c1.number_input("ΔRR (A) [N]", value=float(ctx.get("delta_rr_N", 0.0)), step=0.1)
-            ctx["delta_aero_Npkph2"]  = c2.number_input("ΔAero (C) [N/kph²]", value=float(ctx.get("delta_aero_Npkph2", 0.0)), step=0.000001, format="%.6f")
+            ctx["delta_aero_cdA"]  = c2.number_input("ΔAero (CdA) [m2]", value=float(ctx.get("delta_aero_cdA", 0.0)), step=0.001, format="%.3f")
             c3, c4 = st.columns(2)
             ctx["delta_brake_N"]      = c3.number_input("ΔBrake (A) [N]", value=float(ctx.get("delta_brake_N", 0.0)), step=0.1)
             ctx["delta_parasitics_N"] = c4.number_input("ΔParasitics (A) [N]", value=float(ctx.get("delta_parasitics_N", 0.0)), step=0.1)
@@ -344,7 +417,7 @@ def baseline_picker_and_editor():
             prefill={
                 "cd":                base.get("cd"),
                 "frontal_area_m2":   base.get("frontal_area_m2"),
-                "crr":               base.get("crr"),
+                "cda_m2":            base.get("cda_m2"),
             }
         )
         parasitic_brake_section(
@@ -858,7 +931,7 @@ def compute_and_save():
             d_rr   = float(ctx.get("delta_rr_N", 0.0))
             d_br   = float(ctx.get("delta_brake_N", 0.0))
             d_par  = float(ctx.get("delta_parasitics_N", 0.0))
-            d_aero = float(ctx.get("delta_aero_Npkph2", 0.0))
+            d_aero = float(ctx.get("delta_aero_cdA", 0.0)) * 0.0472068
             frac120 = float(ctx.get("crr1_frac_at_120kph", 0.0))
 
             dA_rr = d_rr
@@ -938,7 +1011,7 @@ def compute_and_save():
             }
 
             # RR extras e pneus (se estiverem no ctx)
-            for k in ["tire_size","tire_circ_m","diameter_mm","rrc_N_per_kN","crr1_frac_at_120kph",
+            for k in ["tire_size","rrc_N_per_kN",
                       "front_pressure_psi","rear_pressure_psi","rr_load_kpa","smerf"]:
                 v = ctx.get(k)
                 if v not in (None, ""):
@@ -1401,7 +1474,7 @@ def show_live_vde_preview():
             delta_rr_N=ctx.get("delta_rr_N", 0.0),
             delta_brake_N=ctx.get("delta_brake_N", 0.0),
             delta_parasitics_N=ctx.get("delta_parasitics_N", 0.0),
-            delta_aero_Npkph2=ctx.get("delta_aero_Npkph2", 0.0),
+            delta_aero_Npkph2=ctx.get("delta_aero_cdA", 0.0)* 0.0472068,
             crr1_frac_at_120kph=ctx.get("crr1_frac_at_120kph", 0.0)
         )
     except Exception:

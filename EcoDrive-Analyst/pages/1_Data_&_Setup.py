@@ -51,17 +51,9 @@ def _vehicle_basics():
     col1, col2, col3 = st.columns(3)
 
     # marcas sugeridas (mantidas p/ consistência)
-    default_makes = [
-        "Toyota", "Honda", "Nissan", "Mitsubishi", "Mazda", "Subaru",
-        "Hyundai", "Kia",
-        "Volkswagen", "Audi", "BMW", "Mercedes-Benz", "Porsche", "Peugeot",
-        "Renault", "Citroën", "Fiat", "Alfa Romeo", "Volvo", "Jaguar", "Land Rover",
-        "Skoda", "Seat", "Opel",
-        "Ford", "Chevrolet", "Dodge", "Chrysler", "Jeep", "Ram", "Cadillac",
-        "Buick", "GMC", "Lincoln", "Tesla",
-        "Suzuki", "Mini", "Smart", "Lexus", "Infiniti", "Acura",
-        "Other (type manually)"
-    ]
+    default_makes = [ "Toyota", "Honda", "Nissan", "Mitsubishi", "Mazda", "Subaru","Hyundai", "Kia", "Volkswagen", "Audi", "BMW", "Mercedes-Benz", "Porsche", "Peugeot","Renault", "Citroën", "Fiat", "Alfa Romeo", "Volvo", "Jaguar", "Land Rover",
+                       "Skoda", "Seat", "Opel", "Ford", "Chevrolet", "Dodge", "Chrysler", "Jeep", "Ram", "Cadillac","Buick", "GMC", "Lincoln", "Tesla", "Suzuki", "Mini", "Smart", "Lexus", "Infiniti", "Acura","Other (type manually)"]
+    
 
     desc = col2.text_input("Model / Description", value=st.session_state.get("vb_desc", ""))
     year = col3.number_input("Year", 1990, 2100, int(st.session_state.get("vb_year", 2020)))
@@ -86,17 +78,20 @@ def _vehicle_basics():
         "Class 1 (<850 kg)", "Class 2 (850–1220 kg)", "Class 3 (>1220 kg)"
     ]
     category_list = epa_classes if legislation == "EPA" else wltp_classes
+    category_list_upper = [c.upper() for c in category_list]
     category = col4.selectbox(
         "Category / Size class",
-        category_list,
-        index=category_list.index(st.session_state.get("vb_category", category_list[0]))
-        if st.session_state.get("vb_category") in category_list else 0
+        category_list_upper,
+        index=category_list_upper.index(st.session_state.get("vb_category", category_list_upper[0]))
+        if st.session_state.get("vb_category") in category_list_upper else 0
     )
 
     # juntar marcas do DB + sugeridas (sem duplicar) + opção Other
     ensure_db()
     makes_db = db_list_makes(legislation, category)
-    merged_makes = list(dict.fromkeys(makes_db + [m for m in default_makes if m not in makes_db]))
+    # Aplica .upper() nas marcas sugeridas
+    default_makes_upper = [m.upper() for m in default_makes]
+    merged_makes = list(dict.fromkeys(makes_db + [m for m in default_makes_upper if m not in makes_db]))
     if "Other (type manually)" not in merged_makes:
         merged_makes.append("Other (type manually)")
 
@@ -139,9 +134,9 @@ def _pwt_section():
                                  ["Spark-ignition (Gasoline/Flex)", "Compression-ignition (Diesel)"],
                                  index=0)
     electrif = col2.selectbox("Electrification",
-                              ["None", "MHEV (48V)", "HEV", "PHEV", "BEV"], index=0)
+                              ["ICE", "HEV", "PHEV", "BEV"], index=0)
     trans = col3.selectbox("Transmission",
-                           ["AT (auto)", "DCT", "CVT", "MT"], index=0)
+                           ["AT", "DCT", "CVT", "MT"], index=0)
 
     # guarda somente para página 2; Page 1 não grava eficiência
     st.session_state["pwt_engine"] = engine_type
@@ -261,9 +256,9 @@ def main():
         st.info("Enter coastdown results directly (as obtained from test).")
         colA, colB, colC, colM = st.columns(4)
         A = colA.number_input("A [N]", 0.0, 500.0, float(st.session_state.get("fromtest_A", 30.0)), 0.1)
-        B = colB.number_input("B [N/kph]", 0.0, 5.0, float(st.session_state.get("fromtest_B", 0.80)), 0.01)
+        B = colB.number_input("B [N/kph]", -1.0, 5.0, float(st.session_state.get("fromtest_B", 0.80)), 0.01)
         C = colC.number_input("C [N/kph²]", 0.000, 0.100, float(st.session_state.get("fromtest_C", 0.011)), 0.001)
-        mass = colM.number_input("Test mass [kg]", 600.0, 3500.0, float(st.session_state.get("fromtest_mass", 1500.0)), 5.0)
+        mass = colM.number_input("Test mass [kg]", 300.0, 3500.0, float(st.session_state.get("fromtest_mass", 1500.0)), 5.0)
         st.session_state["abc"] = {"A": A, "B": B, "C": C}
         st.session_state["manual_mass"] = mass
 

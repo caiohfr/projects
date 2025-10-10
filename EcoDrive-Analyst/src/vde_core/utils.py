@@ -25,3 +25,28 @@ def epa_combined_eff_kmpl(city_kmpl: float, hwy_kmpl: float) -> float:
 
 def epa_combined_cons_l100(city_l100: float, hwy_l100: float) -> float:
     return 0.55*city_l100 + 0.45*hwy_l100
+
+def load_tire_catalog(csv_path: str):
+    import pandas as pd, math
+
+    # lê CSV simples; usa vírgula como decimal se houver
+    df = pd.read_csv(csv_path, encoding="utf-8", engine="python")
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    # aceita dois esquemas de cabeçalho:
+    # 1) "medida", "des. (m)"
+    # 2) "tire_size" (ou "size"), "tire_circ_m" (ou "circ_m")
+    size_col = "medida" if "medida" in df.columns else ("tire_size" if "tire_size" in df.columns else "size")
+    circ_col = "des. (mm)" if "des. (mm)" in df.columns else ("tire_circ_m" if "tire_circ_m" in df.columns else "circ_m")
+
+    # normaliza e converte
+    out = pd.DataFrame()
+    out["tire_size"] = df[size_col].astype(str).str.strip()
+    out["tire_circ_mm"] = (
+        df[circ_col].astype(str).str.replace(",", ".", regex=False)
+          .astype(float)
+    )
+    # calcula diâmetro em mm a partir da circunferência (m)
+    out["diameter_mm"] = (out["tire_circ_mm"] ) / math.pi
+
+    return out[["tire_size", "tire_circ_mm", "diameter_mm"]]

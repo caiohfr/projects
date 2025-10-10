@@ -10,7 +10,7 @@ def cycle_chart(df: pd.DataFrame):
     if not {"t", "v"} <= set(df.columns):
         return None
     dfx = df.copy().dropna(subset=["t", "v"])
-    dfx["v_kmh"] = dfx["v"] # csv ciclos estão em km/h
+    dfx["v_kmh"] =3.6* dfx["v"] # csv ciclos estão em km/h
     fig = px.line(
         dfx, x="t", y="v_kmh",
         labels={"t": "Time [s]", "v_kmh": "Speed [km/h]"},  # <-- labels (minúsculo)

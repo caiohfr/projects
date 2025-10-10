@@ -10,10 +10,12 @@
 
 from __future__ import annotations
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, Any
 
 import numpy as np
 import pandas as pd
+import streamlit as st
+from src.vde_core.utils import cycle_kpis
 
 
 # =============================================================================
@@ -30,7 +32,39 @@ def default_cycle_for_legislation(leg: str) -> str:
         "EPA": "FTP75_HWFET",            # you also have HWFET and FTP75_HWFET if needed
         "WLTP": "WLTP_Class3ab",
     }
-    return mapping.get(leg, "FTP75")
+    return mapping.get(leg)
+
+def use_standard_cycle(leg):
+    fname = default_cycle_for_legislation(leg)
+    try:
+        df = load_cycle_csv(fname)
+        #st.session_state["cycle_df"] = df
+        #st.session_state["cycle_source"] = f"standard:{leg}"
+        st.success(f"Using default **{leg}** cycle: `{fname}.csv`")
+        k = cycle_kpis(df)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Duration", f"{k['duration_s']:.0f} s")
+        c2.metric("Distance", f"{k['distance_km']:.2f} km")
+        c3.metric("Avg Speed", f"{k['v_mean_kmh']:.1f} km/h")
+        c4.metric("Samples", f"{k['n_points']}")
+        return df
+    except Exception as e:
+        st.warning(f"Default cycle for **{leg}** not found. {e}")
+        st.info("Please upload a custom cycle below.")
+        return None
+
+
+def cycle_summary(df_cycle: pd.DataFrame):
+    if df_cycle is None or df_cycle.empty:
+        return "No cycle loaded.", ""
+    # simple KPIs
+    t = df_cycle.iloc[:,0].astype(float)
+    v = df_cycle.iloc[:,1].astype(float)
+    dur = t.iloc[-1] - t.iloc[0]
+    dist =  np.trapz(v, t)  # crude integral v*dt (meters)
+    dist_km = dist / 1000.0
+    vavg = v.mean() * 3.6  # m/s -> km/h
+    return f"Duration: {dur:.0f} s • Distance: {dist_km:.2f} km • v̄: {vavg:.1f} km/h", f"{dist_km:.3f}"
 
 
 def load_cycle_csv(name_no_ext: str) -> pd.DataFrame:
@@ -153,10 +187,12 @@ def epa_city_hwy_from_phase(
     # sum bag1 + bag2
     urb_E_J = 0.0
     urb_S_m = 0.0
+    etw_kg = inertia_class_from_mass(mass)
+
     for key_alt in (("bag1", "1", "bag 1"), ("bag2", "2", "bag 2")):
         for k in key_alt:
             if k in groups:
-                r = compute_vde_net(groups[k], A, B, C, mass)
+                r = compute_vde_net(groups[k], A, B, C, etw_kg)
                 urb_E_J += r["MJ_total"] * 1e6
                 urb_S_m += r["km"] * 1000.0
                 break
@@ -206,12 +242,13 @@ def wltp_phases_from_phase(
         "xhigh": "vde_extra_high_mj_per_km",
         "extra_high": "vde_extra_high_mj_per_km",
     }
-
+    mro_kg = compute_mro_from_stda(mass, includes_driver=False)
+    tm = compute_wltp_test_mass  (mro_kg)
     E_sum = 0.0
     S_sum = 0.0
     for key_norm, colname in phase_map.items():
         if key_norm in groups:
-            r = compute_vde_net(groups[key_norm], A, B, C, mass)
+            r = compute_vde_net(groups[key_norm], A, B, C, tm)
             out[colname] = r["MJ_km"]
             E_sum += r["MJ_total"]
             S_sum += r["km"]
@@ -220,6 +257,23 @@ def wltp_phases_from_phase(
         out["vde_net_mj_per_km"] = E_sum / max(S_sum, 1e-9)
 
     return out
+
+def apply_coastdown_deltas(A, B, C,
+                           delta_rr_N=0.0,
+                           delta_brake_N=0.0,
+                           delta_parasitics_N=0.0,
+                           delta_aero_Npkph2=0.0,
+                           crr1_frac_at_120kph=0.0):
+    dA_rr = float(delta_rr_N or 0.0)
+    dB_rr = dA_rr * float(crr1_frac_at_120kph or 0.0) / 120.0
+    dA_br = float(delta_brake_N or 0.0)
+    dA_pa = float(delta_parasitics_N or 0.0)
+    dC_ae = float(delta_aero_Npkph2 or 0.0)
+    A1 = float(A) + dA_rr + dA_br + dA_pa
+    B1 = float(B) + dB_rr
+    C1 = float(C) + dC_ae
+    return A1, B1, C1
+ 
 
 
 # =============================================================================
@@ -381,7 +435,13 @@ def inertia_class_from_mass(mass_kg: float) -> float | None:
         (1962, 2075, 2155),
         (2075, 2189, 2268),
         (2189, 2302, 2381),
-        (2302, None, 2495),
+        (2302, 2416, 2495), 
+        (2416, 2643, 2722), 
+        (2643, 2869, 2948),
+        (2869, 3096, 3175), 
+        (3096, 3323, 3402), 
+        (3323, 3777, 3856),
+        (3777, None, 4082),
     ]
     for lo, hi, cls in steps:
         if lo is None and mass_kg <= hi:         return float(cls)
@@ -389,3 +449,133 @@ def inertia_class_from_mass(mass_kg: float) -> float | None:
         if lo is not None and hi is not None and (mass_kg > lo) and (mass_kg <= hi):
             return float(cls)
     return None
+
+
+
+
+
+G = 9.80665   # m/s²
+RHO = 1.2     # kg/m³
+# QA tolerances for recomposition (A,B,C)
+TOL_A = 5.0       # N
+TOL_B = 0.10      # N/kph
+TOL_C = 1e-1      # N/kph²
+
+DEFAULTS_REQUIRED_COLS = [
+    "category", "electrification", "transmission_type",
+    "cdA_default_m2", "rrc_N_per_kN", "crr1_frac_at_120kph",
+]
+
+def load_vde_defaults(path: str | Path) -> pd.DataFrame:
+    """
+    Load defaults CSV with priors by (category, electrification, transmission_type).
+    Required columns: DEFAULTS_REQUIRED_COLS.
+    """
+    path = Path(path)
+    df = pd.read_csv(path)
+    missing = [c for c in DEFAULTS_REQUIRED_COLS if c not in df.columns]
+    if missing:
+        raise KeyError(f"Missing columns in defaults CSV: {missing}")
+    return df
+
+def estimate_aux_from_coastdown(
+    *,
+    A_N: float,
+    B_N_per_kph: float,
+    C_N_per_kph2: float,
+    mass_kg: float,
+    category: str,
+    electrification: str,
+    transmission_type: str,
+    cdA_override_m2: Optional[float] = None,
+    defaults_df: Optional[pd.DataFrame] = None,
+    defaults_path: Optional[str | Path] = None,
+) -> Dict[str, Any]:
+    """
+    Decompose measured coastdown (NET) into RR, Aero and Parasitic components.
+
+    NET convention here:
+      F(v_kph) = A + B*v + C*v^2  (v in km/h)
+      - Aero uses C (expected ~ all of measured C)
+      - RR uses defaults (RRC @ 0 kph and slope fraction at 120 kph)
+      - Parasitic (brakes/bearings) is the remainder in A and B
+      - Transmission is NOT part of NET here.
+
+    Args:
+      A_N, B_N_per_kph, C_N_per_kph2: measured coastdown coefficients (B may be < 0)
+      mass_kg: test mass
+      category, electrification, transmission_type: keys to pick defaults row
+      cdA_override_m2: if provided, uses this instead of defaults' cdA
+      defaults_df: preloaded defaults; if None, will load from defaults_path
+      defaults_path: path to CSV if defaults_df is None
+
+    Returns:
+      dict with:
+        rr_alpha_N, rr_beta_Npkph, aero_C_coef_Npkph2,
+        parasitic_A_coef_N, parasitic_B_coef_Npkph, parasitic_C_coef_Npkph2,
+        cdA_used_m2,
+        dA, dB, dC, check_ok (QA flags), rl_source
+    """
+    if defaults_df is None:
+        if not defaults_path:
+            raise ValueError("Provide defaults_df or defaults_path.")
+        defaults_df = load_vde_defaults(defaults_path)
+
+    # pick row (strict match; if not found, try fallback on category only)
+    df = defaults_df
+    m = df[
+        (df["category"].astype(str).str.upper() == str(category).upper()) &
+        (df["electrification"].astype(str).str.upper() == str(electrification).upper()) &
+        (df["transmission_type"].astype(str).str.upper() == str(transmission_type).upper())
+    ]
+    if m.empty:
+        m = df[df["category"].astype(str).str.upper() == str(category).upper()]
+        if m.empty:
+            raise ValueError("No defaults found for this (category/electrification/transmission).")
+
+    row = m.iloc[0]
+    cdA_default = float(row["cdA_default_m2"])
+    rrc_N_per_kN = float(row["rrc_N_per_kN"])
+    crr1_frac_120 = float(row["crr1_frac_at_120kph"])
+
+    # numeric inputs (B can be negative)
+    A = float(A_N); B = float(B_N_per_kph); C = float(C_N_per_kph2)
+    if mass_kg is None or mass_kg <= 0:
+        raise ValueError("mass_kg must be > 0")
+
+    # choose cdA: override > default
+    cdA = float(cdA_override_m2) if cdA_override_m2 is not None else cdA_default
+
+    # ---- NET blocks ----
+    # Rolling resistance (rrc in N/kN * total load in kN)
+    load_kN = mass_kg * G / 1000.0
+    A_rr = rrc_N_per_kN * load_kN
+    B_rr = A_rr * (crr1_frac_120 / 120.0)
+    C_rr = 0.0
+
+    # Aerodynamics (C in N/kph²)
+    C_aero = 0.5 * RHO * cdA * (1/3.6)**2
+
+    # Parasitic (brake/bearings) = remainder in A and B; C_par expected ~ 0
+    A_par = max(0.0, A - A_rr)
+    B_par = max(0.0, B - B_rr)
+    C_par = max(0.0, C - C_aero)
+
+    # ---- QA (recomposition) ----
+    dA = (A_rr + A_par) - A
+    dB = (B_rr + B_par) - B
+    dC = (C_aero + C_rr + C_par) - C
+    check_ok = (abs(dA) <= TOL_A) and (abs(dB) <= TOL_B) and (abs(dC) <= TOL_C)
+
+    return {
+        "rr_alpha_N": A_rr,
+        "rr_beta_Npkph": B_rr,
+        "aero_C_coef_Npkph2": C_aero,
+        "parasitic_A_coef_N": A_par,
+        "parasitic_B_coef_Npkph": B_par,
+        "parasitic_C_coef_Npkph2": C_par,
+        "cdA_used_m2": cdA,
+        "dA": dA, "dB": dB, "dC": dC,
+        "check_ok": bool(check_ok),
+        "rl_source": "measured_decomposed_NET",
+    }

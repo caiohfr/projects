@@ -66,9 +66,24 @@ def ensure_migrations() -> None:
         "parasitic_A_coef_N": "REAL",
         "parasitic_B_coef_Npkph": "REAL",
         "parasitic_C_coef_Npkph2": "REAL",
+        "rrc_N_per_kN": "REAL",   # <- NOVA
     })
     added += ensure_columns("fuelcons_db", {})  # nada por enquanto
     # opcional: log
+        # >>> NOVOS: rastreabilidade mínima (baseline + deltas) <<<
+    added += ensure_columns("vde_db", {
+        "vde_id_parent": "INTEGER",
+
+        "baseline_A_N": "REAL",
+        "baseline_B_N_per_kph": "REAL",
+        "baseline_C_N_per_kph2": "REAL",
+        "baseline_mass_kg": "REAL",
+
+        "delta_rr_N": "REAL",
+        "delta_brake_N": "REAL",
+        "delta_parasitics_N": "REAL",
+        "delta_aero_Npkph2": "REAL",
+    })
     if added:
         print("[db] migrações aplicadas:", added)
 
@@ -110,7 +125,7 @@ def ensure_db():
             engine_aspiration    TEXT,                      -- 'NA','Turbo','Supercharged'
             transmission_type    TEXT,                      -- 'AT','DCT','CVT','MT'
             transmission_model   TEXT,                      -- ex.: 'Aisin AWF8F35','Getrag DCT250'
-
+            
             -- massa e aero
             mass_kg              REAL NOT NULL,
             inertia_class        REAL,                      -- ETW / Inércia WLTP / NBR

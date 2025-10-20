@@ -16,6 +16,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from src.vde_core.utils import cycle_kpis
+import json
+
+
 
 
 # =============================================================================
@@ -169,33 +172,56 @@ def split_by_phase(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         groups[ph] = dfg
     return groups
 
+# services.py
+def _norm_phase(x: str) -> str:
+    return str(x).strip().lower().replace("-", "_").replace(" ", "_")
+
 
 def epa_city_hwy_from_phase(
     df_or_groups: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
     A: float, B: float, C: float, mass: float
 ) -> Dict[str, Optional[float]]:
-    """
-    EPA aggregation from phases:
-      - City  = bag1 + bag2 (sum energy & distance)
-      - Highway = HWFET
-      - Combined NET (MJ/km) = 0.55*City + 0.45*Highway (if both exist)
-    Returns keys:
-      urb_MJ, urb_km, urb_MJ_km, hw_MJ, hw_km, hw_MJ_km, net_comb_MJ_km
-    """
-    groups = split_by_phase(df_or_groups) if isinstance(df_or_groups, pd.DataFrame) else dict(df_or_groups)
+    # groups
+    groups_raw = split_by_phase(df_or_groups) if isinstance(df_or_groups, pd.DataFrame) else dict(df_or_groups)
 
-    # sum bag1 + bag2
-    urb_E_J = 0.0
-    urb_S_m = 0.0
+    # normalizar chaves: "bag 1" -> "bag1", "highway"/"hwy" -> "hwfet"
+    def norm(s: str) -> str:
+        s = (s or "").lower().strip()
+        s = s.replace("-", " ").replace("_", " ")
+        s = s.replace("bag 1", "bag1").replace("bag 2", "bag2")
+        s = s.replace("highway", "hwfet").replace("hwy", "hwfet")
+        return s.replace(" ", "")
+    groups = {norm(k): v for k, v in groups_raw.items()}
+
+    # helper de busca
+    def get_any(*keys):
+        for k in keys:
+            k = norm(k)
+            if k in groups:
+                return groups[k]
+            for gk in groups.keys():      # aceita prefixos/sufixos (ex.: ftp75bag1)
+                if k in gk:
+                    return groups[gk]
+        return None
+
+    # ETW consistente
     etw_kg = inertia_class_from_mass(mass)
 
-    for key_alt in (("bag1", "1", "bag 1"), ("bag2", "2", "bag 2")):
-        for k in key_alt:
-            if k in groups:
-                r = compute_vde_net(groups[k], A, B, C, etw_kg)
-                urb_E_J += r["MJ_total"] * 1e6
-                urb_S_m += r["km"] * 1000.0
-                break
+    # City = bag1 + bag2
+    urb_E_J = 0.0
+    urb_S_m = 0.0
+    for phase_name in ("bag1", "bag 1"):
+        g = get_any(phase_name)
+        if g is not None:
+            r = compute_vde_net(g, A, B, C, etw_kg)
+            urb_E_J += r["MJ_total"] * 1e6
+            urb_S_m += r["km"] * 1000.0
+    for phase_name in ("bag2", "bag 2"):
+        g = get_any(phase_name)
+        if g is not None:
+            r = compute_vde_net(g, A, B, C, etw_kg)
+            urb_E_J += r["MJ_total"] * 1e6
+            urb_S_m += r["km"] * 1000.0
 
     urb_MJ = urb_km = urb_MJ_km = None
     if urb_S_m > 0:
@@ -203,24 +229,108 @@ def epa_city_hwy_from_phase(
         urb_km = urb_S_m / 1000.0
         urb_MJ_km = urb_MJ / max(urb_km, 1e-9)
 
+    # Highway = HWFET
     hw_MJ = hw_km = hw_MJ_km = None
-    for k in ("hwfet", "hwy", "highway"):
-        if k in groups:
-            r = compute_vde_net(groups[k], A, B, C, mass)
-            hw_MJ, hw_km, hw_MJ_km = r["MJ_total"], r["km"], r["MJ_km"]
-            break
+    hw = get_any("hwfet", "hwy", "highway")
+    if hw is not None:
+        rH = compute_vde_net(hw, A, B, C, etw_kg)  # usa ETW também aqui
+        hw_MJ, hw_km, hw_MJ_km = rH["MJ_total"], rH["km"], rH["MJ_km"]
 
-    net_comb_MJ_km = None
-    if (urb_MJ_km is not None) and (hw_MJ_km is not None):
-        net_comb_MJ_km = 0.55 * urb_MJ_km + 0.45 * hw_MJ_km
-    else:
-        net_comb_MJ_km = urb_MJ_km  # fallback: only city available
+    # Combined
+    net_comb_MJ_km = (
+        0.55 * urb_MJ_km + 0.45 * hw_MJ_km if (urb_MJ_km is not None and hw_MJ_km is not None)
+        else (urb_MJ_km or hw_MJ_km)
+    )
 
     return {
         "urb_MJ": urb_MJ, "urb_km": urb_km, "urb_MJ_km": urb_MJ_km,
         "hw_MJ": hw_MJ, "hw_km": hw_km, "hw_MJ_km": hw_MJ_km,
-        "net_comb_MJ_km": net_comb_MJ_km
+        "net_comb_MJ_km": net_comb_MJ_km,
     }
+
+def wltp_phases_from_phase2(
+    df_or_groups: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+    A: float, B: float, C: float, mass: float
+) -> Dict[str, Optional[float]]:
+
+    def _norm(lbl: str) -> str:
+        t = str(lbl).strip().lower().replace("-", " ").replace("_", " ")
+        t = " ".join(t.split())
+        return "xhigh" if t == "extra high" else t
+
+    # 1) agrupa
+    if isinstance(df_or_groups, pd.DataFrame):
+        if "phase" not in df_or_groups.columns:
+            return {}
+        groups_raw = { _norm(k): v.copy()
+                       for k, v in df_or_groups.groupby(df_or_groups["phase"].map(_norm)) }
+    else:
+        groups_raw = { _norm(k): v.copy() for k, v in dict(df_or_groups).items() }
+
+    want = ["low", "mid", "high", "xhigh"]
+    groups = {k: groups_raw[k] for k in want if k in groups_raw}
+
+    out: Dict[str, Optional[float]] = {}
+    E_sum = 0.0
+    S_sum = 0.0
+
+    name_to_col = {
+        "low":   "vde_low_mj_per_km",
+        "mid":   "vde_mid_mj_per_km",
+        "high":  "vde_high_mj_per_km",
+        "xhigh": "vde_extra_high_mj_per_km",
+    }
+
+    for k in want:
+        out_col = name_to_col[k]
+        if (k not in groups) or groups[k].empty:
+            out[f"{k}_MJ"] = out[f"{k}_km"] = out[f"{k}_MJ_km"] = None
+            out[out_col] = None
+            continue
+
+        g = groups[k].copy()
+
+        # v em m/s → v_mps
+        if "v_mps" not in g.columns:
+            if "v" in g.columns:
+                g["v_mps"] = pd.to_numeric(g["v"], errors="coerce")
+            else:
+                out[f"{k}_MJ"] = out[f"{k}_km"] = out[f"{k}_MJ_km"] = None
+                out[out_col] = None
+                continue
+
+        # tempo e dt
+        tcol = "t" if "t" in g.columns else ("time_s" if "time_s" in g.columns else None)
+        if tcol is None:
+            out[f"{k}_MJ"] = out[f"{k}_km"] = out[f"{k}_MJ_km"] = None
+            out[out_col] = None
+            continue
+
+        g[tcol] = pd.to_numeric(g[tcol], errors="coerce")
+        g = g.dropna(subset=[tcol, "v_mps"]).sort_values(tcol).reset_index(drop=True)
+        g["dt"] = g[tcol].diff().fillna(0.0).clip(lower=0.0)
+
+        # checagem de distância
+        km_chk = float((g["v_mps"] * g["dt"]).sum() / 1000.0)
+        if not (km_chk > 0):
+            out[f"{k}_MJ"] = out[f"{k}_km"] = out[f"{k}_MJ_km"] = None
+            out[out_col] = None
+            continue
+
+        # integra com a MESMA assinatura da EPA
+        r = compute_vde_net(g, float(A), float(B), float(C), float(mass))
+
+        MJ_tot = r.get("MJ_total"); km = r.get("km"); MJ_km = r.get("MJ_km")
+        out[f"{k}_MJ"]     = float(MJ_tot) if isinstance(MJ_tot, (int, float)) else None
+        out[f"{k}_km"]     = float(km)     if isinstance(km,     (int, float)) else None
+        out[f"{k}_MJ_km"]  = float(MJ_km)  if isinstance(MJ_km,  (int, float)) else None
+        out[out_col]       = out[f"{k}_MJ_km"]
+
+        if isinstance(MJ_tot, (int, float)) and isinstance(km, (int, float)) and km > 0:
+            E_sum += float(MJ_tot); S_sum += float(km)
+
+    out["vde_net_mj_per_km"] = (E_sum / S_sum) if S_sum > 0 else None
+    return out
 
 
 def wltp_phases_from_phase(
@@ -241,9 +351,23 @@ def wltp_phases_from_phase(
         "high": "vde_high_mj_per_km",
         "xhigh": "vde_extra_high_mj_per_km",
         "extra_high": "vde_extra_high_mj_per_km",
-    }
-    mro_kg = compute_mro_from_stda(mass, includes_driver=False)
-    tm = compute_wltp_test_mass  (mro_kg)
+        "extra_high": "vde_extra_high_mj_per_km",   # já cobre "extra_high"
+        "extrahigh": "vde_extra_high_mj_per_km", }   # sem underscore
+        # graças ao _norm_phase novo, "extra high" e "extra-high" viram "extra_high"
+    groups = split_by_phase(df_or_groups) if isinstance(df_or_groups, pd.DataFrame) else dict(df_or_groups)
+    # debug rápido (comente se não quiser)
+    # st.write("WLTP phases found:", list(groups.keys()))
+
+    tm = None
+    try:
+        mro_kg = compute_mro_from_stda(mass, includes_driver=False)
+        tm = compute_wltp_test_mass(mro_kg)
+    except Exception:
+        tm = None
+
+    if tm is None:
+        tm = float(mass)  # fallback para a massa passada
+
     E_sum = 0.0
     S_sum = 0.0
     for key_norm, colname in phase_map.items():
@@ -258,21 +382,24 @@ def wltp_phases_from_phase(
 
     return out
 
-def apply_coastdown_deltas(A, B, C,
+def apply_coastdown_deltas(A, B, C, mass_kg,
                            delta_rr_N=0.0,
                            delta_brake_N=0.0,
                            delta_parasitics_N=0.0,
                            delta_aero_Npkph2=0.0,
+                           delta_mass_kg=0.0,
                            crr1_frac_at_120kph=0.0):
     dA_rr = float(delta_rr_N or 0.0)
     dB_rr = dA_rr * float(crr1_frac_at_120kph or 0.0) / 120.0
     dA_br = float(delta_brake_N or 0.0)
     dA_pa = float(delta_parasitics_N or 0.0)
     dC_ae = float(delta_aero_Npkph2 or 0.0)
+    dmass = float(delta_mass_kg or 0.0)
     A1 = float(A) + dA_rr + dA_br + dA_pa
     B1 = float(B) + dB_rr
     C1 = float(C) + dC_ae
-    return A1, B1, C1
+    mass_kg1 = float(mass_kg) + dmass
+    return A1, B1, C1, mass_kg1
  
 
 
@@ -578,4 +705,141 @@ def estimate_aux_from_coastdown(
         "dA": dA, "dB": dB, "dC": dC,
         "check_ok": bool(check_ok),
         "rl_source": "measured_decomposed_NET",
+    }
+
+# src/vde_core/services.py
+
+# ---- Constantes simples (ajuste aos seus padrões, se quiser puxar de outro lugar) ----
+LHV_MJ_PER_L = {
+    "Gasoline": 32.0,  # ajuste se usar E0/E22 etc.
+    "E10":      31.2,
+    "E22":      30.0,
+    "E100":     21.2,
+    "Diesel":   35.8,
+    "Other":    32.0,
+}
+
+GCO2_PER_L = {
+    "Gasoline": 2310.0,   # gCO2 por litro aproximado
+    "E10":      2270.0,
+    "E22":      2200.0,
+    "E100":        0.0,   # fósseis ~0; use LCA se quiser
+    "Diesel":   2640.0,
+    "Other":    2310.0,
+}
+
+MJ_TO_Wh = 277.7777777778  # 1 MJ = 277.777... Wh
+
+
+def _get_vde_row(vde_id: int) -> dict | None:
+    # Import local para quebrar o ciclo (só roda na HORA da chamada)
+    from src.vde_core.db import fetchone as _fetchone
+    return _fetchone("SELECT * FROM vde_db WHERE id=?;", (vde_id,))
+
+
+def compute_ice_fuel_from_vde(
+    vde_id: int,
+    fuel_type: str,
+    eta_pt: float,
+    lhv_mj_per_l: float | None = None,
+    electrification: str = "ICE",   # "ICE" | "MHEV" | "HEV" | "PHEV"
+    uf_phev: float | None = None,   # 0..1 (se quiser ponderar)
+    driveline_eff: float | None = None,         # opcional: para PHEV (parte elétrica)
+    grid_gco2_per_kwh: float | None = None,     # opcional: para PHEV (parte elétrica)
+) -> dict:
+    """
+    Converte VDE_NET -> consumo fóssil (L/100km, km/L) e CO2.
+    Se electrification == 'PHEV' e uf_phev for dado, computa um 'blended' simples:
+      - parte ICE ponderada por (1-UF)
+      - parte elétrica (se driveline_eff e grid forem fornecidos) ponderada por UF
+    """
+    row = _get_vde_row(vde_id)
+    assert row and ("vde_net_mj_per_km" in row), "VDE row sem vde_net_mj_per_km"
+    vde_mj_per_km = float(row["vde_net_mj_per_km"])
+
+    # Defaults de LHV/CO2 por litro
+    lhv = float(lhv_mj_per_l) if lhv_mj_per_l else float(LHV_MJ_PER_L.get(fuel_type, 32.0))
+    gco2_per_l = float(GCO2_PER_L.get(fuel_type, 2310.0))
+
+    # Parte ICE (convencional): VDE/eta -> MJ/km no eixo-motor -> L/km
+    mj_pk_ice = vde_mj_per_km / max(eta_pt, 1e-6)
+    L_per_km_ice = mj_pk_ice / max(lhv, 1e-6)
+    L_per_100km_ice = 100.0 * L_per_km_ice
+    km_per_L_ice = 100.0 / max(L_per_100km_ice, 1e-9)
+    gco2_per_km_ice = L_per_km_ice * gco2_per_l
+
+    # Resultado default: tudo ICE/MxHEV/HEV tratado como ICE (η_pt já incorpora híbrido)
+    L_per_100 = L_per_100km_ice
+    km_per_L  = km_per_L_ice
+    gco2_km   = gco2_per_km_ice
+    Wh_per_km = None
+
+    # PHEV (ponderado), se UF fornecido
+    if str(electrification).upper() == "PHEV" and uf_phev is not None:
+        uf = max(0.0, min(1.0, float(uf_phev)))
+        # parte elétrica (se params presentes)
+        if driveline_eff and grid_gco2_per_kwh is not None:
+            energy_Wh_per_km_elec = (vde_mj_per_km / max(driveline_eff,1e-6)) * MJ_TO_Wh
+            gco2_km_elec = (energy_Wh_per_km_elec / 1000.0) * float(grid_gco2_per_kwh)
+        else:
+            energy_Wh_per_km_elec = 0.0
+            gco2_km_elec = 0.0
+
+        # blend
+        L_per_km_blend = (1.0 - uf) * L_per_km_ice
+        L_per_100 = 100.0 * L_per_km_blend
+        km_per_L  = 100.0 / max(L_per_100, 1e-9) if L_per_100 > 0 else None
+        gco2_km   = (1.0 - uf) * gco2_per_km_ice + uf * gco2_km_elec
+        Wh_per_km = uf * energy_Wh_per_km_elec  # opcional: devolve energia elétrica associada
+
+    assumptions = {
+        "fuel_type": fuel_type,
+        "eta_pt": eta_pt,
+        "lhv_mj_per_l": lhv,
+        "gco2_per_l": gco2_per_l,
+        "electrification": electrification,
+        "uf_phev": uf_phev,
+        "driveline_eff": driveline_eff,
+        "grid_gco2_per_kwh": grid_gco2_per_kwh,
+        "vde_net_mj_per_km": vde_mj_per_km,
+    }
+
+    return {
+        "cycle": row.get("legislation", "auto"),
+        "fuel_l_per_100km": L_per_100,
+        "fuel_km_per_l": km_per_L,
+        "energy_Wh_per_km": Wh_per_km,  # para PHEV (parte elétrica ponderada), opcional
+        "gco2_per_km": gco2_km,
+        "assumptions_json": json.dumps(assumptions),
+    }
+
+
+def compute_bev_from_vde(
+    vde_id: int,
+    driveline_eff: float,
+    grid_gco2_per_kwh: float = 0.0,
+) -> dict:
+    """
+    Converte VDE_NET -> energia de bateria por km (Wh/km) e CO2 por grid.
+      Wh/km = (VDE_NET [MJ/km] / driveline_eff) * 277.777...
+      gCO2/km = (Wh/km / 1000) * grid_gCO2/kWh
+    """
+    row = _get_vde_row(vde_id)
+    assert row and ("vde_net_mj_per_km" in row), "VDE row sem vde_net_mj_per_km"
+    vde_mj_per_km = float(row["vde_net_mj_per_km"])
+
+    Wh_per_km = (vde_mj_per_km / max(driveline_eff, 1e-6)) * MJ_TO_Wh
+    gco2_km = (Wh_per_km / 1000.0) * float(grid_gco2_per_kwh)
+
+    assumptions = {
+        "driveline_eff": driveline_eff,
+        "grid_gco2_per_kwh": grid_gco2_per_kwh,
+        "vde_net_mj_per_km": vde_mj_per_km,
+    }
+
+    return {
+        "cycle": row.get("legislation", "auto"),
+        "energy_Wh_per_km": Wh_per_km,
+        "gco2_per_km": gco2_km,
+        "assumptions_json": json.dumps(assumptions),
     }

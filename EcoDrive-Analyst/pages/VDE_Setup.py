@@ -10,6 +10,7 @@
 import streamlit as st
 import pandas as pd
 from pathlib import Path
+import math
 
 # import your own helpers/db as in your project
 
@@ -19,7 +20,7 @@ from src.vde_core.services import   (default_cycle_for_legislation, load_cycle_c
     compute_vde_net_mj_per_km, compute_vde_net, 
     apply_coastdown_deltas, epa_city_hwy_from_phase, wltp_phases_from_phase,load_vde_defaults, estimate_aux_from_coastdown)
 from src.vde_core.utils import cycle_kpis, load_tire_catalog
-from src.vde_app.components import vde_by_phase, show_vde_feedback
+from src.vde_app.components import vde_by_phase, show_vde_feedback, search_logo, get_legislation_icon
 
 st.set_page_config(page_title="Mock Data / Editor", layout="wide")
 ensure_db()
@@ -48,7 +49,7 @@ if "ctx" not in st.session_state:
         # core VDE inputs
         "A": 100.0, "B": 0.1, "C": 0.03000, "mass_kg": 1300.0,
         # aero / tires (keep names you actually use in your DB; safe fallbacks here)
-        "cd": 0.30, "frontal_area_m2": 2.20, "crr": 0.010,
+        "cd": 0.30, "frontal_area_m2": 2.20,"cda_m2": 0.66, "crr1_frac_at_120kph": 0.010, "crr": 0.010,
         # PWT (optional minimal)
         "driveline_eff": 0.90,
         # cycle
@@ -67,9 +68,17 @@ ctx = st.session_state.ctx
 # -----------------------------
 def to_float(x, default=None):
     try:
-        return float(x)
+        if x is None:
+            return default
+        if isinstance(x, str) and x.strip() == "":
+            return default
+        out = float(x)
+        if pd.isna(out):  # cobre NaN do pandas
+            return default
+        return out
     except Exception:
         return default
+
 def db_list_makes(legislation: str, category: str) -> list[str]:
     rows = fetchall("""
         SELECT DISTINCT make FROM vde_db
@@ -77,7 +86,6 @@ def db_list_makes(legislation: str, category: str) -> list[str]:
         ORDER BY make
     """, (legislation, category))
     return [r["make"] for r in rows]
-
 
 def load_baselines_df():
     rows = fetchall("SELECT * FROM vde_db ORDER BY COALESCE(updated_at, created_at) DESC")
@@ -118,83 +126,366 @@ def validate_core(A, B, C, mass_kg):
     if mass_kg <= 0: errs.append("Mass must be > 0.")
     return errs, warns
 
-# -----------------------------
-# Sections
-# -----------------------------
-def vehicle_basics():
-    st.subheader("Vehicle basics")
-    c1, c2, c3, c4 = st.columns(4)
-    # (1) Your point: it’s fine if you only changed the display text.
-    # Use the same internal values, different labels via format if you wish.
-    leg_opts = ["WLTP", "EPA", "ABNT (Brazil)"]  # display labels
-    # keep ctx value consistent with an item from leg_opts
-    if ctx["legislation"] not in leg_opts:
-        ctx["legislation"] = "WLTP"
-    ctx["legislation"] = c1.selectbox("Legislation", leg_opts, index=leg_opts.index(ctx["legislation"]))
-
-    # categorias oficiais
-    epa_classes = [
-         "Unknown","Two Seaters", "Minicompact Cars", "Subcompact Cars", "Compact Cars",
-        "Midsize Cars", "Large Cars",
-        "Small Station Wagons", "Midsize Station Wagons",
-        "Small SUVs", "Standard SUVs",
-        "Minivans", "Vans",
-        "Small Pickup Trucks", "Standard Pickup Trucks"
-    ]
-    wltp_classes = [
-        "Class 1 (<850 kg)", "Class 2 (850–1220 kg)", "Class 3 (>1220 kg)"
-    ]
-    category_list = epa_classes if ctx["legislation"] == "EPA" else wltp_classes
-    category_list_upper = [c.upper() for c in category_list]
-
-    if ctx["category"] not in category_list_upper:
-        ctx["category"] = category_list_upper[0]
-    ctx["category"]  = c2.selectbox("Category", category_list_upper, index=category_list_upper.index(ctx["category"]))
-
-    # marcas sugeridas (mantidas p/ consistência)
-    default_makes = [ "Toyota", "Honda", "Nissan", "Mitsubishi", "Mazda", "Subaru","Hyundai", "Kia", "Volkswagen", "Audi", "BMW", "Mercedes-Benz", "Porsche", "Peugeot","Renault", "Citroën", "Fiat", "Alfa Romeo", "Volvo", "Jaguar", "Land Rover",
-                       "Skoda", "Seat", "Opel", "Ford", "Chevrolet", "Dodge", "Chrysler", "Jeep", "Ram", "Cadillac","Buick", "GMC", "Lincoln", "Tesla", "Suzuki", "Mini", "Smart", "Lexus", "Infiniti", "Acura"]
-    # juntar marcas do DB + sugeridas (sem duplicar) + opção Other
-    ensure_db()
-    makes_db = db_list_makes(ctx["legislation"], ctx["category"])
-    # Aplica .upper() nas marcas sugeridas
-    default_makes_upper = [m.upper() for m in default_makes]
-    merged_makes = list(dict.fromkeys(makes_db + [m for m in default_makes_upper if m not in makes_db]))
-    if "Other (type manually)" not in merged_makes:
-        merged_makes.append("Other (type manually)")
-    
-    # Select make/brand from merged list, or allow manual entry
-    make_choice = c3.selectbox(
-        "Make/Brand",
-        merged_makes,
-        index=merged_makes.index(ctx["make"]) if ctx["make"] in merged_makes else 0
-    )
-    if make_choice == "Other (type manually)":
-        make = c3.text_input("Enter custom brand", value=ctx["make"] if ctx["make"] not in merged_makes else "")
-    else:
-        make = make_choice
-    ctx["make"] = make
-    #ctx["make"]     = c3.text_input("Make", ctx["make"])
-    ctx["model"]    = c4.text_input("Model/Desc.", ctx["model"])
-    c5, c6, c7, c8 = st.columns([1,3,1,1])  
-    ctx["year"]  = c5.number_input("Year", value=int(ctx["year"]), min_value=1900, max_value=2100, step=1)
-    ctx["notes"] = c6.text_input("Proposal Description", ctx["notes"])
-
-    # NEW: electrification & transmission (chaves no ctx)
-    elec_opts = ["ICE", "HEV", "PHEV", "BEV"]
-    trans_opts = ["AT", "AMT", "CVT", "MT", "OT"]
-    ctx["electrification"]   = c7.selectbox("Electrification", elec_opts, index=elec_opts.index(ctx.get("electrification","ICE")))
-    ctx["transmission_type"] = c8.selectbox("Transmission",   trans_opts, index=trans_opts.index(ctx.get("transmission_type","AT")))
 
 def mode_selector():
     ctx = st.session_state.ctx
     st.subheader("Mode")
+    prev_mode = ctx.get("mode", "From baseline (editable)")
+
     ctx["mode"] = st.radio(
-        "Choose how to define VDE parameters:",
+        "Mode",
         ["From baseline (editable)", "Define all parameters (no baseline)", "From test (direct coastdown)"],
-        index=["From baseline (editable)", "Define all parameters (no baseline)", "From test (direct coastdown)"].index(ctx.get("mode","From baseline (editable)")),
-        horizontal=True
+        index=["From baseline (editable)", "Define all parameters (no baseline)", "From test (direct coastdown)"].index(
+            ctx.get("mode", "From baseline (editable)")
+        ),
+        horizontal=True,
+        key="mode_radio",         # <<< CHAVE ÚNICA AQUI
     )
+
+    # se o modo mudou, limpa estado volátil e re-renderiza
+    if ctx["mode"] != prev_mode:
+        reset_ctx(preserve_meta=True)
+        st.session_state["_last_mode"] = ctx["mode"]
+        st.rerun()
+
+
+def show_live_vde_preview():
+
+
+    # --- helpers leves (fallback se não houver to_float/apply...) ---
+    def _to_float(x, default=0.0):
+        try:
+            return float(x)
+        except Exception:
+            return float(default)
+
+    # se você já tem apply_coastdown_deltas importado, pode remover este
+    def _apply_cd_deltas(A, B, C, mass_kg, delta_rr_N, delta_brake_N,delta_mass_kg, delta_parasitics_N, delta_aero_Npkph2, crr1_frac_at_120kph):
+        # B extra proporcional ao delta_rr via fração @120 km/h, como você já faz
+        dB_rr = (delta_rr_N * (crr1_frac_at_120kph / 120.0)) if crr1_frac_at_120kph else 0.0
+        A1 = A + delta_rr_N + delta_brake_N + delta_parasitics_N
+        B1 = B + dB_rr
+        C1 = C + delta_aero_Npkph2
+        mass_kg1 = mass_kg + delta_mass_kg # massa mínima arbitrária
+        return A1, B1, C1, mass_kg1
+
+    ctx = st.session_state.get("ctx", {})
+    df_cycle = ctx.get("cycle_df")
+    
+
+
+
+    # --- lê entradas e aplica deltas ---
+    try:
+        A = _to_float(ctx.get("A")); B = _to_float(ctx.get("B")); C = _to_float(ctx.get("C"))
+        m = _to_float(ctx.get("mass_kg"), 1500.0)
+        leg = str(ctx.get("legislation", "")).upper()
+
+        delta_rr   = _to_float(ctx.get("delta_rr_N"), 0.0)
+        delta_br   = _to_float(ctx.get("delta_brake_N"), 0.0)
+        delta_par  = _to_float(ctx.get("delta_parasitics_N"), 0.0)
+        delta_cda  = _to_float(ctx.get("delta_aero_cdA"), 0.0) * 0.0472068  # cdA→C (N/kph²)
+        delta_mass = _to_float(ctx.get("delta_mass_kg"), 0.0)
+        frac120    = _to_float(ctx.get("crr1_frac_at_120kph"), 0.0)
+
+        # use a função do projeto se existir; senão usa o fallback local
+        try:
+            A1, B1, C1, mass_kg1 = apply_coastdown_deltas(
+                A, B, C, m,
+                delta_rr_N=delta_rr,
+                delta_brake_N=delta_br,
+                delta_parasitics_N=delta_par,
+                delta_aero_Npkph2=delta_cda,
+                delta_mass_kg=delta_mass,
+                crr1_frac_at_120kph=frac120
+            )
+        except Exception:
+            A1, B1, C1, mass_kg1 = _apply_cd_deltas(A, B, C, m, delta_rr, delta_br, delta_par, delta_cda, delta_mass, frac120)
+    except Exception as e:
+        st.warning(f"Preview not available (inputs): {e}")
+        return
+
+    # --- cálculo por fase (preferencial) + fallback genérico sem compute_vde_net_mj_per_km ---
+    total_mj_km, phases = None, {}
+
+    try:
+        if "phase" in df_cycle.columns:
+            if leg == "EPA":
+                res = epa_city_hwy_from_phase(df_cycle, A1, B1, C1, m) or {}
+                city = res.get("urb_MJ_km") 
+                hwy  = res.get("hwy_MJ_km")  or res.get("hw_MJ_km")  or res.get("hwy_MJ_per_km")
+                if city is not None: phases["city"] = float(city)
+                if hwy  is not None: phases["hwy"]  = float(hwy)
+                print(phases)
+                if res.get("net_comb_MJ_km") is not None:
+                    total_mj_km = float(res["net_comb_MJ_km"])
+                elif ("city" in phases) and ("hwy" in phases):
+                    total_mj_km = 0.55*phases["city"] + 0.45*phases["hwy"]
+
+            else:  # WLTP
+                res = wltp_phases_from_phase(df_cycle, A1, B1, C1, m) or {}
+                for ki, ko in [
+                    ("vde_low_mj_per_km","low"),
+                    ("vde_mid_mj_per_km","mid"),
+                    ("vde_high_mj_per_km","high"),
+                    ("vde_extra_high_mj_per_km","xhigh"),
+                ]:
+                    if res.get(ki) is not None:
+                        phases[ko] = float(res[ki])
+                if res.get("vde_net_mj_per_km") is not None:
+                    total_mj_km = float(res["vde_net_mj_per_km"])
+
+        # --- fallback sem phase/sem total específico: integra direto com compute_vde_net ---
+        if total_mj_km is None:
+            g = df_cycle.copy()
+
+            # garantir colunas mínimas para o integrador
+            if "v_mps" not in g.columns:
+                if "v" in g.columns:
+                    g["v_mps"] = pd.to_numeric(g["v"], errors="coerce")
+                else:
+                    raise ValueError("Cycle has no 'v' (m/s) or 'v_mps' column.")
+            tcol = "t" if "t" in g.columns else ("time_s" if "time_s" in g.columns else None)
+            if tcol is None:
+                raise ValueError("Cycle has no 't' or 'time_s' column.")
+
+            g[tcol] = pd.to_numeric(g[tcol], errors="coerce")
+            g = g.dropna(subset=[tcol, "v_mps"]).sort_values(tcol).reset_index(drop=True)
+            g["dt"] = g[tcol].diff().fillna(0.0).clip(lower=0.0)
+
+            r = compute_vde_net(g, A1, B1, C1, m)  # <- integrador base já usado nas rotinas por fase
+            total_mj_km = float(r["MJ_km"]) if isinstance(r, dict) else float(r)
+
+        # --- UI ---
+        st.info(f"Live preview — VDE_NET: **{total_mj_km:.4f} MJ/km**  ({total_mj_km*277.7778:.1f} Wh/km)")
+        if phases:
+            order = ["city","hwy","low","mid","high","xhigh"]
+            ordered = [k for k in order if k in phases] + [k for k in phases if k not in order]
+            cols = st.columns(min(4, len(ordered)))
+            for i, k in enumerate(ordered):
+                cols[i % len(cols)].metric(k.upper(), f"{phases[k]:.4f} MJ/km")
+
+    except Exception as e:
+        st.warning(f"Preview not available: {e}")
+
+def init_state():
+    if "ctx" not in st.session_state:
+        st.session_state.ctx = {}
+    ctx = st.session_state.ctx
+
+    # defaults só se a chave não existe (setdefault)
+    ctx.setdefault("legislation", "EPA")
+    ctx.setdefault("category", "")
+    ctx.setdefault("make", "")
+    ctx.setdefault("model", "")
+    ctx.setdefault("year", 2024)
+    ctx.setdefault("notes", "")
+
+    # core VDE inputs (mantém se usuário já digitou)
+    ctx.setdefault("A", 120.0)
+    ctx.setdefault("B", 0.00000)        # pode ser < 0, UI já permite
+    ctx.setdefault("C", 0.012000)
+    ctx.setdefault("mass_kg", 1550.0)
+
+    # aero / pneus — só se você realmente usa
+    ctx.setdefault("cd", 0.30)
+    ctx.setdefault("frontal_area_m2", 2.20)
+    ctx.setdefault("cda", 0.66)
+    ctx.setdefault("crr", 0.010)
+    ctx.setdefault('crr1_frac_at_120kph', 0.010)
+    
+
+    # ciclo / origem
+    ctx.setdefault("cycle_df", None)
+    ctx.setdefault("cycle_source", "")
+
+    # baseline / modo
+    ctx.setdefault("baseline_id", None)
+    ctx.setdefault("baseline_dict", None)
+    ctx.setdefault("vde_id_parent", None)
+    ctx.setdefault("from_delta", "Deltas")
+    ctx.setdefault("mode", "From baseline (editable)")
+    # usado para detectar mudança de modo
+    st.session_state.setdefault("_last_mode", ctx["mode"])
+
+
+def reset_ctx(preserve_meta: bool = True):
+    ctx = st.session_state.get("ctx", {})
+    meta = {k: ctx.get(k) for k in ("legislation","category","make","model","year","notes","cycle_df","cycle_source")} if preserve_meta else {}
+    st.session_state.ctx = {
+        **meta,
+        "A": 0.0, "B": 0.0, "C": 0.0, "mass_kg": 1500.0,
+        "from_delta": "Deltas",
+        "delta_rr_N": 0.0, "delta_brake_N": 0.0, "delta_parasitics_N": 0.0, "delta_aero_cdA": 0.0, "delta_mass_kg": 0.0,
+        "vde_id_parent": None, "baseline_dict": None,
+        # … (outros campos voláteis que você usa nas sections)
+    }
+
+    if preserve_meta:
+        for k in ["legislation","category","make","model","year","notes","cycle_df","cycle_source"]:
+            meta[k] = ctx.get(k)
+
+    # zera blocos voláteis
+    volatile_keys = [
+        # core inputs
+        "A","B","C","mass_kg",
+        # deltas
+        "delta_rr_N","delta_brake_N","delta_parasitics_N","delta_aero_Npkph2","delta_aero_cdA",
+        # pneus / rr auxiliares
+        "tire_size","tire_circ_m","diameter_mm","rrc_N_per_kN","crr1_frac_at_120kph",
+        "front_pressure_psi","rear_pressure_psi","rr_load_kpa","smerf",
+        # parasitic/brake
+        "parasitic_A_coef_N","parasitic_B_Npkph","parasitic_C_coef_Npkph2",
+        "brake_A_coef_N","brake_B_Npkph","brake_C_coef_Npkph2",
+        # baseline
+        "baseline_id","baseline_dict","vde_id_parent",
+
+    ]
+    for k in volatile_keys:
+        if k in ctx:
+            del ctx[k]
+
+    # restaura meta, se pedido
+    if preserve_meta:
+        for k, v in meta.items():
+            ctx[k] = v
+
+    # reponha defaults mínimos que você quer após reset (ex: deltas = 0)
+    ctx.setdefault("A", 120.0)
+    ctx.setdefault("B", 0.00000)
+    ctx.setdefault("C", 0.012000)
+    ctx.setdefault("mass_kg", 1550.0)
+    ctx.setdefault("from_delta", "Deltas")
+
+def show_if_exists(col, path, *, width=64, caption=None):
+    p = Path(path) if path else None
+    with col:
+        if p and p.exists():
+            st.image(str(p), width=width, caption=caption)
+
+# -----------------------------
+# Sections
+# -----------------------------
+def vehicle_basics_sidebar():
+    # ============ SIDEBAR: vehicle basics & mode ============ #
+    with st.sidebar:
+        st.header("Vehicle meta")
+
+        # ---- Legislation ----
+        leg_opts = ["WLTP", "EPA", "ABNT (Brazil)"]
+        if ctx.get("legislation") not in leg_opts:
+            ctx["legislation"] = "WLTP"
+
+        c1, c2 = st.columns(2)
+        with c1:
+            ctx["legislation"] = st.selectbox(
+                "Legislation",
+                leg_opts,
+                index=leg_opts.index(ctx["legislation"]),
+                key="sb_leg"
+            )
+        # ---- Category (depends on legislation) ----
+        epa_classes = [
+            "Unknown","Two Seaters","Minicompact Cars","Subcompact Cars","Compact Cars",
+            "Midsize Cars","Large Cars","Small Station Wagons","Midsize Station Wagons",
+            "Small SUVs","Standard SUVs","Minivans","Vans","Small Pickup Trucks","Standard Pickup Trucks"
+        ]
+        wltp_classes = ["Class 1 (<850 kg)", "Class 2 (850–1220 kg)", "Class 3 (>1220 kg)"]
+        if ctx["legislation"] == "EPA":
+            category_list = epa_classes
+        else:
+            category_list = wltp_classes
+        category_list_upper = [c.upper() for c in category_list]
+
+        # default de categoria
+        if ctx.get("category") not in category_list_upper:
+            ctx["category"] = category_list_upper[0]
+
+        with c2:
+            ctx["category"] = st.selectbox(
+                "Category",
+                category_list_upper,
+                index=category_list_upper.index(ctx["category"]),
+                key="sb_cat"
+            )
+
+        # ---- Make / Model ----
+        # tenta ler marcas do DB; se falhar, usa fallback
+        default_makes = [
+            "Toyota","Honda","Nissan","Mitsubishi","Mazda","Subaru","Hyundai","Kia",
+            "Volkswagen","Audi","BMW","Mercedes-Benz","Porsche","Peugeot","Renault","Citroën",
+            "Fiat","Alfa Romeo","Volvo","Jaguar","Land Rover","Skoda","Seat","Opel",
+            "Ford","Chevrolet","Dodge","Chrysler","Jeep","Ram","Cadillac","Buick","GMC",
+            "Lincoln","Tesla","Suzuki","Mini","Smart","Lexus","Infiniti","Acura"
+        ]
+        default_makes_upper = [m.upper() for m in default_makes]
+        try:
+            ensure_db()
+            makes_db = db_list_makes(ctx["legislation"], ctx["category"])  # sua função
+            makes_db = [m.upper() for m in makes_db]
+        except Exception:
+            makes_db = []
+
+        merged_makes = list(dict.fromkeys(makes_db + [m for m in default_makes_upper if m not in makes_db]))
+        if "OTHER (TYPE MANUALLY)" not in merged_makes:
+            merged_makes.append("OTHER (TYPE MANUALLY)")
+
+        c3, c4 = st.columns(2)
+        with c3:
+            make_choice = st.selectbox(
+                "Make/Brand",
+                merged_makes,
+                index=(merged_makes.index(ctx["make"].upper()) if ctx.get("make","").upper() in merged_makes else 0),
+                key="sb_make_sel"
+            )
+            if make_choice == "OTHER (TYPE MANUALLY)":
+                ctx["make"] = st.text_input("Enter custom brand", value=ctx.get("make",""), key="sb_make_text").upper()
+            else:
+                ctx["make"] = make_choice
+
+        with c4:
+            ctx["model"] = st.text_input("Model/Desc.", value=ctx.get("model",""), key="sb_model")
+
+        # ---- Year & Notes ----
+        c5, c6 = st.columns([1, 2])
+        with c5:
+            ctx["year"] = st.number_input("Year", 1900, 2100, int(ctx.get("year", 2024)), step=1, key="sb_year")
+        with c6:
+            ctx["notes"] = st.text_input("Proposal Description", value=ctx.get("notes",""), key="sb_notes")
+
+        # ---- Electrification & Transmission ----
+        elec_opts  = ["ICE", "HEV", "PHEV", "BEV"]
+        trans_opts = ["AT", "AMT", "CVT", "MT", "OT"]
+        c7, c8 = st.columns(2)
+        with c7:
+            ctx["electrification"] = st.selectbox(
+                "Electrification",
+                elec_opts,
+                index=elec_opts.index(ctx.get("electrification","ICE")),
+                key="sb_elec"
+            )
+        with c8:
+            ctx["transmission_type"] = st.selectbox(
+                "Transmission",
+                trans_opts,
+                index=trans_opts.index(ctx.get("transmission_type","AT")),
+                key="sb_trans"
+            )
+
+        st.markdown("---")
+        # ---- Mode (com key para não duplicar) ----
+        prev_mode = ctx.get("mode", "From baseline (editable)")
+        ctx["mode"] = st.radio(
+            "Mode",
+            ["From baseline (editable)", "Define all parameters (no baseline)", "From test (direct coastdown)"],
+            index=["From baseline (editable)", "Define all parameters (no baseline)", "From test (direct coastdown)"].index(prev_mode),
+            key="mode_radio"
+        )
+        if ctx["mode"] != prev_mode:
+            reset_ctx(preserve_meta=True)  # sua função
+            st.rerun()
+
+
 def from_test_section():
     """
     Enter coastdown outputs and test mass directly (as obtained from test).
@@ -210,11 +501,11 @@ def from_test_section():
     mass = colM.number_input("Test mass [kg]", 300.0, 3500.0, float(ctx.get("mass_kg", 1500.0)), 5.0)
 
     # write into ctx (new flow)
-    ctx["A"], ctx["B"], ctx["C"], ctx["mass_kg"] = float(A), float(B), float(C), float(mass)
+    ctx["A"], ctx["B"], ctx["C"], ctx["mass_kg"] = to_float(A), to_float(B), to_float(C), to_float(mass)
 
     # keep old compatibility keys used by your previous compute/save
     st.session_state["abc"] = {"A": float(A), "B": float(B), "C": float(C)}
-    st.session_state["manual_mass"] = float(mass)
+    st.session_state["manual_mass"] = to_float(mass)
 
     st.info("Values stored in ctx and in session_state['abc'] / ['manual_mass'] for compatibility.")
 
@@ -310,7 +601,7 @@ def baseline_picker_and_editor():
                     "vde_id_parent","baseline_A_N","baseline_B_N_per_kph","baseline_C_N_per_kph2","baseline_mass_kg",
 
                     # deltas aplicados sobre o baseline
-                    "delta_rr_N","delta_brake_N","delta_parasitics_N","delta_aero_Npkph2",
+                    "delta_rr_N","delta_brake_N","delta_parasitics_N","delta_aero_Npkph2", "delta_mass_kg",
                 ]
 
     cols_to_show = [c for c in cols_to_show if c in dfv.columns]
@@ -323,7 +614,7 @@ def baseline_picker_and_editor():
     options = dfv.sort_values("id", ascending=False)["id"].astype(int).tolist()
     sel_id = st.selectbox("Pick baseline id", options)
     base = dfv[dfv["id"] == sel_id].iloc[0].to_dict()
-
+    
 
     # Guardar baseline para o fluxo de deltas/save
     st.session_state.ctx["vde_id_parent"] = int(sel_id)
@@ -362,13 +653,16 @@ def baseline_picker_and_editor():
     }
 
 
-    # 6) Choose how to proceed on top of baseline
+
+    prev_from_delta = ctx.get("from_delta", "Deltas")
     ctx["from_delta"] = st.radio(
         "How do you want to calculate on baseline?",
         ["Deltas", "Change Parameters"],
-        index=["Deltas", "Change Parameters"].index(ctx.get("from_delta", "Deltas")),
-        horizontal=True
-    )
+        index=["Deltas", "Change Parameters"].index(prev_from_delta),
+        horizontal=True,
+        key="baseline_flow_radio",   # <<< CHAVE ÚNICA AQUI
+)
+
 
     if ctx["from_delta"] == "Deltas":
         # Preenche A/B/C/massa com o baseline para que o preview/cálculo use isso + deltas
@@ -376,12 +670,13 @@ def baseline_picker_and_editor():
         ctx["B"] = float(base.get("B", base.get("coast_B_N_per_kph", 0.0)) or 0.0)
         ctx["C"] = float(base.get("C", base.get("coast_C_N_per_kph2", 0.0)) or 0.0)
         ctx["mass_kg"] = float(base.get("mass_kg", base.get("inertia_class", 0.0)) or 0.0)
+        
 
         # adições diretas (sem helper), úteis pro ΔB e consistência
         if base.get("crr1_frac_at_120kph") is not None:
-            ctx["crr1_frac_at_120kph"] = float(base["crr1_frac_at_120kph"])
+            ctx["crr1_frac_at_120kph"] = to_float(base["crr1_frac_at_120kph"])
         if base.get("rrc_N_per_kN") is not None:
-            ctx["rrc_N_per_kN"] = float(base["rrc_N_per_kN"])
+            ctx["rrc_N_per_kN"] = to_float(base["rrc_N_per_kN"])
         if base.get("tire_size"):
             ctx["tire_size"] = str(base["tire_size"])
 
@@ -389,10 +684,10 @@ def baseline_picker_and_editor():
             c1, c2 = st.columns(2)
             ctx["delta_rr_N"]         = c1.number_input("ΔRR (A) [N]", value=float(ctx.get("delta_rr_N", 0.0)), step=0.1)
             ctx["delta_aero_cdA"]  = c2.number_input("ΔAero (CdA) [m2]", value=float(ctx.get("delta_aero_cdA", 0.0)), step=0.001, format="%.3f")
-            c3, c4 = st.columns(2)
+            c3, c4, c5 = st.columns(3)
             ctx["delta_brake_N"]      = c3.number_input("ΔBrake (A) [N]", value=float(ctx.get("delta_brake_N", 0.0)), step=0.1)
             ctx["delta_parasitics_N"] = c4.number_input("ΔParasitics (A) [N]", value=float(ctx.get("delta_parasitics_N", 0.0)), step=0.1)
-
+            ctx["delta_mass_kg"] = c5.number_input("ΔMass [kg]", value=float(ctx.get("delta_mass_kg", 0.0)), step=1.0)
     else:
         # Editar parâmetros (mantém suas sections)
         # Carrega o catálogo de pneus se disponível
@@ -439,7 +734,6 @@ def baseline_picker_and_editor():
             "vde_low_mj_per_km","vde_mid_mj_per_km","vde_high_mj_per_km","vde_extra_high_mj_per_km"
         ]
         st.write({k: base.get(k) for k in key_cols if k in base})
-
 
 def rr_section(prefill=None, tires_df=None):
     """
@@ -499,7 +793,6 @@ def rr_section(prefill=None, tires_df=None):
     c5.metric("A_rr ≈ SMERF [N]", f"{A_rr:.2f}")
     c6.metric("B_rr [N/kph]", f"{B_rr:.4f}")
 
-
 def aero_section(prefill=None):
     """
     Usa cda_m2 (DB). Exibe C_aero estimado (N/kph²) como referência.
@@ -508,9 +801,9 @@ def aero_section(prefill=None):
     ctx = st.session_state.ctx
     st.subheader("Aerodynamics")
 
-    cda0 = to_float(prefill.get("cda_m2"), ctx.get("cda_m2")) if prefill else to_float(ctx.get("cda_m2"), 2.20)
+    cda0 = to_float(prefill.get("cda_m2"), ctx.get("cda_m2")) if prefill else to_float(ctx.get("cda_m2"), None)
     cda = st.number_input("CdA [m²]", value=float(cda0 or 0.0), step=0.01, format="%.3f")
-    ctx["cda_m2"] = float(cda)
+    ctx["cda_m2"] = to_float(cda)
 
     RHO = 1.2
     C_aero = 0.5 * RHO * ctx["cda_m2"] * (1/3.6)**2  # N/kph²
@@ -592,26 +885,23 @@ def auxiliaries_section():
             "parasitic_B_Npkph": res["parasitic_B_coef_Npkph"],
             "parasitic_C_Npkph2": res["parasitic_C_coef_Npkph2"],
             "decomp_check_ok": res["check_ok"],
-            "cdA_used_m2": res["cdA_used_m2"],
+            "cda_m2": res["cdA_used_m2"],
         })
 
         # feedback compacto
         c1, c2, c3 = st.columns(3)
         c1.metric("RR α [N]", f"{res['rr_alpha_N']:.2f}")
-        c2.metric("RR β [N/kph]", f"{res['rr_beta_Npkph']:.4f}")
-        c3.metric("Aero C [N/kph²]", f"{res['aero_C_coef_Npkph2']:.5f}")
+        c2.metric("RR β [N/kph]", f"{res['rr_beta_Npkph']:.3f}")
+        c3.metric("Aero C [N/kph²]", f"{res['aero_C_coef_Npkph2']:.3f}")
         d1, d2, d3 = st.columns(3)
         d1.metric("Parasitic A [N]", f"{res['parasitic_A_coef_N']:.2f}")
-        d2.metric("Parasitic B [N/kph]", f"{res['parasitic_B_coef_Npkph']:.5f}")
+        d2.metric("Parasitic B [N/kph]", f"{res['parasitic_B_coef_Npkph']:.3f}")
         d3.metric("Check", "OK" if res["check_ok"] else "Review")
 
-def pwt_section(prefill=None):
-    st.subheader("PWT (minimal)")
-    eff0 = to_float(prefill.get("driveline_eff"), ctx["driveline_eff"]) if prefill else ctx["driveline_eff"]
-    ctx["driveline_eff"] = st.number_input("Driveline efficiency (0–1)", value=float(eff0), min_value=0.0, max_value=1.0, step=0.01)
-
-
 def cycle_section():
+
+    # 1) pegue o estado logo no começo
+    ctx = st.session_state.ctx
     st.subheader("Drive cycle")
     # Validation (B can be < 0)
     errors, warns = validate_core(ctx["A"], ctx["B"], ctx["C"], ctx["mass_kg"])
@@ -651,257 +941,13 @@ def cycle_section():
             st.plotly_chart(fig, use_container_width=True)
 
 # ==============================
-# 6) Compute & Save (function)
+# Compute & Save (function)
 # ==============================
-def compute_and_save2():
-    ctx = st.session_state.ctx
-    st.markdown("---")
-    st.subheader("6) Compute VDE and Save to DB")
 
-    # validation
-    errs, warns = validate_core(ctx["A"], ctx["B"], ctx["C"], ctx["mass_kg"])
-    if warns:
-        for w in warns:
-            st.warning(w)
-    if ctx.get("cycle_df") is None:
-        errs.append("Cycle not loaded. Pick default or upload a CSV.")
-    if errs:
-        for e in errs:
-            st.error(e)
-
-    leg = ctx["legislation"]
-    cat = ctx["category"]
-    make = ctx["make"]
-    model = ctx["model"]
-    year = int(ctx["year"]) if str(ctx["year"]).isdigit() else None
-    notes = ctx["notes"]
-    cycle_name = "FTP-75_HWFET" if leg == "EPA" else "WLTC Class 3"
-    cycle_source = ctx.get("cycle_source", f"standard:{leg}")
-
-    if st.button("Compute VDE_NET and Save", disabled=len(errs) > 0):
-        try:
-            df_cycle = ctx["cycle_df"]
-            A = float(ctx["A"]); B = float(ctx["B"]); C = float(ctx["C"]); mass_kg = float(ctx["mass_kg"])
-
-            # 1) NET over whole cycle (robust to return shape)
-            if ctx["legislation"] == "EPA":
-                r_all = epa_city_hwy_from_phase(df_cycle, A, B, C, mass_kg)
-            elif ctx["legislation"] == "WLTP":
-                r_all = wltp_phases_from_phase(df_cycle, A, B, C, mass_kg)
-            if isinstance(r_all, dict):
-                vde_mjkm_all = float(r_all.get("MJ_km", r_all.get("vde_mj_per_km", 0.0)))
-                wh_km_all = float(r_all.get("Wh_km", vde_mjkm_all * 277.7778))
-                dist_km_all = float(r_all.get("km", 0.0))
-            else:
-                vde_mjkm_all = float(r_all)
-                wh_km_all = vde_mjkm_all * 277.7778
-                k = cycle_kpis(df_cycle); dist_km_all = k["distance_km"] if k else 0.0
-
-            st.success(f"VDE_NET (cycle total) ≈ {vde_mjkm_all:.4f} MJ/km  ({wh_km_all:.1f} Wh/km)  | Distance: {dist_km_all:.2f} km")
-
-            # 2) Insert base row in vde_db
-            row = {
-                "legislation": leg, "category": cat,
-                "make": make, "model": model, "year": year, "notes": notes,
-                "mass_kg": mass_kg,
-                "coast_A_N": A, "coast_B_N_per_kph": B, "coast_C_N_per_kph2": C,
-                "cycle_name": cycle_name, "cycle_source": cycle_source,
-                "vde_net_mj_per_km": vde_mjkm_all
-
-        
-            }
-            if decomp:
-                row.update({
-                    "rr_alpha_N": decomp["rr_alpha_N"],
-                    "rr_beta_Npkph": decomp["rr_beta_Npkph"],
-                    "aero_C_coef_Npkph2": decomp["aero_C_coef_Npkph2"],
-                    "parasitic_A_coef_N": decomp["parasitic_A_coef_N"],
-                    "parasitic_B_Npkph": decomp["parasitic_B_Npkph"],
-                    "parasitic_C_coef_Npkph2": decomp["parasitic_C_coef_Npkph2"],
-                })
-            # depois de calcular vde_mjkm_all...
- 
-            defaults_df = load_vde_defaults(DEFAULTS_PATH)  # já tem no projeto; cacheia se quiser
-
-            decomp = None
-            try:
-                decomp = estimate_aux_from_coastdown(
-                    A_N=A, B_N_per_kph=B, C_N_per_kph2=C,
-                    mass_kg=mass_kg,
-                    category=cat,
-                    electrification=ctx.get("electrification","ICE"),
-                    transmission_type=ctx.get("transmission_type","AT"),
-                    cdA_override_m2=ctx.get("cda_m2"),
-                    defaults_df=defaults_df,
-                )
-            except Exception:
-                pass
-
-            vde_id = insert_vde({k: v for k, v in row.items() if v is not None})
-            st.session_state["vde_id"] = vde_id
-
-            # 3) Per-phase save if cycle has 'phase'
-            if isinstance(df_cycle, pd.DataFrame) and ("phase" in df_cycle.columns):
-                if leg == "EPA":
-                    res = epa_city_hwy_from_phase(df_cycle, A, B, C, mass_kg)
-                    upd = {}
-                    if res.get("urb_MJ") is not None: upd["vde_urb_mj"] = float(res["urb_MJ"])
-                    if res.get("hw_MJ")  is not None: upd["vde_hw_mj"]  = float(res["hw_MJ"])
-                    if res.get("net_comb_MJ_km") is not None:
-                        upd["vde_net_mj_per_km"] = float(res["net_comb_MJ_km"])
-                    if upd: update_vde(vde_id, upd)
-                    st.info("EPA phases saved (urban MJ, highway MJ, combined NET).")
-                elif leg == "WLTP":
-                    res = wltp_phases_from_phase(df_cycle, A, B, C, mass_kg) or {}
-                    upd = {k: float(v) for k, v in res.items() if v is not None}
-                    if upd:
-                        update_vde(vde_id, upd)
-                        st.info("WLTP phase VDEs saved (low/mid/high/xhigh MJ/km).")
-
-            st.success(f"VDE snapshot saved to DB (id={vde_id}). Go to Page 2 to estimate fuel/CO₂.")
-        except Exception as e:
-            st.error(f"Failed to compute/save VDE: {e}")
-def compute_and_save3():
-    ctx = st.session_state.ctx
-    st.markdown("---")
-    st.subheader("6) Compute VDE and Save to DB")
-
-    # validation
-    errs, warns = validate_core(ctx["A"], ctx["B"], ctx["C"], ctx["mass_kg"])
-    for w in (warns or []): st.warning(w)
-    if ctx.get("cycle_df") is None:
-        errs.append("Cycle not loaded. Pick default or upload a CSV.")
-    for e in (errs or []): st.error(e)
-
-    leg  = ctx["legislation"];  cat   = ctx["category"]
-    make = ctx["make"];         model = ctx["model"]
-    year = int(ctx["year"]) if str(ctx["year"]).isdigit() else None
-    notes = ctx["notes"]
-    cycle_name   = "FTP-75_HWFET" if leg == "EPA" else "WLTC Class 3"
-    cycle_source = ctx.get("cycle_source", f"standard:{leg}")
-
-    if st.button("Compute VDE_NET and Save", disabled=bool(errs)):
-        try:
-            df_cycle = ctx["cycle_df"]
-            A = float(ctx["A"]); B = float(ctx["B"]); C = float(ctx["C"]); mass_kg = float(ctx["mass_kg"])
-
-            # 1) compute & show immediate feedback
-            # --- compute using specific routines first ---
-            total_mj_km = None
-            by_phase = {}
-            if isinstance(df_cycle, pd.DataFrame) and "phase" in df_cycle.columns:
-                if leg == "EPA":
-                    res = epa_city_hwy_from_phase(df_cycle, A, B, C, mass_kg) or {}
-                    if res.get("city_MJ_km") is not None: by_phase["city"] = float(res["city_MJ_km"])
-                    if res.get("hwy_MJ_km")  is not None: by_phase["hwy"]  = float(res["hwy_MJ_km"])
-                    if res.get("net_comb_MJ_km") is not None:
-                        total_mj_km = float(res["net_comb_MJ_km"])
-                    elif "city" in by_phase and "hwy" in by_phase:
-                        total_mj_km = 0.55*by_phase["city"] + 0.45*by_phase["hwy"]
-
-                elif leg == "WLTP":
-                    res = wltp_phases_from_phase(df_cycle, A, B, C, mass_kg) or {}
-                    for key_in, key_out in [
-                        ("vde_low_mj_per_km","low"),
-                        ("vde_mid_mj_per_km","mid"),
-                        ("vde_high_mj_per_km","high"),
-                        ("vde_extra_high_mj_per_km","xhigh"),
-                    ]:
-                        if res.get(key_in) is not None:
-                            by_phase[key_out] = float(res[key_in])
-                    if res.get("vde_net_mj_per_km") is not None:
-                        total_mj_km = float(res["vde_net_mj_per_km"])
-
-            # fallback (sem phase / sem total calculado)
-            if total_mj_km is None:
-                r_all = compute_vde_net_mj_per_km(df_cycle, A, B, C, mass_kg)
-                total_mj_km = float(r_all["MJ_km"]) if isinstance(r_all, dict) else float(r_all)
-
-
-            vde_mjkm_all = float(r_all["MJ_km"]) if isinstance(r_all, dict) else float(r_all)
-            by_phase = vde_by_phase(df_cycle, leg, A, B, C, mass_kg)
-            show_vde_feedback(vde_mjkm_all, by_phase)
-
-            # 2) estimate auxiliaries (optional)
-            decomp = None
-            try:
-                defaults_df = load_vde_defaults(DEFAULTS_PATH)
-                decomp = estimate_aux_from_coastdown(
-                    A_N=A, B_N_per_kph=B, C_N_per_kph2=C, mass_kg=mass_kg,
-                    category=cat,
-                    electrification=ctx.get("electrification","ICE"),
-                    transmission_type=ctx.get("transmission_type","AT"),
-                    cdA_override_m2=ctx.get("cda_m2"),
-                    defaults_df=defaults_df,
-                )
-            except Exception:
-                pass
-
-            # 3) base row (always)
-            row = {
-                "legislation": leg, "category": cat,
-                "make": make, "model": model, "year": year, "notes": notes,
-                "mass_kg": mass_kg,
-                "coast_A_N": A, "coast_B_N_per_kph": B, "coast_C_N_per_kph2": C,
-                "cycle_name": cycle_name, "cycle_source": cycle_source,
-                "vde_net_mj_per_km": total_mj_km,
-            }
-
-            # 3a) RR fields coming from rr_section (if present in ctx)
-            for k in [
-                "tire_size", "tire_circ_m", "diameter_mm",
-                "rrc_N_per_kN", "crr1_frac_at_120kph",
-                "front_pressure_psi", "rear_pressure_psi",
-                "rr_load_kpa", "smerf",
-            ]:
-                v = ctx.get(k)
-                if v not in (None, ""):
-                    row[k] = v
-
-            # 3b) parasitic + brake (if present in ctx)
-            for k in [
-                "parasitic_A_coef_N","parasitic_B_Npkph","parasitic_C_coef_Npkph2",
-                "brake_A_coef_N","brake_B_Npkph","brake_C_coef_Npkph2",
-            ]:
-                v = ctx.get(k)
-                if v is not None:
-                    row[k] = v
-
-            # 3c) merge decomposition outputs (optional)
-            if decomp:
-                row.update({k: float(v) for k, v in {
-                    "rr_alpha_N": decomp.get("rr_alpha_N"),
-                    "rr_beta_Npkph": decomp.get("rr_beta_Npkph"),
-                    "aero_C_coef_Npkph2": decomp.get("aero_C_coef_Npkph2"),
-                    "parasitic_A_coef_N": decomp.get("parasitic_A_coef_N"),
-                    "parasitic_B_Npkph": decomp.get("parasitic_B_Npkph"),
-                    "parasitic_C_coef_Npkph2": decomp.get("parasitic_C_coef_Npkph2"),
-                }.items() if v is not None})
-
-            # 4) insert
-            vde_id = insert_vde({k: v for k, v in row.items() if v is not None})
-            st.session_state["vde_id"] = vde_id
-
-            # 5) per-phase save (if cycle has 'phase')
-            if isinstance(df_cycle, pd.DataFrame) and "phase" in df_cycle.columns:
-                if leg == "EPA":
-                    res = epa_city_hwy_from_phase(df_cycle, A, B, C, mass_kg) or {}
-                    upd = {}
-                    if res.get("urb_MJ") is not None: upd["vde_urb_mj"] = float(res["urb_MJ"])
-                    if res.get("hw_MJ")  is not None: upd["vde_hw_mj"]  = float(res["hw_MJ"])
-                    if res.get("net_comb_MJ_km") is not None: upd["vde_net_mj_per_km"] = float(res["net_comb_MJ_km"])
-                else:  # WLTP
-                    res = wltp_phases_from_phase(df_cycle, A, B, C, mass_kg) or {}
-                    upd = {k: float(v) for k, v in res.items() if v is not None}
-                if upd: update_vde(vde_id, upd)
-
-            st.success(f"Saved VDE snapshot (id={vde_id}).")
-        except Exception as e:
-            st.error(f"Failed to compute/save VDE: {e}")
 def compute_and_save():
     ctx = st.session_state.ctx
     st.markdown("---")
-    st.subheader("6) Compute VDE and Save to DB")
+    st.subheader("Compute VDE and Save to DB")
 
     # --- validação básica ---
     errs, warns = validate_core(ctx["A"], ctx["B"], ctx["C"], ctx["mass_kg"])
@@ -909,43 +955,43 @@ def compute_and_save():
     if ctx.get("cycle_df") is None:
         errs.append("Cycle not loaded. Pick default or upload a CSV.")
     for e in (errs or []): st.error(e)
-    if errs:  # ainda mostra o botão, mas desabilita
-        disabled_btn = True
-    else:
-        disabled_btn = False
+    disabled_btn = bool(errs)
 
     # --- meta ---
-    leg  = ctx["legislation"];  cat   = ctx["category"]
-    make = ctx["make"];         model = ctx["model"]
+    leg  = str(ctx["legislation"])
+    cat  = ctx["category"]
+    make = ctx["make"]; model = ctx["model"]
     year = int(ctx["year"]) if str(ctx["year"]).isdigit() else None
     notes = ctx["notes"]
-    cycle_name   = "FTP-75_HWFET" if leg == "EPA" else "WLTC Class 3"
+    cycle_name   = default_cycle_for_legislation(leg)   # nome padrão
     cycle_source = ctx.get("cycle_source", f"standard:{leg}")
 
-    if st.button("Compute VDE_NET and Save", disabled=disabled_btn):
+    if st.button("Compute VDE_NET and Save", key="btn_compute_save_main", disabled=disabled_btn):
         try:
             df_cycle = ctx["cycle_df"]
             A = float(ctx["A"]); B = float(ctx["B"]); C = float(ctx["C"]); mass_kg = float(ctx["mass_kg"])
 
-            # --- aplica DELTAS → A1/B1/C1 ---
-            d_rr   = float(ctx.get("delta_rr_N", 0.0))
-            d_br   = float(ctx.get("delta_brake_N", 0.0))
-            d_par  = float(ctx.get("delta_parasitics_N", 0.0))
-            d_aero = float(ctx.get("delta_aero_cdA", 0.0)) * 0.0472068
-            frac120 = float(ctx.get("crr1_frac_at_120kph", 0.0))
-
-            dA_rr = d_rr
+            # --- APLICA DELTAS → A1/B1/C1 ---
+            d_rr   = to_float(ctx.get("delta_rr_N"), 0.0)
+            d_br   = to_float(ctx.get("delta_brake_N"), 0.0)
+            d_par  = to_float(ctx.get("delta_parasitics_N"), 0.0)
+            d_cda  = to_float(ctx.get("delta_aero_cdA"), 0.0) * 0.0472068  # CdA→C (N/kph²)
+            d_mass  = to_float(ctx.get("delta_mass_kg"), 0.0) # CdA→C (N/kph²)
+            frac120 = to_float(ctx.get("crr1_frac_at_120kph"), 0.0)
+            
             dB_rr = d_rr * (frac120 / 120.0) if frac120 else 0.0
-            A1 = A + dA_rr + d_br + d_par
+            A1 = A + d_rr + d_br + d_par
             B1 = B + dB_rr
-            C1 = C + d_aero
+            C1 = C + d_cda
+            mass_kg1 = mass_kg + d_mass
 
-            # --- cálculo específico (prioritário) ---
+            # --- CÁLCULO ESPECÍFICO POR FASE (prioritário) ---
             total_mj_km = None
             by_phase = {}
-            if isinstance(df_cycle, pd.DataFrame) and "phase" in df_cycle.columns:
-                if str(leg).upper() == "EPA":
-                    res = (epa_city_hwy_from_phase(df_cycle, A1, B1, C1, mass_kg) or {})
+            if isinstance(df_cycle, pd.DataFrame) and ("phase" in df_cycle.columns):
+                if leg.upper() == "EPA":
+                    res = epa_city_hwy_from_phase(df_cycle, A1, B1, C1, mass_kg1) or {}
+                    # padroniza chaves internas do preview
                     city = res.get("city_MJ_km") or res.get("urb_MJ_km") or res.get("city_MJ_per_km")
                     hwy  = res.get("hwy_MJ_km")  or res.get("hw_MJ_km")  or res.get("hwy_MJ_per_km")
                     if city is not None: by_phase["city"] = float(city)
@@ -954,8 +1000,9 @@ def compute_and_save():
                         total_mj_km = float(res["net_comb_MJ_km"])
                     elif ("city" in by_phase) and ("hwy" in by_phase):
                         total_mj_km = 0.55*by_phase["city"] + 0.45*by_phase["hwy"]
+
                 else:  # WLTP
-                    res = (wltp_phases_from_phase(df_cycle, A1, B1, C1, mass_kg) or {})
+                    res = wltp_phases_from_phase(df_cycle, A1, B1, C1, mass_kg1) or {}
                     mapping = [
                         ("vde_low_mj_per_km","low"), ("vde_mid_mj_per_km","mid"),
                         ("vde_high_mj_per_km","high"), ("vde_extra_high_mj_per_km","xhigh")
@@ -966,21 +1013,22 @@ def compute_and_save():
                     if res.get("vde_net_mj_per_km") is not None:
                         total_mj_km = float(res["vde_net_mj_per_km"])
 
-            # --- fallback genérico (sem phase/total específico) ---
+            # --- fallback (sem phase/sem total específico) ---
             if total_mj_km is None:
                 r_all = compute_vde_net_mj_per_km(df_cycle, A1, B1, C1, mass_kg)
                 total_mj_km = float(r_all["MJ_km"]) if isinstance(r_all, dict) else float(r_all)
 
-            # --- feedback imediato inline ---
+            # --- feedback imediato ---
             st.info(f"VDE (NET): **{total_mj_km:.4f} MJ/km**  ({total_mj_km*277.7778:.1f} Wh/km)")
             if by_phase:
                 order = ["city","hwy","low","mid","high","xhigh"]
                 keys = [k for k in order if k in by_phase] + [k for k in by_phase if k not in order]
                 cols = st.columns(min(4, len(keys)))
                 for i, k in enumerate(keys):
-                    cols[i % len(cols)].metric(k.upper(), f"{float(by_phase[k]):.4f} MJ/km")
+                    label = {"city":"CITY", "hwy":"HWY"}.get(k, k.upper())
+                    cols[i % len(cols)].metric(label, f"{float(by_phase[k]):.4f} MJ/km")
 
-            # --- (opcional) decompor auxiliares a partir de A1/B1/C1 ---
+            # --- (opcional) decompor auxiliares com A1/B1/C1 ---
             decomp = None
             try:
                 defaults_df = load_vde_defaults(DEFAULTS_PATH)
@@ -993,9 +1041,9 @@ def compute_and_save():
                     defaults_df=defaults_df,
                 )
             except Exception:
-                decomp = None  # segue sem
+                pass
 
-            # --- monta row para salvar (A1/B1/C1 + deltas + baseline mínimo) ---
+            # --- monta row (usa A1/B1/C1 e inclui fases por km se disponíveis) ---
             row = {
                 "legislation": leg, "category": cat,
                 "make": make, "model": model, "year": year, "notes": notes,
@@ -1003,26 +1051,36 @@ def compute_and_save():
                 "coast_A_N": A1, "coast_B_N_per_kph": B1, "coast_C_N_per_kph2": C1,
                 "cycle_name": cycle_name, "cycle_source": cycle_source,
                 "vde_net_mj_per_km": total_mj_km,
-                # deltas
-                "delta_rr_N": d_rr,
-                "delta_brake_N": d_br,
-                "delta_parasitics_N": d_par,
-                "delta_aero_Npkph2": d_aero,
+                # deltas aplicados
+                "delta_rr_N": d_rr, "delta_brake_N": d_br, "delta_mass_kg": d_mass,
+                "delta_parasitics_N": d_par, "delta_aero_Npkph2": d_cda,
             }
 
-            # RR extras e pneus (se estiverem no ctx)
-            for k in ["tire_size","rrc_N_per_kN",
-                      "front_pressure_psi","rear_pressure_psi","rr_load_kpa","smerf"]:
-                v = ctx.get(k)
-                if v not in (None, ""):
-                    row[k] = v
+            # EPA phases → DB
+            if "city" in by_phase: row["vde_urb_mj_per_km"] = float(by_phase["city"])
+            if "hwy"  in by_phase: row["vde_hw_mj_per_km"]  = float(by_phase["hwy"])
+            # WLTP phases → DB
+            if "low"  in by_phase: row["vde_low_mj_per_km"]        = float(by_phase["low"])
+            if "mid"  in by_phase: row["vde_mid_mj_per_km"]        = float(by_phase["mid"])
+            if "high" in by_phase: row["vde_high_mj_per_km"]       = float(by_phase["high"])
+            if "xhigh" in by_phase: row["vde_extra_high_mj_per_km"] = float(by_phase["xhigh"])
 
-            # parasitic + brake (se estiverem no ctx)
-            for k in ["parasitic_A_coef_N","parasitic_B_Npkph","parasitic_C_coef_Npkph2",
-                      "brake_A_coef_N","brake_B_Npkph","brake_C_coef_Npkph2"]:
-                v = ctx.get(k)
-                if v is not None:
-                    row[k] = v
+            # campos extras do ctx (se existirem)
+            for k in [
+                "engine_type","engine_model","engine_size_l","engine_aspiration",
+                "transmission_type","transmission_model","drive_type",
+                "inertia_class","cda_m2","weight_dist_fr_pct","payload_kg",
+                "mro_kg","options_kg","wltp_category",
+                "tire_size","tire_rr_note","smerf","front_pressure_psi","rear_pressure_psi",
+                "rrc_N_per_kN","crr1_frac_at_120kph","rr_load_kpa",
+                "trans_A_coef_N","trans_B_coef_Npkph","trans_C_coef_Npkph2",
+                "brake_A_coef_N","brake_B_coef_Npkph","brake_C_coef_Npkph2",
+                "parasitic_A_coef_N","parasitic_B_coef_Npkph","parasitic_C_coef_Npkph2",
+                "aero_C_coef_Npkph2",
+                "rr_alpha_N","rr_beta_Npkph","rr_a_Npkph2","rr_b_N","rr_c_Npkph",
+            ]:
+                v = ctx.get(k, None)
+                if v not in (None, ""): row[k] = v
 
             # baseline mínimo (se veio do picker)
             base = ctx.get("baseline_dict")
@@ -1046,165 +1104,50 @@ def compute_and_save():
                     "parasitic_C_coef_Npkph2": decomp.get("parasitic_C_coef_Npkph2"),
                 }.items() if v is not None})
 
-            # --- insert ---
+            # ... depois de montar `row` ...
+            row = {k: v for k, v in row.items()
+                if v is not None
+                and (not isinstance(v, str) or v.strip() != "")
+                and (not isinstance(v, (int, float)) or math.isfinite(float(v)))}
+
+
+            # --- INSERT ---
             vde_id = insert_vde({k: v for k, v in row.items() if v is not None})
             st.session_state["vde_id"] = vde_id
 
-            # --- salvar por fase (se houver 'phase') com os MESMOS A1/B1/C1 ---
+            # --- UPDATE por fase (reusa A1/B1/C1) ---
             if isinstance(df_cycle, pd.DataFrame) and "phase" in df_cycle.columns:
-                if str(leg).upper() == "EPA":
+                upd = {}
+                if leg.upper() == "EPA":
                     res = epa_city_hwy_from_phase(df_cycle, A1, B1, C1, mass_kg) or {}
-                    upd = {}
-                    # aceita vários nomes de chave
-                    if res.get("urb_MJ") is not None: upd["vde_urb_mj"] = float(res["urb_MJ"])
-                    if res.get("hw_MJ")  is not None: upd["vde_hw_mj"]  = float(res["hw_MJ"])
-                    if res.get("net_comb_MJ_km") is not None: upd["vde_net_mj_per_km"] = float(res["net_comb_MJ_km"])
-                else:  # WLTP
+                    if res.get("urb_MJ")  is not None: upd["vde_urb_mj"] = float(res["urb_MJ"])
+                    if res.get("hw_MJ")   is not None: upd["vde_hw_mj"]  = float(res["hw_MJ"])
+                    if res.get("net_comb_MJ_km") is not None:
+                        upd["vde_net_mj_per_km"] = float(res["net_comb_MJ_km"])
+                else:
                     res = wltp_phases_from_phase(df_cycle, A1, B1, C1, mass_kg) or {}
-                    upd = {k: float(v) for k, v in res.items() if v is not None}
+                    for k in ("vde_low_mj_per_km","vde_mid_mj_per_km","vde_high_mj_per_km","vde_extra_high_mj_per_km"):
+                        if res.get(k) is not None: upd[k] = float(res[k])
+                    if res.get("vde_net_mj_per_km") is not None:
+                        upd["vde_net_mj_per_km"] = float(res["vde_net_mj_per_km"])
                 if upd:
                     update_vde(vde_id, upd)
 
             st.success(f"Saved VDE snapshot (id={vde_id}).")
+            # limpa estado volátil e volta “zerado” mantendo meta
+            reset_ctx(preserve_meta=True)
+            st.rerun()
+
         except Exception as e:
             st.error(f"Failed to compute/save VDE: {e}")
 
 # ====================================
-# 7) Edit / Delete (function)
+# Edit / Delete (function)
 # ====================================
-def edit_or_delete2():
-    st.markdown("---")
-    st.subheader("7) ✏️ Edit / Delete an existing VDE row")
 
-    rows = fetchall("""
-        SELECT id, legislation, category, make, model, year,
-               coast_A_N, coast_B_N_per_kph, coast_C_N_per_kph2, mass_kg,
-               notes
-        FROM vde_db
-        ORDER BY id DESC
-        LIMIT 100
-    """)
-
-    if not rows:
-        st.info("No VDE rows saved yet.")
-        return
-
-    labels = [
-        f'#{r["id"]} — {r["legislation"]} | {r["category"]} | '
-        f'{r["make"]} {r["model"]} ({r.get("year","")})'
-        for r in rows
-    ]
-    idx = st.selectbox("Pick a VDE to edit/delete", list(range(len(labels))), format_func=lambda i: labels[i])
-    sel = rows[idx]
-    vde_id_edit = sel["id"]
-    st.caption(f"Editing VDE id: {vde_id_edit}")
-
-    # optional: linked scenarios count
-    try:
-        dep = fetchall("SELECT COUNT(*) AS n FROM fuelcons_db WHERE vde_id=?", (vde_id_edit,))
-        st.caption(f'Linked scenarios in fuelcons_db: {dep[0]["n"] if dep else 0}')
-    except Exception:
-        pass
-
-    # --- Edit form (B can be negative) ---
-    with st.form(key=f"edit_vde_{vde_id_edit}"):
-        c1, c2, c3, c4 = st.columns(4)
-        A_edit = c1.number_input("A [N]", 0.0, 5000.0, float(sel["coast_A_N"] or 0.0), 0.1)
-        B_edit = c2.number_input("B [N/kph]", -5.0, 5.0, float(sel["coast_B_N_per_kph"] or 0.0), 0.01)
-        C_edit = c3.number_input("C [N/kph²]", 0.000000, 1.000000, float(sel["coast_C_N_per_kph2"] or 0.0), 0.000001)
-        M_edit = c4.number_input("Mass [kg]", 1.0, 4000.0, float(sel["mass_kg"] or 0.0), 1.0)
-
-        c5, c6, c7 = st.columns(3)
-        make_edit  = c5.text_input("Make",  value=sel["make"] or "")
-        model_edit = c6.text_input("Model", value=sel["model"] or "")
-        year_edit  = c7.number_input("Year", 1990, 2100, int(sel["year"] or 2020))
-
-        notes_edit = st.text_area("Notes", value=sel["notes"] or "")
-
-        save_btn = st.form_submit_button("💾 Save changes")
-        if save_btn:
-            try:
-                # 1) Persist basic fields
-                update_vde(vde_id_edit, {
-                    "coast_A_N": A_edit,
-                    "coast_B_N_per_kph": B_edit,
-                    "coast_C_N_per_kph2": C_edit,
-                    "mass_kg": M_edit,
-                    "make": make_edit,
-                    "model": model_edit,
-                    "year": int(year_edit),
-                    "notes": notes_edit,
-                })
-
-                try:
-                    defaults_df = load_vde_defaults(DEFAULTS_PATH)
-                    decomp = estimate_aux_from_coastdown(
-                        A_N=A_edit, B_N_per_kph=B_edit, C_N_per_kph2=C_edit, mass_kg=M_edit,
-                        category=sel.get("category",""),
-                        electrification=sel.get("electrification","ICE"),
-                        transmission_type=sel.get("transmission_type","AT"),
-                        cdA_override_m2=sel.get("cda_m2"),
-                        defaults_df=defaults_df,
-                    )
-                    update_vde(vde_id_edit, {
-                        "rr_alpha_N": decomp["rr_alpha_N"],
-                        "rr_beta_Npkph": decomp["rr_beta_Npkph"],
-                        "aero_C_coef_Npkph2": decomp["aero_C_coef_Npkph2"],
-                        "parasitic_A_coef_N": decomp["parasitic_A_coef_N"],
-                        "parasitic_B_Npkph": decomp["parasitic_B_Npkph"],
-                        "parasitic_C_coef_Npkph2": decomp["parasitic_C_coef_Npkph2"],
-                    })
-                except Exception:
-                    pass
-
-
-                # 2) Recompute using default cycle for row's legislation
-                leg_row = sel.get("legislation", "EPA")
-                try:
-                    df_cycle = default_cycle_for_legislation(leg_row)
-                except Exception:
-                    df_cycle = None
-
-                if isinstance(df_cycle, pd.DataFrame) and not df_cycle.empty:
-                    r_all = compute_vde_net_mj_per_km(df_cycle, A_edit, B_edit, C_edit, M_edit)
-                    vde_mjkm_all = float(r_all.get("MJ_km")) if isinstance(r_all, dict) else float(r_all)
-                    upd = {"vde_net_mj_per_km": vde_mjkm_all}
-
-                    if "phase" in df_cycle.columns:
-                        if leg_row == "EPA":
-                            res = epa_city_hwy_from_phase(df_cycle, A_edit, B_edit, C_edit, M_edit)
-                            if res.get("urb_MJ") is not None: upd["vde_urb_mj"] = float(res["urb_MJ"])
-                            if res.get("hw_MJ")  is not None: upd["vde_hw_mj"]  = float(res["hw_MJ"])
-                            if res.get("net_comb_MJ_km") is not None:
-                                upd["vde_net_mj_per_km"] = float(res["net_comb_MJ_km"])
-                        elif leg_row == "WLTP":
-                            res = wltp_phases_from_phase(df_cycle, A_edit, B_edit, C_edit, M_edit) or {}
-                            upd.update({k: float(v) for k, v in res.items() if v is not None})
-
-                    update_vde(vde_id_edit, upd)
-                    st.success("Row updated and VDE recomputed.")
-                else:
-                    st.warning("Row updated, but default cycle could not be loaded; phase VDE not recomputed.")
-
-                st.experimental_rerun()
-            except Exception as e:
-                st.error(f"Failed to update: {e}")
-
-    # --- Delete block (with confirmation) ---
-    with st.expander("🗑️ Delete this VDE row"):
-        st.warning("This action is irreversible. Linked fuelcons_db rows will be deleted (ON DELETE CASCADE).")
-        confirm_text = st.text_input("Type DELETE to confirm:")
-        delete_disabled = (confirm_text != "DELETE")
-        if st.button(f"Delete VDE id={vde_id_edit}", type="secondary", disabled=delete_disabled):
-            try:
-                delete_row("vde_db", vde_id_edit)
-                st.success(f"VDE id={vde_id_edit} deleted.")
-                st.experimental_rerun()
-            except Exception as e:
-                st.error(f"Failed to delete: {e}")
 def edit_or_delete():
     st.markdown("---")
-    st.subheader("7) ✏️ Edit / Delete an existing VDE row")
+    st.subheader("✏️ Edit / Delete an existing VDE row")
 
     rows = fetchall("""
         SELECT id, legislation, category, make, model, year,
@@ -1251,6 +1194,7 @@ def edit_or_delete():
         save_btn = st.form_submit_button("💾 Save changes")
         if save_btn:
             try:
+                
                 # 1) Persist core fields
                 update_vde(vde_id_edit, {
                     "coast_A_N": A_edit,
@@ -1267,8 +1211,7 @@ def edit_or_delete():
                 rr_updates = {}
                 if "ctx" in st.session_state:
                     for k in [
-                        "tire_size", "tire_circ_m", "diameter_mm",
-                        "rrc_N_per_kN", "crr1_frac_at_120kph",
+                        "tire_size","rrc_N_per_kN", "crr1_frac_at_120kph",
                         "front_pressure_psi", "rear_pressure_psi",
                         "rr_load_kpa", "smerf",
                     ]:
@@ -1282,7 +1225,7 @@ def edit_or_delete():
                 pb_updates = {}
                 if "ctx" in st.session_state:
                     for k in [
-                        "parasitic_A_coef_N","parasitic_B_Npkph","parasitic_C_coef_Npkph2",
+                        "parasitic_A_coef_N","parasitic_B_coef_Npkph","parasitic_C_coef_Npkph2",
                         "brake_A_coef_N","brake_B_Npkph","brake_C_coef_Npkph2",
                     ]:
                         v = st.session_state.ctx.get(k)
@@ -1307,7 +1250,7 @@ def edit_or_delete():
                         "rr_beta_Npkph": decomp.get("rr_beta_Npkph"),
                         "aero_C_coef_Npkph2": decomp.get("aero_C_coef_Npkph2"),
                         "parasitic_A_coef_N": decomp.get("parasitic_A_coef_N"),
-                        "parasitic_B_Npkph": decomp.get("parasitic_B_Npkph"),
+                        "parasitic_B_coef_Npkph": decomp.get("parasitic_B_Npkph"),
                         "parasitic_C_coef_Npkph2": decomp.get("parasitic_C_coef_Npkph2"),
                     }.items() if v is not None})
                 except Exception:
@@ -1370,7 +1313,10 @@ def edit_or_delete():
                     st.warning("Row updated, but default cycle could not be loaded; phase VDE not recomputed.")
 
                 st.success("Row updated.")
-                st.experimental_rerun()
+                reset_ctx(preserve_meta=True)
+                st.rerun()
+
+
             except Exception as e:
                 st.error(f"Failed to update: {e}")
 
@@ -1383,174 +1329,87 @@ def edit_or_delete():
             try:
                 delete_row("vde_db", vde_id_edit)
                 st.success(f"VDE id={vde_id_edit} deleted.")
-                st.experimental_rerun()
+                reset_ctx(preserve_meta=True)
+                st.rerun()
+
             except Exception as e:
                 st.error(f"Failed to delete: {e}")
 
 
-def show_live_vde_preview2():
-    ctx = st.session_state.get("ctx", {})
-    df_cycle = ctx.get("cycle_df")
-    if not isinstance(df_cycle, pd.DataFrame) or df_cycle.empty:
-        return
-
-    try:
-        A = float(ctx["A"]); B = float(ctx["B"]); C = float(ctx["C"]); mass_kg = float(ctx["mass_kg"])
-        leg = str(ctx.get("legislation","")).upper()
-    except Exception:
-        return
-
-    try:
-        total_mj_km = None
-        phases = {}
-
-        if "phase" in df_cycle.columns:
-            if leg == "EPA":
-                res = epa_city_hwy_from_phase(df_cycle, A, B, C, mass_kg) or {}
-
-                # aceita ambos os esquemas de chave
-                city = (res.get("city_MJ_km") or res.get("urb_MJ_km") or res.get("city_MJ_per_km"))
-                hwy  = (res.get("hwy_MJ_km")  or res.get("hw_MJ_km")  or res.get("hwy_MJ_per_km"))
-
-                if city is not None: phases["city"] = float(city)
-                if hwy  is not None: phases["hwy"]  = float(hwy)
-
-                if res.get("net_comb_MJ_km") is not None:
-                    total_mj_km = float(res["net_comb_MJ_km"])
-                elif ("city" in phases) and ("hwy" in phases):
-                    total_mj_km = 0.55*phases["city"] + 0.45*phases["hwy"]
-
-            elif leg == "WLTP":
-                res = wltp_phases_from_phase(df_cycle, A, B, C, mass_kg) or {}
-                for key_in, key_out in [
-                    ("vde_low_mj_per_km","low"),
-                    ("vde_mid_mj_per_km","mid"),
-                    ("vde_high_mj_per_km","high"),
-                    ("vde_extra_high_mj_per_km","xhigh"),
-                ]:
-                    if res.get(key_in) is not None:
-                        phases[key_out] = float(res[key_in])
-                if res.get("vde_net_mj_per_km") is not None:
-                    total_mj_km = float(res["vde_net_mj_per_km"])
-
-        # fallback só se não deu pra computar com as específicas
-        if total_mj_km is None:
-            r_all = compute_vde_net_mj_per_km(df_cycle, A, B, C, mass_kg)
-            total_mj_km = float(r_all["MJ_km"]) if isinstance(r_all, dict) else float(r_all)
-
-        wh_km = total_mj_km * 277.7778
-        try:
-            kpis = cycle_kpis(df_cycle); dist_km = float(kpis["distance_km"]) if kpis else None
-        except Exception:
-            dist_km = None
-
-        st.info(
-            f"Live preview — VDE_NET: **{total_mj_km:.4f} MJ/km** "
-            f"({wh_km:.1f} Wh/km)" + (f"  |  Dist: {dist_km:.2f} km" if dist_km is not None else "")
-        )
-
-        if phases:
-            order = ["city","hwy","low","mid","high","xhigh"]
-            ordered = [k for k in order if k in phases] + [k for k in phases if k not in order]
-            cols = st.columns(min(4, len(ordered)))
-            for i, k in enumerate(ordered):
-                cols[i % len(cols)].metric(k.upper(), f"{phases[k]:.4f} MJ/km")
-
-    except Exception as e:
-        st.warning(f"Preview not available: {e}")
-
-def show_live_vde_preview():
-    ctx = st.session_state.get("ctx", {})
-    df_cycle = ctx.get("cycle_df")
-    if not isinstance(df_cycle, pd.DataFrame) or df_cycle.empty:
-        return
-
-    try:
-        A, B, C = float(ctx["A"]), float(ctx["B"]), float(ctx["C"])
-        m = float(ctx["mass_kg"])
-        leg = str(ctx.get("legislation","")).upper()
-        A1, B1, C1 = apply_coastdown_deltas(
-            A, B, C,
-            delta_rr_N=ctx.get("delta_rr_N", 0.0),
-            delta_brake_N=ctx.get("delta_brake_N", 0.0),
-            delta_parasitics_N=ctx.get("delta_parasitics_N", 0.0),
-            delta_aero_Npkph2=ctx.get("delta_aero_cdA", 0.0)* 0.0472068,
-            crr1_frac_at_120kph=ctx.get("crr1_frac_at_120kph", 0.0)
-        )
-    except Exception:
-        return
-
-    total_mj_km, phases = None, {}
-    try:
-        if "phase" in df_cycle.columns:
-            if leg == "EPA":
-                res = epa_city_hwy_from_phase(df_cycle, A1, B1, C1, m) or {}
-                city = res.get("city_MJ_km") or res.get("urb_MJ_km") or res.get("city_MJ_per_km")
-                hwy  = res.get("hwy_MJ_km")  or res.get("hw_MJ_km")  or res.get("hwy_MJ_per_km")
-                if city is not None: phases["city"] = float(city)
-                if hwy  is not None: phases["hwy"]  = float(hwy)
-                if res.get("net_comb_MJ_km") is not None:
-                    total_mj_km = float(res["net_comb_MJ_km"])
-                elif ("city" in phases) and ("hwy" in phases):
-                    total_mj_km = 0.55*phases["city"] + 0.45*phases["hwy"]
-            else:  # WLTP
-                res = wltp_phases_from_phase(df_cycle, A1, B1, C1, m) or {}
-                for ki, ko in [
-                    ("vde_low_mj_per_km","low"),
-                    ("vde_mid_mj_per_km","mid"),
-                    ("vde_high_mj_per_km","high"),
-                    ("vde_extra_high_mj_per_km","xhigh"),
-                ]:
-                    if res.get(ki) is not None:
-                        phases[ko] = float(res[ki])
-                if res.get("vde_net_mj_per_km") is not None:
-                    total_mj_km = float(res["vde_net_mj_per_km"])
-
-        # fallback (sem phase/total)
-        if total_mj_km is None:
-            r = compute_vde_net_mj_per_km(df_cycle, A1, B1, C1, m)
-            total_mj_km = float(r["MJ_km"]) if isinstance(r, dict) else float(r)
-
-        st.info(f"Live preview — VDE_NET: **{total_mj_km:.4f} MJ/km**  ({total_mj_km*277.7778:.1f} Wh/km)")
-        if phases:
-            order = ["city","hwy","low","mid","high","xhigh"]
-            ordered = [k for k in order if k in phases] + [k for k in phases if k not in order]
-            cols = st.columns(min(4, len(ordered)))
-            for i, k in enumerate(ordered):
-                cols[i % len(cols)].metric(k.upper(), f"{phases[k]:.4f} MJ/km")
-    except Exception as e:
-        st.warning(f"Preview not available: {e}")
-
-
-def init_state():
-    if "ctx" not in st.session_state:
-        st.session_state.ctx = {
-            "legislation": "WLTP",
-            "category": "",
-            "make": "",
-            "model": "",
-            "year": 2024,
-            "notes": "",
-            # core VDE inputs
-            "A": 120.0, "B": 0.00000, "C": 0.012000, "mass_kg": 1550.0,
-            # aero / tires (optional, keep if used in your DB)
-            "cd": 0.30, "frontal_area_m2": 2.20, "crr": 0.010,
-            # PWT (optional minimal)
-            "driveline_eff": 0.90,
-            # cycle
-            "cycle_df": None,
-            "cycle_source": "",
-            # baseline id
-            "baseline_id": None,
-            # mode
-            "mode": "From baseline (editable)"
-        }
-    
-
 # -----------------------------
-# Layout
+# MAIN
 # -----------------------------
+
 def main():
+    # --- page setup ---
+    st.set_page_config(page_title="EcoDrive — VDE", layout="wide")
+    ensure_db()
+    
+    init_state()
+    
+    ctx = st.session_state.ctx
+    print(ctx)
+    # ============ HEADER ============ #
+    h1, i1, i2, i3 = st.columns([1.0, 0.12, 0.12, 0.12])
+    with h1:
+        st.title("EcoDrive Analyst · VDE")
+        st.caption("Quick setup · clean preview · save/edit snapshots")
+    st.divider()
+
+    # ============ SIDEBAR: meta & modo ============
+    vehicle_basics_sidebar()  # aqui o ctx é atualizado (make/legislation)
+    
+    # --- ícones automáticos (sem inputs) ---
+    logo_path = search_logo(ctx, base_dir="data/images/logos", fallback="_unknown.png") or ""
+    leg_icon  = get_legislation_icon(ctx, base_dir="data/images") or ""
+
+    # atribui no ctx (use "=" e não "==")
+    ctx["brand_icon"] = logo_path
+    ctx["leg_icon"]   = leg_icon
+
+    # mostra nas colunas do header
+    show_if_exists(i1, ctx["brand_icon"], width=50, caption=ctx["make"])
+    show_if_exists(i2, ctx["leg_icon"],   width=50, caption=ctx["legislation"])
+
+   # ============ BODY ============ #
+    # 1) bloco principal por modo (enxuto)
+    
+    if ctx["mode"] == "From baseline (editable)":
+
+        baseline_picker_and_editor()   # seu picker (inclui Deltas/Change Parameters)
+        
+
+    elif ctx["mode"] == "Define all parameters (no baseline)":
+        with st.expander("Road load & Mass", expanded=True):
+            rr_section(prefill=None)
+        with st.expander("Aerodynamics", expanded=False):
+            aero_section(prefill=None)
+        with st.expander("Parasitic & Brake", expanded=False):
+            parasitic_brake_section(prefill=None)
+
+    else:  # "From test (direct coastdown)"
+        from_test_section()
+        # 2) auxiliares onde já estavam
+        auxiliaries_section()
+
+    # 3) ciclo (padrão ou CSV) e preview ao vivo
+    cycle_section()
+
+    show_live_vde_preview()   # mantém sua função existente de preview
+
+    # 4) salvar/editar
+    compute_and_save()
+    edit_or_delete()
+
+
+
+
+#------------------------------
+### BACKUP/ OLD CODE ###
+#------------------------------
+
+def main2():
+    
     st.set_page_config(page_title="Mock Data / Editor", layout="wide")
     ensure_db()
     init_state()
@@ -1573,7 +1432,8 @@ def main():
     else:  # "From test (direct coastdown)"
         from_test_section()
         auxiliaries_section()
-
+        
+    print(ctx)
     # ⬇️ traga o ciclo ANTES do preview
     cycle_section()
     # ⬇️ e só depois mostre o preview (para todas as modalidades)
@@ -1582,6 +1442,79 @@ def main():
     compute_and_save()
     edit_or_delete()
 
+    st.markdown("---")
+
+
+
+def pwt_section(prefill=None):
+    st.subheader("PWT (minimal)")
+    eff0 = to_float(prefill.get("driveline_eff"), ctx["driveline_eff"]) if prefill else ctx["driveline_eff"]
+    ctx["driveline_eff"] = st.number_input("Driveline efficiency (0–1)", value=float(eff0), min_value=0.0, max_value=1.0, step=0.01)
+
+def vehicle_basics():
+    st.subheader("Vehicle basics")
+    c1, c2, c3, c4 = st.columns(4)
+    # (1) Your point: it’s fine if you only changed the display text.
+    # Use the same internal values, different labels via format if you wish.
+    leg_opts = ["WLTP", "EPA", "ABNT (Brazil)"]  # display labels
+    # keep ctx value consistent with an item from leg_opts
+    if ctx["legislation"] not in leg_opts:
+        ctx["legislation"] = "WLTP"
+    ctx["legislation"] = c1.selectbox("Legislation", leg_opts, index=leg_opts.index(ctx["legislation"]))
+
+    # categorias oficiais
+    epa_classes = [
+         "Unknown","Two Seaters", "Minicompact Cars", "Subcompact Cars", "Compact Cars",
+        "Midsize Cars", "Large Cars",
+        "Small Station Wagons", "Midsize Station Wagons",
+        "Small SUVs", "Standard SUVs",
+        "Minivans", "Vans",
+        "Small Pickup Trucks", "Standard Pickup Trucks"
+    ]
+    wltp_classes = [
+        "Class 1 (<850 kg)", "Class 2 (850–1220 kg)", "Class 3 (>1220 kg)"
+    ]
+    category_list = epa_classes if ctx["legislation"] == "EPA" else wltp_classes
+    category_list_upper = [c.upper() for c in category_list]
+
+    if ctx["category"] not in category_list_upper:
+        ctx["category"] = category_list_upper[0]
+    ctx["category"]  = c2.selectbox("Category", category_list_upper, index=category_list_upper.index(ctx["category"]))
+
+    # marcas sugeridas (mantidas p/ consistência)
+    default_makes = [ "Toyota", "Honda", "Nissan", "Mitsubishi", "Mazda", "Subaru","Hyundai", "Kia", "Volkswagen", "Audi", "BMW", "Mercedes-Benz", "Porsche", "Peugeot","Renault", "Citroën", "Fiat", "Alfa Romeo", "Volvo", "Jaguar", "Land Rover",
+                       "Skoda", "Seat", "Opel", "Ford", "Chevrolet", "Dodge", "Chrysler", "Jeep", "Ram", "Cadillac","Buick", "GMC", "Lincoln", "Tesla", "Suzuki", "Mini", "Smart", "Lexus", "Infiniti", "Acura"]
+    # juntar marcas do DB + sugeridas (sem duplicar) + opção Other
+    ensure_db()
+    makes_db = db_list_makes(ctx["legislation"], ctx["category"])
+    # Aplica .upper() nas marcas sugeridas
+    default_makes_upper = [m.upper() for m in default_makes]
+    merged_makes = list(dict.fromkeys(makes_db + [m for m in default_makes_upper if m not in makes_db]))
+    if "Other (type manually)" not in merged_makes:
+        merged_makes.append("Other (type manually)")
+    
+    # Select make/brand from merged list, or allow manual entry
+    make_choice = c3.selectbox(
+        "Make/Brand",
+        merged_makes,
+        index=merged_makes.index(ctx["make"]) if ctx["make"] in merged_makes else 0
+    )
+    if make_choice == "Other (type manually)":
+        make = c3.text_input("Enter custom brand", value=ctx["make"] if ctx["make"] not in merged_makes else "")
+    else:
+        make = make_choice
+    ctx["make"] = make
+    #ctx["make"]     = c3.text_input("Make", ctx["make"])
+    ctx["model"]    = c4.text_input("Model/Desc.", ctx["model"])
+    c5, c6, c7, c8 = st.columns([1,3,1,1])  
+    ctx["year"]  = c5.number_input("Year", value=int(ctx["year"]), min_value=1900, max_value=2100, step=1)
+    ctx["notes"] = c6.text_input("Proposal Description", ctx["notes"])
+
+    # NEW: electrification & transmission (chaves no ctx)
+    elec_opts = ["ICE", "HEV", "PHEV", "BEV"]
+    trans_opts = ["AT", "AMT", "CVT", "MT", "OT"]
+    ctx["electrification"]   = c7.selectbox("Electrification", elec_opts, index=elec_opts.index(ctx.get("electrification","ICE")))
+    ctx["transmission_type"] = c8.selectbox("Transmission",   trans_opts, index=trans_opts.index(ctx.get("transmission_type","AT")))
 
 if __name__ == "__main__":
     main()

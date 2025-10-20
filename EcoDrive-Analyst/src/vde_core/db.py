@@ -67,6 +67,7 @@ def ensure_migrations() -> None:
         "parasitic_B_coef_Npkph": "REAL",
         "parasitic_C_coef_Npkph2": "REAL",
         "rrc_N_per_kN": "REAL",   # <- NOVA
+        "crr1_frac_at_120kph": "REAL",  
     })
     added += ensure_columns("fuelcons_db", {})  # nada por enquanto
     # opcional: log
@@ -83,6 +84,7 @@ def ensure_migrations() -> None:
         "delta_brake_N": "REAL",
         "delta_parasitics_N": "REAL",
         "delta_aero_Npkph2": "REAL",
+        "delta_mass_kg": "REAL",
     })
     if added:
         print("[db] migrações aplicadas:", added)
@@ -356,7 +358,9 @@ def insert_fuelcons(row: dict) -> int:
     """
     ensure_db()
     cols = list(row.keys())
+    print(cols)
     vals = [row[c] for c in cols]
+    print(vals)
     placeholders = ",".join(["?"] * len(cols))
     with _con() as con:
         cur = con.cursor()

@@ -15,6 +15,16 @@ the minimum mechanical energy required for a vehicle to follow a driving cycle u
 It provides a **transparent, physics-based** framework aligned with **EPA, WLTP, and PROCONVE** methodologies.
 
 ---
+## 🌱 Motivation
+
+**EcoDrive Analyzer** was created as part of my CS50 journey — a way to connect **engineering precision with human clarity**.  
+It reflects my aim to build tools that make efficiency measurable, transparent, and grounded in physics.
+
+Through this project, I learned to **value clarity over speed**, to turn theory into something reproducible, and to find meaning in making science visible.
+
+> “It’s not about doing more. It’s about doing with clarity and impact.”
+
+---
 
 ## 🧠 Core Concept
 

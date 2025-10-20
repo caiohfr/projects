@@ -1,57 +1,246 @@
-# 🚗 Vehicle Demanded Energy (VDE) Analyzer  
+# ⚡ EcoDrive Analyzer
 
-## 📑 Overview
-The **Vehicle Demanded Energy (VDE) Analyzer** is a benchmarking tool implemented in **Python + Streamlit** to compute the minimum energy required for a vehicle to follow a regulatory driving cycle.  
+**Vehicle Demanded Energy (VDE) Benchmarking Tool**
 
-It provides:
-- **VDE_NET** → baseline metric (neutral coastdown, regulatory comparability).  
-- **VDE_TOTAL** → extended metric (includes drivetrain losses, better correlation with fuel/energy consumption).  
-
-The project follows a **modular, incremental development (CS50-style)** approach: starting from a minimal core calculation and evolving into a dashboard with comparisons and scenario analysis.
+A scientific and transparent platform for vehicle energy analysis, regulatory comparison, and efficiency visualization.  
+Developed as part of the **CS50 Final Project** by *Caio H. F. Rocha* (2025).
 
 ---
 
-## ⚙️ What is VDE?
+## 🚗 Overview
+
+**EcoDrive Analyzer** quantifies and visualizes the **Vehicle Demanded Energy (VDE)** —  
+the minimum mechanical energy required for a vehicle to follow a driving cycle under standardized road-load conditions.
+
+It provides a **transparent, physics-based** framework aligned with **EPA, WLTP, and PROCONVE** methodologies.
+
+---
+
+## 🧠 Core Concept
+
 \[
-VDE = \int (F_{road}(v) + m_{test} \cdot a(t)) \cdot v(t) \, dt
+VDE = \int (F_{road}(v) + m_{test} a(t)) \, v(t) \, dt
 \]
 
-- **Components:**
-  - Road-load coefficients (f0,f1,f2 or A,B,C).  
-  - Test mass/inertia (ETW/TWC or WLTP).  
-  - Cycle trace \(v(t)\).  
+- \(F_{road}(v) = A + Bv + Cv^2\)  
+- \(m_{test}\): equivalent test mass (ETW / WLTP)  
+- \(v(t), a(t)\): speed and acceleration profiles from cycle traces  
 
-- **Interpretation:**
-  - **VDE_NET:** academic/regulatory metric.  
-  - **VDE_TOTAL:** extended metric with drivetrain losses.  
+The **VDE** is then normalized by the total cycle distance → expressed in **MJ/km**.
 
 ---
 
-## 📦 Libraries Used
-- **[Streamlit](https://streamlit.io/):** interactive UI, multipage dashboard.  
-- **[Pandas](https://pandas.pydata.org/):** data handling (cycles, presets, catalogs).  
-- **[NumPy](https://numpy.org/):** numerical integration, gradients, vectorization.  
-- **[Plotly](https://plotly.com/python/):** interactive plots (power vs time, sensitivity charts).  
-- **[Pydantic](https://docs.pydantic.dev/):** (planned) input validation and type safety.  
-- **[OpenPyXL](https://openpyxl.readthedocs.io/):** Excel export.  
-- **[ReportLab](https://www.reportlab.com/):** (optional) PDF reports.  
+## ⚙️ Road-Load Components
+
+| Symbol | Description | Main Source | Unit |
+|:--:|:--|:--|:--:|
+| **A** | Rolling + Parasitic Resistance | Tire deformation, bearings, drivetrain drag | N |
+| **Bv** | Speed-proportional Losses | Transmission, bearings | N/kph |
+| **Cv²** | Aerodynamic Drag | Air resistance (Cd × Af) | N/kph² |
 
 ---
 
-## 🧱 Program Structure & Architecture
+## 🔋 Tractive and Demanded Energy
 
-### High-level layers
-- **UI Layer (Streamlit):**  
-  Pages in `pages/`, helpers in `src/vde_app/`. Handles user input, state, and visualization.  
-- **Core Layer (`vde_core`):**  
-  Pure functions, models, and business logic (no Streamlit dependencies).  
-- **Data Layer:**  
-  Local CSV/JSON files for cycles, presets, and technologies (abstracted through loaders, extensible to SQLite/DuckDB).  
+\[
+P_{tractive}(t) = (F_{road}(v) + m_{test} a(t)) \cdot v(t)
+\]
 
-### Folder layout
+\[
+VDE_{NET} = \frac{1}{d_{cycle}} \int P_{tractive}(t)\,dt
+\]
 
-### USAGE Instalation
-git clone https://github.com/caiohfr/projects.git
-cd projects/EcoDrive-Analyst
+- **VDE_NET** → ideal tractive energy (transmission in neutral).  
+- **VDE_TOTAL** → includes drivetrain losses for real-world correlation.
+
+---
+
+## 🧩 Features
+
+- **📥 Data & Setup** – load driving cycles and parameters (A/B/C, mass).  
+- **⚙️ VDE & Gain** – compute Vehicle Demanded Energy (VDE_NET).  
+- **📊 Operating Points / Report** – visualize comparisons and deltas.  
+- **🧮 Regression Card** – correlate VDE with fuel consumption.  
+- **💾 Local Database (SQLite)** – stores every snapshot and calculation.  
+- **🧠 Scenario Analysis** – test efficiency improvements (mass, aero, tires).  
+
+---
+
+## 🧪 Scientific Methodology
+
+The analysis pipeline follows a transparent and reproducible process:
+
+1. **Input Data:** coastdown coefficients, mass, and cycle trace.  
+2. **Compute VDE_NET:** road-load + inertia + integration over time.  
+3. **Add Transmission Losses (optional):** derive VDE_TOTAL.  
+4. **Regression Analysis:** correlate VDE with measured fuel consumption.  
+5. **Visualization:** energy breakdown, deltas, and correlations.
+
+---
+
+## 🧬 Data Sources
+
+- 🇺🇸 **EPA 40 CFR 1066** – U.S. vehicle test procedure.  
+- 🇪🇺 **UNECE GTR 15 / WLTP** – Worldwide harmonized light vehicles test.  
+- 🇧🇷 **INMETRO / PBEV** – Brazilian fuel economy dataset.  
+- **SAE J1263 / J2263** – Road-load and coastdown measurement standards.  
+- **SAE 2020-01-1064 / ICCT 2014** – Transmission losses and correlation studies.  
+
+---
+
+## 🖥️ Tech Stack
+
+| Layer | Technology |
+|:--|:--|
+| Frontend | Streamlit |
+| Backend | Python 3.11 |
+| Database | SQLite3 |
+| Visualization | Plotly / Matplotlib |
+| Data Handling | Pandas / NumPy |
+| Reports | Markdown / PDF (via ReportLab) |
+
+---
+
+## 🧰 Folder Structure
+
+```
+EcoDrive-Analyzer/
+│
+├── app.py                      # Main Streamlit entry point
+├── data/
+│   └── db/eco_drive.db         # Local database (auto-generated)
+│   └── cycles/                 # Cycles USed
+│   └── vehicles/               # Vehicles Data
+│   └── standards/              # Standards
+│   └── images/              # Standards
+|     
+│
+├── pages/
+│   ├── home_page.py            # Home with methodology and theory
+│   ├── vde_setup.py            # Load cycle and setup parameters
+│   ├── pwt_fuel_energy.py      # Compute VDE & energy KPIs
+│   └── operating_points.py     # Regression & comparison dashboards
+│
+├── src/
+│   └── vde_core/               # Core calculation modules
+│       ├── db.py
+│       ├── services.py
+│       ├── regression.py
+│       └── utils.py
+│   └── vde_app/               # app modules
+│       ├── components.py
+│       ├── derivatives.py
+│       ├── plots.py
+│       └── state.py
+|
+├── EPA_xlsx_to_db.ipynb       # Pre Processing data from EPA & Manage initial DB
+|
+└── README.md
+```
+
+---
+
+## 🧮 Mathematical Layers
+
+| Layer | Description | Output |
+|:--|:--|:--:|
+| **VDE_NET** | Vehicle Demanded Energy (neutral) | MJ/km |
+| **VDE_TOTAL** | Includes drivetrain losses | MJ/km |
+| **ΔTech Scenarios** | Compare aero, mass, tires, hybridization | % Δ MJ/km |
+
+---
+
+## 🧭 Roadmap (MVPs)
+
+| Stage | Goal | Status |
+|:--|:--|:--:|
+| **MVP0** | Core physical computation (EPA/WLTP cycles) | ✅ Complete |
+| **MVP1** | Database + Streamlit UI | ✅ Finalizing |
+| **MVP2** | Regression & Scenario Analysis | ⚙️ In Progress |
+| **MVP3** | Transmission Losses + BEV/PHEV extensions | 🔜 Planned |
+
+---
+
+## 📈 Example Output
+
+```
+Cycle: FTP-75
+-------------------------------------
+VDE_urban_NET   = 1.82 MJ/km
+VDE_highway_NET = 1.15 MJ/km
+VDE_comb_NET    = 1.56 MJ/km
+```
+
+---
+
+## 🧪 Installation
+
+```bash
+# Clone repository
+git clone https://github.com/caiohfr/EcoDrive-Analyzer.git
+cd EcoDrive-Analyzer
+
+# Create virtual environment
+python -m venv .venv
+source .venv/Scripts/activate   # Windows: .venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Run Streamlit app
 streamlit run app.py
+```
+
+---
+
+## 🧩 Usage
+
+1. Launch the Streamlit interface:  
+   ```bash
+   streamlit run app.py
+   ```
+2. Open your browser (`http://localhost:8501`).  
+3. Workflow:
+   - **📥 Data & Setup:** load cycle and parameters  
+   - **⚙️ VDE & Gain:** compute and compare  
+   - **📊 Operating Points:** analyze results and regressions
+
+---
+
+## 🧾 Transparency & Reproducibility
+
+- 100% based on **public, normative data and formulas**.  
+- No proprietary models or closed datasets.  
+- All results traceable to physical inputs and database entries.
+
+---
+
+## 👨‍🔬 Author
+
+**Caio H. F. Rocha**  
+*Automotive Engineer MSc – Stellantis / CS50 Student*  
+- LinkedIn: [https://www.linkedin.com/in/caio-henrique-ferreira-rocha-728011140/](https://linkedin.com)  
+- GitHub: [https://github.com/caiohfr](https://github.com)
+
+---
+
+## 🧠 License
+
+This project is distributed under the **MIT License**.  
+You are free to use, modify, and distribute with proper credit.
+
+---
+
+## 🏁 Acknowledgments
+
+- **Harvard CS50** – for the foundation in computational thinking.  
+- **SAE / ICCT / UNECE** – for the open regulatory frameworks.  
+- **Streamlit Team** – for simplifying scientific dashboards.  
+
+---
+
+### 📚 Citation
+
+If you use this project in research or academic work, please cite as:
+
+> Rocha, C.H.F. (2025). *EcoDrive Analyzer – A Transparent Tool for Vehicle Demanded Energy Benchmarking*. CS50 Final Project.

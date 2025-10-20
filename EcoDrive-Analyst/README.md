@@ -1,23 +1,31 @@
 # ⚡ EcoDrive Analyzer
 
+## 👨‍🔬 CS50 Explaning Video
+
+**Eco Drive Analyzer**
+- Youtube: [https://youtube.com/](https://youtube.com)
+
+
+---
+
 **Vehicle Demanded Energy (VDE) Benchmarking Tool**
 
-A scientific and transparent platform for vehicle energy analysis, regulatory comparison, and efficiency visualization.  
+A scientific and transparent platform for vehicle energy analysis, regulatory comparison, and efficiency visualization.
 Developed as part of the **CS50 Final Project** by *Caio H. F. Rocha* (2025).
 
 ---
 
 ## 🚗 Overview
 
-**EcoDrive Analyzer** quantifies and visualizes the **Vehicle Demanded Energy (VDE)** —  
+**EcoDrive Analyzer** quantifies and visualizes the **Vehicle Demanded Energy (VDE)** —
 the minimum mechanical energy required for a vehicle to follow a driving cycle under standardized road-load conditions.
 
-It provides a **transparent, physics-based** framework aligned with **EPA, WLTP, and PROCONVE** methodologies.
+It provides a **transparent, physics-based** framework aligned with **EPA, WLTP, and PROCONVE** methodologies (WLTP Lack of Data, PROCONVE (BR) To be implemented).
 
 ---
 ## 🌱 Motivation
 
-**EcoDrive Analyzer** was created as part of my CS50 journey — a way to connect **engineering precision with human clarity**.  
+**EcoDrive Analyzer** was created as part of my CS50 journey — a way to connect **engineering precision with human clarity**.
 It reflects my aim to build tools that make efficiency measurable, transparent, and grounded in physics.
 
 Through this project, I learned to **value clarity over speed**, to turn theory into something reproducible, and to find meaning in making science visible.
@@ -32,9 +40,9 @@ Through this project, I learned to **value clarity over speed**, to turn theory 
 VDE = \int (F_{road}(v) + m_{test} a(t)) \, v(t) \, dt
 \]
 
-- \(F_{road}(v) = A + Bv + Cv^2\)  
-- \(m_{test}\): equivalent test mass (ETW / WLTP)  
-- \(v(t), a(t)\): speed and acceleration profiles from cycle traces  
+- \(F_{road}(v) = A + Bv + Cv^2\)
+- \(m_{test}\): equivalent test mass (ETW / WLTP)
+- \(v(t), a(t)\): speed and acceleration profiles from cycle traces
 
 The **VDE** is then normalized by the total cycle distance → expressed in **MJ/km**.
 
@@ -60,19 +68,19 @@ P_{tractive}(t) = (F_{road}(v) + m_{test} a(t)) \cdot v(t)
 VDE_{NET} = \frac{1}{d_{cycle}} \int P_{tractive}(t)\,dt
 \]
 
-- **VDE_NET** → ideal tractive energy (transmission in neutral).  
+- **VDE_NET** → ideal tractive energy (transmission in neutral).
 - **VDE_TOTAL** → includes drivetrain losses for real-world correlation.
 
 ---
 
 ## 🧩 Features
 
-- **📥 Data & Setup** – load driving cycles and parameters (A/B/C, mass).  
-- **⚙️ VDE & Gain** – compute Vehicle Demanded Energy (VDE_NET).  
-- **📊 Operating Points / Report** – visualize comparisons and deltas.  
-- **🧮 Regression Card** – correlate VDE with fuel consumption.  
-- **💾 Local Database (SQLite)** – stores every snapshot and calculation.  
-- **🧠 Scenario Analysis** – test efficiency improvements (mass, aero, tires).  
+- **📥 VDE Setup** – load driving cycles and parameters (A/B/C, mass).
+- **⚙️ PWT Fuel Energy** – compute Vehicle Demanded Energy (VDE_NET).
+- ***🧮 Regression Card*** – correlate VDE with fuel consumption based on EPA Tested Data (WLTP missing data for now).
+- **💾 Local Database (SQLite)** – stores every snapshot and calculation.
+- **📊 Operating Points / Report (TO DO)** – visualize PWT operating points based on Transmission & Engine or Electric Motor.
+- **🧠 Scenario Analysis** – test efficiency improvements (mass, aero, tires). Comparison Report to be improved bur it can be done by VDE Setup.
 
 ---
 
@@ -80,21 +88,21 @@ VDE_{NET} = \frac{1}{d_{cycle}} \int P_{tractive}(t)\,dt
 
 The analysis pipeline follows a transparent and reproducible process:
 
-1. **Input Data:** coastdown coefficients, mass, and cycle trace.  
-2. **Compute VDE_NET:** road-load + inertia + integration over time.  
-3. **Add Transmission Losses (optional):** derive VDE_TOTAL.  
-4. **Regression Analysis:** correlate VDE with measured fuel consumption.  
+1. **Input Data:** coastdown coefficients, mass, and cycle trace.
+2. **Compute VDE_NET:** road-load + inertia + integration over time.
+3. **Add Transmission Losses (optional):** derive VDE_TOTAL.
+4. **Regression Analysis:** correlate VDE with measured fuel consumption.
 5. **Visualization:** energy breakdown, deltas, and correlations.
 
 ---
 
 ## 🧬 Data Sources
 
-- 🇺🇸 **EPA 40 CFR 1066** – U.S. vehicle test procedure.  
-- 🇪🇺 **UNECE GTR 15 / WLTP** – Worldwide harmonized light vehicles test.  
-- 🇧🇷 **INMETRO / PBEV** – Brazilian fuel economy dataset.  
-- **SAE J1263 / J2263** – Road-load and coastdown measurement standards.  
-- **SAE 2020-01-1064 / ICCT 2014** – Transmission losses and correlation studies.  
+- 🇺🇸 **EPA 40 CFR 1066** – U.S. vehicle test procedure.
+- 🇪🇺 **UNECE GTR 15 / WLTP** – Worldwide harmonized light vehicles test.
+- 🇧🇷 **INMETRO / PBEV** – Brazilian fuel economy dataset.
+- **SAE J1263 / J2263** – Road-load and coastdown measurement standards.
+- **SAE 2020-01-1064 / ICCT 2014** – Transmission losses and correlation studies.
 
 ---
 
@@ -123,7 +131,7 @@ EcoDrive-Analyzer/
 │   └── vehicles/               # Vehicles Data
 │   └── standards/              # Standards
 │   └── images/              # Standards
-|     
+|
 │
 ├── pages/
 │   ├── home_page.py            # Home with methodology and theory
@@ -166,8 +174,9 @@ EcoDrive-Analyzer/
 |:--|:--|:--:|
 | **MVP0** | Core physical computation (EPA/WLTP cycles) | ✅ Complete |
 | **MVP1** | Database + Streamlit UI | ✅ Finalizing |
-| **MVP2** | Regression & Scenario Analysis | ⚙️ In Progress |
+| **MVP2** | Regression & Scenario Analysis + Insert Components Maps & Gather more vehicle info  | ⚙️ In Progress |
 | **MVP3** | Transmission Losses + BEV/PHEV extensions | 🔜 Planned |
+| **MVP4** | ML Application using Scikit Learning to determine specific components efficiency | 🔜 Planned |
 
 ---
 
@@ -186,9 +195,9 @@ VDE_comb_NET    = 1.56 MJ/km
 ## 🧪 Installation
 
 ```bash
-# Clone repository
-git clone https://github.com/caiohfr/EcoDrive-Analyzer.git
-cd EcoDrive-Analyzer
+# Clone repository (root repo contains the EcoDrive-Analyst folder)
+git clone https://github.com/caiohfr/projects.git
+cd projects/EcoDrive-Analyst
 
 # Create virtual environment
 python -m venv .venv
@@ -205,47 +214,48 @@ streamlit run app.py
 
 ## 🧩 Usage
 
-1. Launch the Streamlit interface:  
+1. Launch the Streamlit interface:
    ```bash
    streamlit run app.py
    ```
-2. Open your browser (`http://localhost:8501`).  
+2. Open your browser (`http://localhost:8501`).
 3. Workflow:
-   - **📥 Data & Setup:** load cycle and parameters  
-   - **⚙️ VDE & Gain:** compute and compare  
-   - **📊 Operating Points:** analyze results and regressions
+   - **📥 VDE Setup:** Create new vehicle profile
+   - **⚙️ PWT Fuel Energy:** PWT Data, correlate Fuel Economy w/ vehicle Data
+   - **📊 Comparison Report: (TO DO)** Need more Data visualization & Analysis tool to be implemented
+   - **📊 Operating Points: (TO DO)** analyze specific points during cycle, need PWT specific maps. Future Application
 
 ---
 
 ## 🧾 Transparency & Reproducibility
 
-- 100% based on **public, normative data and formulas**.  
-- No proprietary models or closed datasets.  
+- 100% based on **public, normative data and formulas**.
+- No proprietary models or closed datasets.
 - All results traceable to physical inputs and database entries.
 
 ---
 
 ## 👨‍🔬 Author
 
-**Caio H. F. Rocha**  
-*Automotive Engineer MSc – Stellantis / CS50 Student*  
-- LinkedIn: [https://www.linkedin.com/in/caio-henrique-ferreira-rocha-728011140/](https://linkedin.com)  
+**Caio H. F. Rocha**
+*Automotive Engineer MSc – Stellantis / CS50 Student*
+- LinkedIn: [https://www.linkedin.com/in/caio-henrique-ferreira-rocha-728011140/](https://linkedin.com)
 - GitHub: [https://github.com/caiohfr](https://github.com)
 
 ---
 
 ## 🧠 License
 
-This project is distributed under the **MIT License**.  
+This project is distributed under the **MIT License**.
 You are free to use, modify, and distribute with proper credit.
 
 ---
 
 ## 🏁 Acknowledgments
 
-- **Harvard CS50** – for the foundation in computational thinking.  
-- **SAE / ICCT / UNECE** – for the open regulatory frameworks.  
-- **Streamlit Team** – for simplifying scientific dashboards.  
+- **Harvard CS50** – for the foundation in computational thinking.
+- **SAE / ICCT / UNECE** – for the open regulatory frameworks.
+- **Streamlit Team** – for simplifying scientific dashboards.
 
 ---
 

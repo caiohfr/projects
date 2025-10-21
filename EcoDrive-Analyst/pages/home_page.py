@@ -32,7 +32,8 @@ def page_home():
     # ======= SCIENTIFIC METHODOLOGY =======
     st.header("🧠 Scientific Methodology")
     # use absolute path provided by the project owner (simple and direct)
-    abs_path = r'C:\Users\caioh\OneDrive\Área de Trabalho\n8n projects\Pythonzeiros\projects\EcoDrive-Analyst\data\images\vehicle-longitudinal-dynamics.png'
+    ABS_DIR = Path(__file__).resolve().parent          # pasta do arquivo atual
+    abs_path = ABS_DIR.parent / 'data' / 'images' / 'vehicle-longitudinal-dynamics.png'    
     st.image(abs_path, width=1000)
 
     st.subheader("1. Core Concept")

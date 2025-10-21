@@ -25,11 +25,14 @@ from src.vde_app.components import vde_by_phase, show_vde_feedback, search_logo,
 st.set_page_config(page_title="Mock Data / Editor", layout="wide")
 ensure_db()
 
-DEFAULTS_PATH = Path(
-    r"C:\Users\CaioHenriqueFerreira\Downloads\From Git\projects\EcoDrive-Analyst\data\standards\vde_defaults_by_category_trans_elec.csv"
-)
+
 # 1) Garanta que o catálogo está carregado (no topo do script da página)
-TIRE_CSV =Path(r"C:\Users\CaioHenriqueFerreira\Downloads\From Git\projects\EcoDrive-Analyst\data\standards\tiresize_fromcode_table.csv")
+ABS_DIR = Path(__file__).resolve().parent          # pasta do arquivo atual
+default_path = ABS_DIR.parent / 'data' / 'standards' / 'vde_defaults_by_category_trans_elec.csv' 
+DEFAULTS_PATH = Path(default_path)
+
+tire_path = ABS_DIR.parent / 'data' / 'standards' / 'tiresize_fromcode_table.csv' 
+TIRE_CSV =Path(tire_path)
 
 
 @st.cache_resource(show_spinner=False)

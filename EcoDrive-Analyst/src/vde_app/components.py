@@ -214,7 +214,7 @@ def filters_bar(vde_id: int, electrification: str, key_ns: str = "fb") -> Dict[s
     with c4:
         make_choice = st.selectbox("Make", ["(all)"] + makes, key=k("fl_make"))
     with c5:
-        p_choice = st.selectbox("Power (hp)", ["(all)", "≤160", "161–270", "271–470", "471–670", ">670"],
+        p_choice = st.selectbox("Power (hp)", ["(all)", "≤150 HP", "151–300 HP", "301–500 HP", "501–700 HP", ">700 HP"],
                                 key=k("fl_pbin"))
 
     filters: Dict[str, Any] = {}

@@ -3,7 +3,7 @@ import os, sys, platform
 import streamlit as st
 import pages.home_page as home
 
-APP_NAME, APP_ICON, APP_VER = "VDE Analyzer", "⚡", "0.7.2"
+APP_NAME, APP_ICON, APP_VER = "EcoDrive Analyzer", "⚡", "0.7.2"
 DB_DEFAULT = "data/db/eco_drive.db"
 
 st.set_page_config(page_title=f"{APP_NAME} {APP_VER}", page_icon=APP_ICON, layout="wide")
@@ -44,10 +44,10 @@ def _sidebar(ctx):
     st.sidebar.caption("Vehicle Demanded Energy – scientific analyzer")
     st.sidebar.subheader("Navigation")
 
-    st.page_link("app.py",                     label="🏠 Home", icon="🏠")
-    st.page_link("pages/vde_setup.py",         label="📥 Data & Setup", icon="📥")
-    st.page_link("pages/pwt_fuel_energy.py",   label="⚙️ VDE & Gain", icon="⚙️")
-    st.page_link("pages/operating_points.py",  label="📊 Operating Points / Report", icon="📊")
+    st.page_link("app.py",                     label="Home", icon="🏠")
+    st.page_link("pages/vde_setup.py",         label="Vehicle Setup", icon="📥")
+    st.page_link("pages/pwt_fuel_energy.py",   label="PWT Fuel & Energy", icon="⚙️")
+    #st.page_link("pages/operating_points.py",  label="Operating Points / Report", icon="📊")
 
     st.sidebar.divider()
     # usa o ctx passado (já inicializado)
@@ -64,16 +64,16 @@ def main():
     # 2) agora é seguro montar a sidebar
     _sidebar(ctx)
 
-    st.title(f"{APP_ICON} Vehicle Demanded Energy Analyzer")
+    st.title(f"{APP_ICON} EcoDrive Analyzer")
     st.caption("Transparent, physics-based, and reproducible benchmarking")
 
     _quick_checks(ctx["db_path"])
 
     st.markdown("""
 > **Start here:**  
-> 1) **📥 Data & Setup** – load cycle and parameters.  
-> 2) **⚙️ VDE & Gain** – compute VDE and deltas.  
-> 3) **📊 Operating Points / Report** – visualize & export.
+> 1) **📥 Vehicle Setup** – load cycle and parameters.  
+> 2) **⚙️ PWT Fuel & Energy** – compute VDE and deltas.  
+> 3) **📊 Operating Points / Report (TO DO)** – visualize & export.
     """)
 
     st.divider()

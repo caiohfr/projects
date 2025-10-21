@@ -43,6 +43,121 @@ def db_list_models(legislation: str, category: str, make: str) -> list[tuple[str
 def db_pick_vde_row(vde_id: int) -> dict | None:
     return fetchone("SELECT * FROM vde_db WHERE id=?", (vde_id,))
 
+
+
+
+#------------------------------
+### BACKUP/ OLD CODE ###
+#------------------------------
+
+def main2():
+    
+    st.set_page_config(page_title="Mock Data / Editor", layout="wide")
+    ensure_db()
+    init_state()
+    st.title("🧪 Mock Data / Full-Edit")
+
+    vehicle_basics()
+    mode_selector()
+    tires_df = load_tire_catalog(TIRE_CSV)
+
+    if ctx["mode"] == "From baseline (editable)":
+        baseline_picker_and_editor()
+
+
+    elif ctx["mode"] == "Define all parameters (no baseline)":
+        rr_section(prefill=None, tires_df=tires_df)
+        aero_section(prefill=None)
+        parasitic_brake_section(prefill=None)
+
+
+    else:  # "From test (direct coastdown)"
+        from_test_section()
+        auxiliaries_section()
+        
+    print(ctx)
+    # ⬇️ traga o ciclo ANTES do preview
+    cycle_section()
+    # ⬇️ e só depois mostre o preview (para todas as modalidades)
+    show_live_vde_preview()
+
+    compute_and_save()
+    edit_or_delete()
+
+    st.markdown("---")
+
+
+
+def pwt_section(prefill=None):
+    st.subheader("PWT (minimal)")
+    eff0 = to_float(prefill.get("driveline_eff"), ctx["driveline_eff"]) if prefill else ctx["driveline_eff"]
+    ctx["driveline_eff"] = st.number_input("Driveline efficiency (0–1)", value=float(eff0), min_value=0.0, max_value=1.0, step=0.01)
+
+def vehicle_basics():
+    st.subheader("Vehicle basics")
+    c1, c2, c3, c4 = st.columns(4)
+    # (1) Your point: it’s fine if you only changed the display text.
+    # Use the same internal values, different labels via format if you wish.
+    leg_opts = ["WLTP", "EPA", "ABNT (Brazil)"]  # display labels
+    # keep ctx value consistent with an item from leg_opts
+    if ctx["legislation"] not in leg_opts:
+        ctx["legislation"] = "WLTP"
+    ctx["legislation"] = c1.selectbox("Legislation", leg_opts, index=leg_opts.index(ctx["legislation"]))
+
+    # categorias oficiais
+    epa_classes = [
+         "Unknown","Two Seaters", "Minicompact Cars", "Subcompact Cars", "Compact Cars",
+        "Midsize Cars", "Large Cars",
+        "Small Station Wagons", "Midsize Station Wagons",
+        "Small SUVs", "Standard SUVs",
+        "Minivans", "Vans",
+        "Small Pickup Trucks", "Standard Pickup Trucks"
+    ]
+    wltp_classes = [
+        "Class 1 (<850 kg)", "Class 2 (850–1220 kg)", "Class 3 (>1220 kg)"
+    ]
+    category_list = epa_classes if ctx["legislation"] == "EPA" else wltp_classes
+    category_list_upper = [c.upper() for c in category_list]
+
+    if ctx["category"] not in category_list_upper:
+        ctx["category"] = category_list_upper[0]
+    ctx["category"]  = c2.selectbox("Category", category_list_upper, index=category_list_upper.index(ctx["category"]))
+
+    # marcas sugeridas (mantidas p/ consistência)
+    default_makes = [ "Toyota", "Honda", "Nissan", "Mitsubishi", "Mazda", "Subaru","Hyundai", "Kia", "Volkswagen", "Audi", "BMW", "Mercedes-Benz", "Porsche", "Peugeot","Renault", "Citroën", "Fiat", "Alfa Romeo", "Volvo", "Jaguar", "Land Rover",
+                       "Skoda", "Seat", "Opel", "Ford", "Chevrolet", "Dodge", "Chrysler", "Jeep", "Ram", "Cadillac","Buick", "GMC", "Lincoln", "Tesla", "Suzuki", "Mini", "Smart", "Lexus", "Infiniti", "Acura"]
+    # juntar marcas do DB + sugeridas (sem duplicar) + opção Other
+    ensure_db()
+    makes_db = db_list_makes(ctx["legislation"], ctx["category"])
+    # Aplica .upper() nas marcas sugeridas
+    default_makes_upper = [m.upper() for m in default_makes]
+    merged_makes = list(dict.fromkeys(makes_db + [m for m in default_makes_upper if m not in makes_db]))
+    if "Other (type manually)" not in merged_makes:
+        merged_makes.append("Other (type manually)")
+    
+    # Select make/brand from merged list, or allow manual entry
+    make_choice = c3.selectbox(
+        "Make/Brand",
+        merged_makes,
+        index=merged_makes.index(ctx["make"]) if ctx["make"] in merged_makes else 0
+    )
+    if make_choice == "Other (type manually)":
+        make = c3.text_input("Enter custom brand", value=ctx["make"] if ctx["make"] not in merged_makes else "")
+    else:
+        make = make_choice
+    ctx["make"] = make
+    #ctx["make"]     = c3.text_input("Make", ctx["make"])
+    ctx["model"]    = c4.text_input("Model/Desc.", ctx["model"])
+    c5, c6, c7, c8 = st.columns([1,3,1,1])  
+    ctx["year"]  = c5.number_input("Year", value=int(ctx["year"]), min_value=1900, max_value=2100, step=1)
+    ctx["notes"] = c6.text_input("Proposal Description", ctx["notes"])
+
+    # NEW: electrification & transmission (chaves no ctx)
+    elec_opts = ["ICE", "HEV", "PHEV", "BEV"]
+    trans_opts = ["AT", "AMT", "CVT", "MT", "OT"]
+    ctx["electrification"]   = c7.selectbox("Electrification", elec_opts, index=elec_opts.index(ctx.get("electrification","ICE")))
+    ctx["transmission_type"] = c8.selectbox("Transmission",   trans_opts, index=trans_opts.index(ctx.get("transmission_type","AT")))
+
 # ===========================
 # Vehicle basics
 # ===========================

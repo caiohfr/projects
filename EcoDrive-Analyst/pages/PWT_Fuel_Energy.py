@@ -386,6 +386,22 @@ def section_parameters_card(vde_id: int, vde_net_mj_per_km: float, electrificati
     return ctx
 
 def section_regression_card(vde_id: int, electrification: str, filters: Dict[str, Any], vde_net: float):
+    # ---------- Scenario Extras (mesmos keys que você já usa) ----------
+    st.divider()
+    st.subheader("Scenario Extras (fuelcons_db)")
+    c1, c2, c3 = st.columns(3)
+    c1.number_input("Gears (scenario)", min_value=0, step=1, key="pwt_gears", placeholder="6")
+    c2.number_input("Final drive ratio (scenario)", min_value=0.0, step=0.01, format="%.2f",
+                    key="pwt_fdr", placeholder="3.91")
+    # Transmission model picker (via DISTINCT)
+    trans_models = fetch_distinct_transmission_models() or []
+    trans_models.append("Other...")
+    choice = c3.selectbox("Transmission model (scenario)", trans_models, key="pwt_trans_model_choice")
+    if choice == "Other...":
+        tm_value = st.text_input("Type transmission model", key="pwt_trans_model_custom")
+    else:
+        tm_value = choice
+    st.session_state["pwt_trans_model"] = (tm_value or "").strip() or None
     st.subheader("Regression (aligned with filters above)")
     # dataset com MESMOS filtros da visualização:
     regdf = load_regression_dataset(filters, current_vde_id=vde_id)  # <- sua função (já com power_bin e vde_id se você adicionou)
@@ -468,7 +484,7 @@ def run_regression_panel(vde_id: int, vde_row: dict, ctx: dict, vde_net: float) 
 
 
 def main():
-    st.title("EcoDrive Analyst · Página 2 — PWT & Fuel/Energy (v1.2)")
+    st.title("EcoDrive Analyzer 2 — PWT & Fuel/Energy")
 
     # Sidebar & snapshot
     vde_id, ctx = sidebar_vde_selector_and_context()
@@ -488,19 +504,30 @@ def main():
 
     # ADD (uma linha)
     st.session_state["current_vde_id"] = int(vde_id)
+    mode = st.radio(
+    "Mode", ["🔎 View", "🧮 Parameters", "📈 Regression"],
+    horizontal=True, key="mode_sel"
+)
+
+    if mode == "🔎 View":
+        run_view_panel(vde_id, vde_row, ctx)
+    elif mode == "🧮 Parameters":
+        section_parameters_card(vde_id, vde_net, ctx["electrification"])
+    else:
+        run_regression_panel(vde_id, vde_row, ctx, vde_net)
 
     # Abas: VIEW vs REGRESSION (claridade máxima)
-    tab_view, tab_params, tab_reg = st.tabs(["🔎 View all vehicles", "🧮 Parameters", "📈 Regression"])
+    #tab_view, tab_params, tab_reg = st.tabs(["🔎 View all vehicles", "🧮 Parameters", "📈 Regression"])
 
-    with tab_view:
-        run_view_panel(vde_id, vde_row, ctx)
+    #with tab_view:
+        #run_view_panel(vde_id, vde_row, ctx)
     
-    with tab_params:
+    #with tab_params:
         # usa sua seção de parâmetros com botão de salvar
-        section_parameters_card(vde_id, vde_net, ctx["electrification"])
+        #section_parameters_card(vde_id, vde_net, ctx["electrification"])
 
-    with tab_reg:
-        run_regression_panel(vde_id, vde_row, ctx, vde_net)
+    #with tab_reg:
+        #run_regression_panel(vde_id, vde_row, ctx, vde_net)
 
     st.markdown("---")
 

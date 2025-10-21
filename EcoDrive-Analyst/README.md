@@ -3,7 +3,7 @@
 ## 👨‍🔬 CS50 Explaning Video
 
 **Eco Drive Analyzer**
-- Youtube: [https://youtube.com/](https://youtube.com)
+- YouTube: [Watch on YouTube](https://youtu.be/yQ4lP8M8Cw0)
 
 
 ---
@@ -239,8 +239,8 @@ streamlit run app.py
 
 **Caio H. F. Rocha**
 *Automotive Engineer MSc – Stellantis / CS50 Student*
-- LinkedIn: [https://www.linkedin.com/in/caio-henrique-ferreira-rocha-728011140/](https://linkedin.com)
-- GitHub: [https://github.com/caiohfr](https://github.com)
+- LinkedIn: [LinkedIn - Caio H. F. Rocha](https://www.linkedin.com/in/caio-henrique-ferreira-rocha-728011140/)
+- GitHub: [GitHub - caiohfr](https://github.com/caiohfr)
 
 ---
 

@@ -119,6 +119,19 @@ The analysis pipeline follows a transparent and reproducible process:
 
 ---
 
+## 📊 Machine Learning Analysis (scikit-learn)
+
+The project includes a small ML module built with scikit-learn to validate the physical models and explore predictive relationships in the EPA dataset.
+
+A first experiment used only categorical attributes (make, category, powertrain, transmission) to predict coastdown coefficients A/B/C, reaching R² ≈ 0.70, showing strong structural patterns across vehicle classes.
+
+A second model combined coastdown coefficients and basic vehicle parameters to predict certified fuel consumption, achieving R² ≈ 0.96 with a Random Forest.
+This aligns with vehicle physics: road load → RLHP → FE.
+
+These models complement the physics-based VDE workflow and help validate data consistency, estimate missing values, and accelerate early-stage benchmarking.
+
+---
+
 ## 🧰 Folder Structure
 
 ```
@@ -174,7 +187,7 @@ EcoDrive-Analyzer/
 |:--|:--|:--:|
 | **MVP0** | Core physical computation (EPA/WLTP cycles) | ✅ Complete |
 | **MVP1** | Database + Streamlit UI | ✅ Finalizing |
-| **MVP2** | Regression & Scenario Analysis + Insert Components Maps & Gather more vehicle info  | ⚙️ In Progress |
+| **MVP2** | ML Regression & Scenario Analysis + Insert Components Maps & Gather more vehicle info  | ⚙️ In Progress |
 | **MVP3** | Transmission Losses + BEV/PHEV extensions | 🔜 Planned |
 | **MVP4** | ML Application using Scikit Learning to determine specific components efficiency | 🔜 Planned |
 

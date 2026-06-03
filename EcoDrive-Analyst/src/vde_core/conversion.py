@@ -1,7 +1,9 @@
-def estimate_fuel_from_vde(vde_kwh_per_100km: float, eta_pt: float, lhv_mj_per_L: float) -> float:
-    """Estimate fuel consumption [L/100km] from VDE and powertrain efficiency."""
-    if vde_kwh_per_100km != vde_kwh_per_100km:  # NaN check
-        return float("nan")
-    if eta_pt <= 0 or lhv_mj_per_L <= 0:
-        return float("nan")
-    return (vde_kwh_per_100km * 3.6) / (eta_pt * lhv_mj_per_L)
+def mjkm_to_whkm(mj_per_km: float) -> float:
+    return mj_per_km / 0.0036
+
+
+def whkm_to_mjkm(wh_per_km: float) -> float:
+    return wh_per_km * 0.0036
+
+
+__all__ = ["mjkm_to_whkm", "whkm_to_mjkm"]

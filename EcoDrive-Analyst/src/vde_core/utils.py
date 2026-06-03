@@ -11,7 +11,7 @@ def cycle_kpis(df: pd.DataFrame) -> dict:
         return {"duration_s": 0.0, "distance_km": 0.0, "v_mean_ms": 0.0, "n_points": 0}
 
     duration_s = float(t[-1] - t[0])
-    dist_m = float(np.trapz(v, t))
+    dist_m = float(np.trapezoid(v, t))
     v_mean_ms = dist_m / max(duration_s, 1e-9)
     return {
         "duration_s": duration_s,

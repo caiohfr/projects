@@ -7,7 +7,6 @@ from typing import Dict, Any, Tuple, Optional
 
 import numpy as np
 import pandas as pd
-import streamlit as st
 
 # --- DB / services (use os caminhos reais do seu projeto) ---
 from src.vde_core.db import fetchall

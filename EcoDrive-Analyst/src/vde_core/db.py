@@ -481,7 +481,7 @@ def select_where(
 
     return df_query(sql, params)
 
-def delete_row(table: str, row_id: int) -> None:
+def delete_row(table: str, row_id: int) -> int:
     """
     Delete one row from a given table by id.
     - table: 'vde_db' or 'fuelcons_db'
@@ -490,8 +490,10 @@ def delete_row(table: str, row_id: int) -> None:
     ensure_db()
     if table not in {"vde_db", "fuelcons_db"}:
         raise ValueError("Table not allowed.")
+    rid = int(row_id)
     with _con() as con:
-        con.execute(f"DELETE FROM {table} WHERE id=?", (row_id,))
+        cur = con.execute(f"DELETE FROM {table} WHERE id=?", (rid,))
+        return int(cur.rowcount or 0)
 
 def update_row(table: str, row_id: int, updates: dict) -> None:
     """

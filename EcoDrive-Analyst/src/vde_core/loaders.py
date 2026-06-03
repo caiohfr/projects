@@ -1,18 +1,35 @@
-import pandas as pd
-from pathlib import Path
+"""
+Compatibility shim for older cycle-loader imports.
 
-CYCLES_DIR = Path("data/cycles")
+Historically, this module provided lightweight CSV helpers. The active cycle
+loading path is now exposed through ``src.vde_core.cycles`` and the underlying
+implementations still live in ``src.vde_core.services``.
+"""
+
+from src.vde_core.cycles import (
+    cycle_summary,
+    default_cycle_for_legislation,
+    load_cycle_csv,
+    use_standard_cycle,
+)
+
 
 def list_cycles():
-    """List available cycle CSVs in data/cycles/ (without extension)."""
-    return [p.stem for p in CYCLES_DIR.glob("*.csv")]
+    from pathlib import Path
 
-def load_cycle(name: str) -> pd.DataFrame:
-    """Load a cycle by name (without extension). Requires columns: t, v."""
-    path = CYCLES_DIR / f"{name}.csv"
-    if not path.exists():
-        raise FileNotFoundError(f"Cycle '{name}' not found in {CYCLES_DIR}")
-    df = pd.read_csv(path)
-    if not {"t","v"} <= set(df.columns):
-        raise ValueError("Cycle CSV must have columns: t, v")
-    return df
+    cycles_dir = Path("data/cycles")
+    return [path.stem for path in cycles_dir.glob("*.csv")]
+
+
+def load_cycle(name: str):
+    return load_cycle_csv(name)
+
+
+__all__ = [
+    "cycle_summary",
+    "default_cycle_for_legislation",
+    "list_cycles",
+    "load_cycle",
+    "load_cycle_csv",
+    "use_standard_cycle",
+]

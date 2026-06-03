@@ -1,8 +1,10 @@
 import pandas as pd
 import plotly.express as px
-from src.vde_core.db import fetchall, fetchone, update_vde, insert_fuelcons, ensure_db
 import streamlit as st
 from typing import Dict, Any, List
+from src.vde_core.pwt_fuel_energy_service import fetch_scatter_join_rows, fetch_vde_rows_by_ids
+
+
 def line_power(df: pd.DataFrame):
     fig = px.line(df, x="t", y="P", title="Instantaneous Power")
     return fig
@@ -24,27 +26,7 @@ def cycle_chart(df: pd.DataFrame):
 
 
 def build_scatter_data() -> pd.DataFrame:
-    q = """
-    SELECT 
-        f.vde_id,
-        f.fuel_l_per_100km,
-        f.fuel_km_per_l,
-        f.energy_Wh_per_km,
-        f.gco2_per_km,
-        f.method_note,
-        f.engine_max_power_kw,
-        v.vde_net_mj_per_km,
-        v.engine_size_l,
-        v.transmission_type,
-        v.drive_type,
-        v.category,
-        v.make,
-        v.model,
-        v.year
-    FROM fuelcons_db f
-    JOIN vde_db v ON v.id = f.vde_id
-    """
-    rows = fetchall(q)
+    rows = fetch_scatter_join_rows()
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
@@ -139,13 +121,7 @@ def build_scatter_from_fuel(df_fuel: pd.DataFrame) -> pd.DataFrame:
     # Caso contrário, faça um join simples:
     need_cols = {"vde_net_mj_per_km","engine_size_l","transmission_type","drive_type","category","make","model","year"}
     if not need_cols.issubset(df_fuel.columns):
-        vde_ids = tuple(set(df_fuel["vde_id"].tolist()))
-        if len(vde_ids) == 1:
-            rows = fetchall("SELECT * FROM vde_db WHERE id=?;", (vde_ids[0],))
-        else:
-            qmarks = ",".join("?" for _ in vde_ids)
-            rows = fetchall(f"SELECT * FROM vde_db WHERE id IN ({qmarks});", vde_ids)
-        dv = pd.DataFrame(rows) if rows else pd.DataFrame()
+        dv = fetch_vde_rows_by_ids(df_fuel["vde_id"].tolist())
         df = df_fuel.merge(dv, left_on="vde_id", right_on="id", how="left", suffixes=("", "_v"))
     else:
         df = df_fuel.copy()

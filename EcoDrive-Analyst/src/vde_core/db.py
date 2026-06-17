@@ -73,6 +73,7 @@ def ensure_migrations() -> None:
     # opcional: log
         # >>> NOVOS: rastreabilidade mínima (baseline + deltas) <<<
     added += ensure_columns("vde_db", {
+        "test_mass_kg": "REAL",
         "vde_id_parent": "INTEGER",
 
         "baseline_A_N": "REAL",
@@ -86,8 +87,47 @@ def ensure_migrations() -> None:
         "delta_aero_Npkph2": "REAL",
         "delta_mass_kg": "REAL",
     })
+    added += ensure_columns("vde_db", {
+        "front_tire_id": "INTEGER",
+        "rear_tire_id": "INTEGER",
+        "tire_improvement_pct": "REAL",
+        "tire_load_mass_basis": "TEXT",
+        "tire_load_mass_used_kg": "REAL",
+        "tire_A_final": "REAL",
+        "tire_B_final": "REAL",
+        "tire_C_final": "REAL",
+        "tire_calc_source": "TEXT",
+        "tire_calc_notes": "TEXT",
+    })
+    added += ensure_columns("tire_roadload_db", {
+        "calculation_mode": "TEXT",
+        "effective_circumference_override_mm": "REAL",
+        "sae_reference_pressure_kpa": "REAL",
+        "sae_reference_load_n": "REAL",
+        "sae_pressure_unit": "TEXT",
+        "sae_load_unit": "TEXT",
+        "sae_speed_unit": "TEXT",
+        "sae_force_unit": "TEXT",
+        "rr_method": "TEXT",
+        "rr_source": "TEXT",
+        "rr_quality": "TEXT",
+        "conditioning_notes": "TEXT",
+        "test_pressure_value": "REAL",
+        "test_load_value": "REAL",
+        "test_speed_value": "REAL",
+        "smerf": "REAL",
+    })
     if added:
         print("[db] migrações aplicadas:", added)
+
+    with _con() as con:
+        cur = con.cursor()
+        cur.execute(
+            "UPDATE vde_db SET test_mass_kg = mass_kg "
+            "WHERE test_mass_kg IS NULL AND mass_kg IS NOT NULL;"
+        )
+    if added:
+        print("[db] migraÃ§Ãµes aplicadas:", added)
 
 def ensure_db():
     """
@@ -130,6 +170,7 @@ def ensure_db():
             
             -- massa e aero
             mass_kg              REAL NOT NULL,
+            test_mass_kg         REAL,
             inertia_class        REAL,                      -- ETW / Inércia WLTP / NBR
             cda_m2               REAL,                      -- Cd*Af_FE
             weight_dist_fr_pct   REAL,                      -- distribuição F/R [%]
@@ -297,6 +338,76 @@ def ensure_db():
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fc_vde ON fuelcons_db(vde_id);")
 
+        # ---------------------------------------------------------------------
+        # EN: Technical tire roadload library.
+        #     Stores tire identity plus SAE/ISO roadload-relevant metadata.
+        #
+        # PT: Biblioteca técnica de pneus para roadload.
+        #     Guarda identificação do pneu e metadados SAE/ISO relevantes
+        #     ao cálculo da contribuição equivalente em A/B/C.
+        # ---------------------------------------------------------------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS tire_roadload_db (
+            id                             INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at                     TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at                     TEXT,
+
+            -- identity
+            tire_test_code                 TEXT NOT NULL UNIQUE,
+            manufacturer                   TEXT NOT NULL,
+            model                          TEXT NOT NULL,
+            size_code                      TEXT,
+            load_index                     TEXT,
+            speed_rating                   TEXT,
+            is_active                      INTEGER DEFAULT 1,
+            notes                          TEXT,
+
+            -- test / source metadata
+            standard_family                TEXT NOT NULL,      -- SAE | ISO | CUSTOM
+            standard_version               TEXT,
+            test_method                    TEXT,
+            test_source                    TEXT,
+            test_date                      TEXT,
+            test_mileage_km                REAL,
+            is_tested_value                INTEGER DEFAULT 0,
+            is_estimated_value             INTEGER DEFAULT 0,
+            break_in_distance_km           REAL,
+            is_broken_in                   INTEGER DEFAULT 0,
+            test_temperature_c             REAL,
+            reference_temperature_c        REAL,
+            temperature_correction_applied INTEGER DEFAULT 0,
+
+            -- common RR field
+            rr_n_per_kn                    REAL NOT NULL,
+            rr_value_source_note           TEXT,
+
+            -- SAE model fields
+            sae_a                          REAL,
+            sae_b                          REAL,
+            sae_c                          REAL,
+            sae_alpha                      REAL,
+            sae_beta                       REAL,
+            pressure_unit                  TEXT,
+            load_unit                      TEXT,
+            speed_unit                     TEXT,
+            force_unit                     TEXT,
+
+            -- ISO profile fields
+            iso_rrc_n_per_kn               REAL,
+            iso_test_pressure_kpa          REAL,
+            iso_test_load_n                REAL,
+            iso_test_speed_kph             REAL,
+            iso_rolling_resistance_force_n REAL,
+            iso_corrected_rrc_n_per_kn     REAL,
+            iso_condition_notes            TEXT
+        );
+        """)
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_tire_rl_code ON tire_roadload_db(tire_test_code);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_tire_rl_active ON tire_roadload_db(is_active);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_tire_rl_family ON tire_roadload_db(standard_family);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_tire_rl_make_model ON tire_roadload_db(manufacturer, model, size_code);")
+
         con.commit()
 
         con.commit()
@@ -437,7 +548,7 @@ def select_where(
     Retorna: DataFrame
     """
     ensure_db()
-    allowed_tables = {"vde_db", "fuelcons_db"}
+    allowed_tables = {"vde_db", "fuelcons_db", "tire_roadload_db"}
     if table not in allowed_tables:
         raise ValueError("Tabela não permitida.")
 
@@ -488,7 +599,7 @@ def delete_row(table: str, row_id: int) -> int:
     - row_id: integer id
     """
     ensure_db()
-    if table not in {"vde_db", "fuelcons_db"}:
+    if table not in {"vde_db", "fuelcons_db", "tire_roadload_db"}:
         raise ValueError("Table not allowed.")
     rid = int(row_id)
     with _con() as con:
@@ -501,7 +612,7 @@ def update_row(table: str, row_id: int, updates: dict) -> None:
     Exemplo: update_row("vde_db", 5, {"make": "Fiat", "year": 2025})
     """
     ensure_db()
-    if table not in {"vde_db", "fuelcons_db"}:
+    if table not in {"vde_db", "fuelcons_db", "tire_roadload_db"}:
         raise ValueError("Tabela não permitida.")
     set_clause = ", ".join([f"{k}=?" for k in updates.keys()])
     vals = list(updates.values()) + [row_id]

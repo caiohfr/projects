@@ -42,3 +42,20 @@ from .adapters import (
 
 from .app_service import resolve_equiv_from_ctx
 from .decomposition import component_delta_vs_baseline, decompose_equivalent_abc
+from .tire_model import (
+    G_MPS2,
+    KPA_PER_PSI,
+    MPH_PER_KPH,
+    N_PER_KGF,
+    N_PER_LBF,
+    apply_tire_improvement,
+    build_tire_component,
+    calculate_axle_loads,
+    calculate_axle_tire_abc_from_single,
+    calculate_iso_tire_abc_for_single_tire,
+    calculate_sae_smerf_rr_n_per_kn,
+    calculate_sae_tire_abc_for_single_tire,
+    calculate_single_tire_loads,
+    calculate_vehicle_tire_abc,
+    combine_front_rear_tire_abc,
+)

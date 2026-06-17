@@ -12,7 +12,9 @@ from typing import Optional
 import pandas as pd
 
 from src.vde_core.roadload import cdA_to_C, resolve_equiv_from_ctx
+from src.vde_core.cycles import default_cycle_for_legislation
 from src.vde_core.phase_aggregation import epa_city_hwy_from_phase, wltp_phases_from_phase
+from src.vde_core.test_mass import compute_mro_from_stda, compute_wltp_test_mass, inertia_class_from_mass
 from src.vde_core.repositories import (
     count_linked_fuelcons_rows,
     delete_vde_by_id,
@@ -23,6 +25,7 @@ from src.vde_core.repositories import (
     update_vde_by_id,
 )
 from src.vde_core.vde_calc import compute_vde_net, compute_vde_net_mj_per_km
+from src.vde_core.services import estimate_aux_from_coastdown
 
 
 _VDE_EXTRA_CTX_FIELDS = [
@@ -34,6 +37,7 @@ _VDE_EXTRA_CTX_FIELDS = [
     "transmission_model",
     "drive_type",
     "inertia_class",
+    "test_mass_kg",
     "cda_m2",
     "weight_dist_fr_pct",
     "payload_kg",
@@ -65,6 +69,8 @@ _VDE_EXTRA_CTX_FIELDS = [
     "rr_c_Npkph",
 ]
 
+EPA_TEST_MASS_DEFAULT_DELTA_KG = 136.0
+
 
 def to_float(value, default=None):
     try:
@@ -80,10 +86,113 @@ def to_float(value, default=None):
         return default
 
 
+def resolve_test_mass_kg(ctx: dict) -> float | None:
+    data = dict(ctx or {})
+    base_mass = to_float(data.get("mass_kg"))
+    manual_test_mass = to_float(data.get("test_mass_kg"))
+    if manual_test_mass is not None and manual_test_mass > 0:
+        if base_mass is not None and base_mass > 0 and manual_test_mass < base_mass:
+            raise ValueError("Test mass cannot be lower than curb weight.")
+        return manual_test_mass
+
+    if base_mass is None or base_mass <= 0:
+        return None
+
+    legislation = str(data.get("legislation") or "").strip().upper()
+    if legislation == "EPA":
+        return base_mass + EPA_TEST_MASS_DEFAULT_DELTA_KG
+    if legislation == "WLTP":
+        mro_kg = to_float(data.get("mro_kg"))
+        if mro_kg is None and base_mass is not None and base_mass > 0:
+            mro_kg = compute_mro_from_stda(base_mass, includes_driver=False)
+        options_kg = to_float(data.get("options_kg"), 0.0)
+        tpmlm_kg = to_float(data.get("tpmlm_kg"))
+        wltp_category = data.get("wltp_category", 1)
+        if mro_kg is not None and tpmlm_kg is not None:
+            tm = compute_wltp_test_mass(
+                mro_kg,
+                options_kg=options_kg or 0.0,
+                tpmlm_kg=tpmlm_kg,
+                category=wltp_category,
+            )
+            if tm is not None:
+                return tm
+    return base_mass
+
+
+def is_test_mass_defaulted(ctx: dict) -> bool:
+    data = dict(ctx or {})
+    if to_float(data.get("test_mass_kg")) is not None:
+        return False
+    return resolve_test_mass_kg(data) is not None
+
+
+def build_test_mass_hint(ctx: dict) -> str:
+    legislation = str((ctx or {}).get("legislation") or "").strip().upper()
+    if legislation == "EPA":
+        return "default Curb +300 pounds / 136 kg"
+    if legislation == "WLTP":
+        return "default WLTP uses MRO/TPMLM when available; otherwise curb weight"
+    return ""
+
+
+def resolve_tire_load_mass_basis(ctx: dict) -> str:
+    legislation = str((ctx or {}).get("legislation") or "").strip().upper()
+    basis = str((ctx or {}).get("tire_load_mass_basis") or "").strip().upper()
+    if basis in {"TEST_MASS", "TWC"}:
+        return basis
+    if legislation == "EPA":
+        return "TWC"
+    return "TEST_MASS"
+
+
+def resolve_tire_calculation_mass(ctx: dict) -> dict:
+    data = dict(ctx or {})
+    legislation = str(data.get("legislation") or "").strip().upper()
+    basis = resolve_tire_load_mass_basis(data)
+
+    if basis == "TWC":
+        base_mass = to_float(data.get("mass_kg"))
+        if legislation == "EPA" and base_mass is not None and base_mass > 0:
+            twc_kg = inertia_class_from_mass(base_mass)
+            source = "inertia_class_from_mass"
+        else:
+            twc_kg = to_float(data.get("twc_kg"))
+            if twc_kg is None:
+                twc_kg = to_float(data.get("etw_kg"))
+            if twc_kg is None:
+                twc_kg = to_float(data.get("inertia_class"))
+            source = "twc_kg" if to_float(data.get("twc_kg")) is not None else (
+                "etw_kg" if to_float(data.get("etw_kg")) is not None else "inertia_class"
+            )
+        return {
+            "basis": basis,
+            "mass_kg": twc_kg,
+            "source": source,
+        }
+
+    return {
+        "basis": basis,
+        "mass_kg": resolve_test_mass_kg(data),
+        "source": "test_mass_kg",
+    }
+
+
+def _with_effective_test_mass(ctx: dict) -> dict:
+    out = dict(ctx or {})
+    effective_test_mass = resolve_test_mass_kg(out)
+    if effective_test_mass is not None:
+        out["test_mass_kg"] = effective_test_mass
+        out["mass_kg_effective_for_calc"] = effective_test_mass
+        # Roadload engine still expects mass_kg as the active calculation mass.
+        out["mass_kg"] = effective_test_mass
+    return out
+
+
 def validate_core(A, B, C, mass_kg):
     errs, warns = [], []
     if A is None or C is None or mass_kg is None:
-        errs.append("Fill A, C and Mass with numeric values.")
+        errs.append("Fill A, C and curb weight with numeric values.")
         return errs, warns
     if A < 0:
         errs.append("A cannot be negative.")
@@ -91,7 +200,7 @@ def validate_core(A, B, C, mass_kg):
     if C < 0:
         errs.append("C cannot be negative.")
     if mass_kg <= 0:
-        errs.append("Mass must be > 0.")
+        errs.append("Curb weight must be > 0.")
     return errs, warns
 
 
@@ -139,7 +248,9 @@ def load_baselines_df():
                 "A": to_float(r.get("coast_A_N"), 0.0),
                 "B": to_float(r.get("coast_B_N_per_kph"), 0.0),
                 "C": to_float(r.get("coast_C_N_per_kph2"), 0.0),
-                "mass_kg": to_float(r.get("inertia_class"), to_float(r.get("mass_kg"), 1500.0)),
+                "mass_kg": to_float(r.get("mass_kg"), 1500.0),
+                "test_mass_kg": to_float(r.get("test_mass_kg"), None),
+                "inertia_class": to_float(r.get("inertia_class"), None),
                 "cd": to_float(r.get("cd"), None),
                 "frontal_area_m2": to_float(r.get("frontal_area_m2"), None),
                 "crr": to_float(r.get("crr"), None),
@@ -159,6 +270,8 @@ def load_baselines_df():
             "B",
             "C",
             "mass_kg",
+            "test_mass_kg",
+            "inertia_class",
             "cd",
             "frontal_area_m2",
             "crr",
@@ -208,7 +321,8 @@ def build_baseline_state_payload(base: dict, selected_id: int) -> dict:
             "A": base.get("A", base.get("coast_A_N")),
             "B": base.get("B", base.get("coast_B_N_per_kph")),
             "C": base.get("C", base.get("coast_C_N_per_kph2")),
-            "mass_kg": base.get("mass_kg", base.get("inertia_class")),
+            "mass_kg": base.get("mass_kg"),
+            "test_mass_kg": base.get("test_mass_kg"),
             "legislation": base.get("legislation"),
             "category": base.get("category"),
             "tire_size": base.get("tire_size"),
@@ -236,7 +350,8 @@ def build_delta_mode_ctx_updates(base: dict) -> dict:
         "A": float(base.get("A", base.get("coast_A_N", 0.0)) or 0.0),
         "B": float(base.get("B", base.get("coast_B_N_per_kph", 0.0)) or 0.0),
         "C": float(base.get("C", base.get("coast_C_N_per_kph2", 0.0)) or 0.0),
-        "mass_kg": float(base.get("mass_kg", base.get("inertia_class", 0.0)) or 0.0),
+        "mass_kg": float(base.get("mass_kg", 0.0) or 0.0),
+        "test_mass_kg": to_float(base.get("test_mass_kg")),
     }
     if base.get("crr1_frac_at_120kph") is not None:
         updates["crr1_frac_at_120kph"] = to_float(base.get("crr1_frac_at_120kph"))
@@ -258,11 +373,12 @@ def build_live_vde_preview(ctx: dict) -> dict:
       - phases: dict
       - equiv: Optional[EquivalentABC]
     """
-    df_cycle = ctx.get("cycle_df")
+    calc_ctx = _with_effective_test_mass(ctx)
+    df_cycle = calc_ctx.get("cycle_df")
 
     try:
-        leg = str(ctx.get("legislation", "")).upper()
-        equiv = resolve_equiv_from_ctx(ctx)
+        leg = str(calc_ctx.get("legislation", "")).upper()
+        equiv = resolve_equiv_from_ctx(calc_ctx)
         A1, B1, C1, mass_kg1 = equiv.A, equiv.B, equiv.C, equiv.mass_kg
     except Exception as e:
         return {"ok": False, "error": f"Preview not available (inputs): {e}", "total_mj_km": None, "phases": {}, "equiv": None}
@@ -391,7 +507,8 @@ def build_vde_insert_row(
         "model": model,
         "year": year,
         "notes": notes,
-        "mass_kg": equiv.mass_kg,
+        "mass_kg": to_float(ctx.get("mass_kg"), equiv.mass_kg),
+        "test_mass_kg": resolve_test_mass_kg(ctx),
         "coast_A_N": equiv.A,
         "coast_B_N_per_kph": equiv.B,
         "coast_C_N_per_kph2": equiv.C,
@@ -460,6 +577,99 @@ def build_vde_insert_row(
     }
 
 
+def save_vde_from_ctx(ctx: dict, *, defaults_df=None) -> dict:
+    """
+    Persist a new VDE snapshot from the current setup context.
+
+    Returns:
+      - vde_id: int
+      - row: dict
+      - calc: dict
+      - equiv: EquivalentABC
+      - total_mj_km: float
+      - by_phase: dict
+      - phase_updates: dict
+      - decomp: dict | None
+    """
+    calc = build_compute_vde_from_ctx(ctx)
+    if not calc.get("ok"):
+        raise ValueError(calc.get("error", "Compute not available."))
+
+    leg = str(ctx.get("legislation", ""))
+    cat = ctx.get("category")
+    make = ctx.get("make")
+    model = ctx.get("model")
+    year_raw = ctx.get("year")
+    year = int(year_raw) if str(year_raw).isdigit() else None
+    notes = ctx.get("notes", "")
+    cycle_name = default_cycle_for_legislation(leg)
+    cycle_source = ctx.get("cycle_source", f"standard:{leg}")
+
+    equiv = calc["equiv"]
+    total_mj_km = float(calc["total_mj_km"])
+    by_phase = dict(calc.get("by_phase", {}))
+    deltas = dict(calc.get("deltas", {}))
+
+    decomp = None
+    if defaults_df is not None:
+        try:
+            decomp = estimate_aux_from_coastdown(
+                A_N=equiv.A,
+                B_N_per_kph=equiv.B,
+                C_N_per_kph2=equiv.C,
+                mass_kg=equiv.mass_kg,
+                category=cat,
+                electrification=ctx.get("electrification", "ICE"),
+                transmission_type=ctx.get("transmission_type", "AT"),
+                cdA_override_m2=ctx.get("cda_m2"),
+                defaults_df=defaults_df,
+            )
+        except Exception:
+            decomp = None
+
+    row = build_vde_insert_row(
+        ctx,
+        leg=leg,
+        cat=cat,
+        make=make,
+        model=model,
+        year=year,
+        notes=notes,
+        cycle_name=cycle_name,
+        cycle_source=cycle_source,
+        equiv=equiv,
+        total_mj_km=total_mj_km,
+        by_phase=by_phase,
+        deltas=deltas,
+        decomp=decomp,
+    )
+
+    vde_id = insert_vde_snapshot(row)
+
+    df_cycle = ctx.get("cycle_df")
+    phase_updates = build_vde_phase_update(
+        df_cycle,
+        leg,
+        A=equiv.A,
+        B=equiv.B,
+        C=equiv.C,
+        mass_kg=equiv.mass_kg,
+    )
+    if phase_updates:
+        update_vde_snapshot(vde_id, phase_updates)
+
+    return {
+        "vde_id": int(vde_id),
+        "row": row,
+        "calc": calc,
+        "equiv": equiv,
+        "total_mj_km": total_mj_km,
+        "by_phase": by_phase,
+        "phase_updates": phase_updates,
+        "decomp": decomp,
+    }
+
+
 def build_vde_phase_update(df_cycle, leg: str, *, A: float, B: float, C: float, mass_kg: float) -> dict:
     if not (isinstance(df_cycle, pd.DataFrame) and "phase" in df_cycle.columns):
         return {}
@@ -483,8 +693,19 @@ def build_vde_phase_update(df_cycle, leg: str, *, A: float, B: float, C: float, 
     return upd
 
 
-def build_edit_core_update(*, A: float, B: float, C: float, mass_kg: float, make: str, model: str, year: int, notes: str) -> dict:
-    return {
+def build_edit_core_update(
+    *,
+    A: float,
+    B: float,
+    C: float,
+    mass_kg: float,
+    test_mass_kg: float | None,
+    make: str,
+    model: str,
+    year: int,
+    notes: str,
+) -> dict:
+    payload = {
         "coast_A_N": A,
         "coast_B_N_per_kph": B,
         "coast_C_N_per_kph2": C,
@@ -494,6 +715,9 @@ def build_edit_core_update(*, A: float, B: float, C: float, mass_kg: float, make
         "year": int(year),
         "notes": notes,
     }
+    if test_mass_kg is not None and test_mass_kg > 0:
+        payload["test_mass_kg"] = test_mass_kg
+    return payload
 
 
 def collect_ctx_updates(ctx: Optional[dict], fields: list[str], *, include_none: bool = False) -> dict:
@@ -509,6 +733,22 @@ def collect_ctx_updates(ctx: Optional[dict], fields: list[str], *, include_none:
             if value not in (None, ""):
                 out[key] = value
     return out
+
+
+def merge_update_payloads(*payloads: Optional[dict]) -> dict:
+    merged = {}
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        for key, value in payload.items():
+            if value is None:
+                continue
+            if isinstance(value, str) and value.strip() == "":
+                continue
+            if isinstance(value, (int, float)) and not math.isfinite(float(value)):
+                continue
+            merged[key] = value
+    return merged
 
 
 def build_decomp_update_for_edit(decomp: Optional[dict]) -> dict:

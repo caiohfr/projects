@@ -44,6 +44,11 @@ Current examples:
 - `plots.py`
 - `state.py`
 
+Recent practical result:
+- `pages/VDE_Setup.py` now acts mostly as entry-point orchestration;
+- reusable VDE sections live in `components/vde_setup.py`;
+- shared page state defaults and reset helpers live in `state.py`.
+
 ### `src/vde_core/`
 
 Technical backend modules.
@@ -63,6 +68,8 @@ Should avoid:
 Support modules now include:
 - `cycles.py` for cycle-facing entry points;
 - `repositories/` for thin VDE and fuel-consumption persistence wrappers;
+- `comparison_report_service.py` for report-facing data loading outside the page;
+- `tire_roadload_service.py` for tire-roadload CRUD, preview, and VDE application flow;
 - `experimental/` for preserved non-canonical heuristics and CSV experiments;
 - `roadload/physics_legacy.py` for older physical experiments kept outside the active pipeline.
 
@@ -105,7 +112,8 @@ Tests live in `tests/` and focus on pure logic first:
 - VDE setup helpers;
 - phase aggregation and test mass;
 - PWT service helpers;
-- decomposition helpers.
+- decomposition helpers;
+- tire roadload helpers and tire model behavior.
 
 ## Archive and Notebook Policy
 

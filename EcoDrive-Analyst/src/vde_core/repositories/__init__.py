@@ -8,6 +8,16 @@ from .fuelcons_repository import (
     insert_fuelcons_row,
     update_fuelcons_by_id,
 )
+from .tire_roadload_repository import (
+    create_tire_roadload,
+    deactivate_tire_roadload,
+    delete_tire_roadload,
+    get_tire_roadload_by_code,
+    get_tire_roadload_by_id,
+    list_tire_roadload_active,
+    search_tire_roadload,
+    update_tire_roadload,
+)
 from .vde_repository import (
     count_linked_fuelcons_rows,
     delete_vde_by_id,
@@ -24,10 +34,17 @@ from .vde_repository import (
     insert_vde_row,
     update_vde_by_id,
 )
+from .vde_tire_repository import (
+    get_vde_tire_application,
+    update_vde_tire_application,
+)
 
 __all__ = [
     "count_linked_fuelcons_rows",
+    "create_tire_roadload",
+    "deactivate_tire_roadload",
     "delete_fuelcons_by_id",
+    "delete_tire_roadload",
     "delete_vde_by_id",
     "fetch_fuelcons_allowed_columns",
     "fetch_fuelcons_by_vde_id",
@@ -44,8 +61,15 @@ __all__ = [
     "fetch_vde_engine_type",
     "fetch_vde_legislation",
     "fetch_vde_make_rows",
+    "get_tire_roadload_by_code",
+    "get_tire_roadload_by_id",
+    "get_vde_tire_application",
     "insert_fuelcons_row",
     "insert_vde_row",
+    "list_tire_roadload_active",
+    "search_tire_roadload",
     "update_fuelcons_by_id",
+    "update_tire_roadload",
+    "update_vde_tire_application",
     "update_vde_by_id",
 ]

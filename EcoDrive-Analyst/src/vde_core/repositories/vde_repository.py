@@ -28,7 +28,8 @@ def fetch_vde_edit_rows(limit: int = 100) -> list[dict]:
     return fetchall(
         """
         SELECT id, legislation, category, make, model, year,
-               coast_A_N, coast_B_N_per_kph, coast_C_N_per_kph2, mass_kg, notes
+               coast_A_N, coast_B_N_per_kph, coast_C_N_per_kph2,
+               mass_kg, test_mass_kg, inertia_class, notes
         FROM vde_db
         ORDER BY id DESC
         LIMIT ?

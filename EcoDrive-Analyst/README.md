@@ -13,6 +13,8 @@ The project combines:
 Main user flows:
 - `VDE Setup`: create, preview, edit, and save VDE snapshots;
 - `PWT Fuel Energy`: attach fuel or energy scenarios to saved VDE snapshots;
+- `Tire Database`: manage tire roadload records and preview RR-oriented metadata;
+- `Comparison Report`: lightweight VDE ranking, scatter, and export view;
 - roadload scenario preview through `RoadLoadRequest -> run_roadload_scenario() -> EquivalentABC`.
 
 Current focus of the codebase:
@@ -66,7 +68,10 @@ EcoDrive-Analyst/
 |   `-- README.md
 |-- pages/
 |   |-- Comparison_Report.py
+|   |-- home_page.py
+|   |-- Operating_Points.py
 |   |-- PWT_Fuel_Energy.py
+|   |-- Tire_Database.py
 |   `-- VDE_Setup.py
 |-- src/
 |   |-- vde_app/
@@ -81,6 +86,7 @@ EcoDrive-Analyst/
 |   |   |-- state.py
 |   |   `-- ...
 |   `-- vde_core/
+|       |-- comparison_report_service.py
 |       |-- cycles.py
 |       |-- db.py
 |       |-- experimental/
@@ -92,9 +98,14 @@ EcoDrive-Analyst/
 |       |-- repositories/
 |       |   |-- __init__.py
 |       |   |-- fuelcons_repository.py
-|       |   `-- vde_repository.py
+|       |   |-- tire_roadload_repository.py
+|       |   |-- vde_repository.py
+|       |   `-- vde_tire_repository.py
 |       |-- services.py
+|       |-- test_mass.py
+|       |-- tire_roadload_service.py
 |       |-- utils.py
+|       |-- vde_calc.py
 |       |-- vde_setup_service.py
 |       `-- roadload/
 |           |-- __init__.py
@@ -161,3 +172,9 @@ python -m unittest discover -s tests -v
 ## Status
 
 This repository is in an active modularization phase. The current sprint emphasizes hygiene, UI/core separation, roadload consolidation, and test coverage before deeper physical component modeling.
+
+Recent architectural status:
+- `pages/VDE_Setup.py` is now a thin orchestration page;
+- reusable page sections live under `src/vde_app/components/`;
+- VDE session-state defaults and reset helpers live in `src/vde_app/state.py`;
+- repository and service helpers now own most persistence and payload shaping outside the pages.

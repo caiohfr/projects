@@ -79,6 +79,28 @@ pages/PWT_Fuel_Energy.py
     -> regression / db helpers
 ```
 
+### Tire Database
+
+Page flow:
+
+```text
+pages/Tire_Database.py
+    -> streamlit form rendering
+    -> tire_roadload_service.py
+    -> repositories/tire_roadload_repository.py
+    -> roadload/tire_model.py
+```
+
+### Comparison Report
+
+Page flow:
+
+```text
+pages/Comparison_Report.py
+    -> comparison_report_service.py
+    -> cycles / phase aggregation helpers
+```
+
 ## Why This Boundary Matters
 
 This separation makes it easier to:

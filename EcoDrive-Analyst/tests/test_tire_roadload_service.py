@@ -6,6 +6,7 @@ from src.vde_core.tire_roadload_service import (
     PSI_TO_KPA,
     apply_tire_result_to_roadload_request,
     build_tire_component_from_result,
+    get_tire_by_code,
     preview_tire_roadload_for_vde,
     resolve_tire_load_mass,
     save_tire_roadload_to_vde,
@@ -14,6 +15,20 @@ from src.vde_core.tire_roadload_service import (
 
 
 class TireRoadloadServiceTests(unittest.TestCase):
+    @patch("src.vde_core.tire_roadload_service.get_tire_roadload_by_code")
+    def test_get_tire_by_code_uses_tire_test_code_lookup(self, mock_get_tire_roadload_by_code):
+        mock_get_tire_roadload_by_code.return_value = {
+            "id": 7,
+            "tire_test_code": "EPA-225-50R17-A",
+            "rr_n_per_kn": 9.5,
+        }
+
+        tire = get_tire_by_code("EPA-225-50R17-A")
+
+        self.assertEqual(tire["id"], 7)
+        self.assertEqual(tire["tire_test_code"], "EPA-225-50R17-A")
+        mock_get_tire_roadload_by_code.assert_called_once_with("EPA-225-50R17-A")
+
     def test_summarize_tire_rr_uses_iso_corrected_rrc_when_available(self):
         summary = summarize_tire_rr(
             {
@@ -26,6 +41,106 @@ class TireRoadloadServiceTests(unittest.TestCase):
         self.assertEqual(summary["standard_family"], "ISO")
         self.assertAlmostEqual(summary["rr_n_per_kn"], 9.2)
         self.assertEqual(summary["rr_quality"], "measured_or_corrected_iso")
+
+    def test_summarize_tire_rr_preserves_reference_smerf_values_for_sae_cases(self):
+        reference_cases = [
+            {
+                "size_code": "175/65R14",
+                "sae_alpha": -0.673903152,
+                "sae_beta": 1.1234,
+                "sae_a": 0.0919,
+                "sae_b": 0.00029,
+                "sae_c": -2.67e-7,
+                "test_load_value": 475.0,
+                "test_pressure_value": 35.0,
+                "smerf": 6.80,
+            },
+            {
+                "size_code": "175/65R14",
+                "sae_alpha": -0.628482945,
+                "sae_beta": 1.0875,
+                "sae_a": 0.1020,
+                "sae_b": 0.00026,
+                "sae_c": -2.69e-7,
+                "test_load_value": 475.0,
+                "test_pressure_value": 35.0,
+                "smerf": 7.08,
+            },
+            {
+                "size_code": "205/50R17",
+                "sae_alpha": -0.289177642,
+                "sae_beta": 0.9498,
+                "sae_a": 0.0406,
+                "sae_b": 0.00014,
+                "sae_c": -1.70e-7,
+                "test_load_value": 580.0,
+                "test_pressure_value": 36.0,
+                "smerf": 6.28,
+            },
+            {
+                "size_code": "205/50R17",
+                "sae_alpha": -0.399206157,
+                "sae_beta": 1.0122,
+                "sae_a": 0.0419,
+                "sae_b": 0.00015,
+                "sae_c": -2.03e-7,
+                "test_load_value": 580.0,
+                "test_pressure_value": 36.0,
+                "smerf": 5.92,
+            },
+        ]
+
+        for case in reference_cases:
+            with self.subTest(size_code=case["size_code"], smerf=case["smerf"]):
+                summary = summarize_tire_rr(
+                    {
+                        "calculation_mode": "SAE_J2452",
+                        "pressure_unit": "psi",
+                        "load_unit": "kg",
+                        **case,
+                    }
+                )
+
+                self.assertEqual(summary["standard_family"], "SAE")
+                self.assertEqual(summary["rr_method"], "SAE_J2452_SMERF_EPA_55_45")
+                self.assertEqual(summary["rr_quality"], "reference_smerf_force_input")
+                self.assertAlmostEqual(summary["smerf"], case["smerf"], places=2)
+                self.assertAlmostEqual(
+                    summary["rr_n_per_kn"],
+                    case["smerf"] * 1000.0 / (case["test_load_value"] * 9.80665),
+                )
+
+    def test_summarize_tire_rr_preserves_distinct_reference_smerf_and_rrc_values_for_sae_cases(self):
+        reference_pairs = [
+            {"config": "Config 1", "test_weight_lbf": 5250.0, "smerf": 6.88, "rr_n_per_kn": 7.13},
+            {"config": "Config 2", "test_weight_lbf": 5250.0, "smerf": 6.81, "rr_n_per_kn": 7.04},
+            {"config": "Config 3", "test_weight_lbf": 5250.0, "smerf": 6.85, "rr_n_per_kn": 7.08},
+            {"config": "Config 4", "test_weight_lbf": 5500.0, "smerf": 6.88, "rr_n_per_kn": 7.14},
+            {"config": "Config 5", "test_weight_lbf": 5500.0, "smerf": 6.81, "rr_n_per_kn": 7.04},
+            {"config": "Config 6", "test_weight_lbf": 5500.0, "smerf": 6.85, "rr_n_per_kn": 7.09},
+            {"config": "Config 7", "test_weight_lbf": 6100.0, "smerf": 6.88, "rr_n_per_kn": 7.18},
+            {"config": "Config 8", "test_weight_lbf": 6100.0, "smerf": 6.81, "rr_n_per_kn": 7.08},
+            {"config": "Config 9", "test_weight_lbf": 6100.0, "smerf": 6.85, "rr_n_per_kn": 7.13},
+        ]
+
+        for row in reference_pairs:
+            with self.subTest(config=row["config"]):
+                summary = summarize_tire_rr(
+                    {
+                        "calculation_mode": "SAE_J2452",
+                        "test_source": "VDE/PSE reference",
+                        "test_load_value": row["test_weight_lbf"],
+                        "load_unit": "lb",
+                        "smerf": row["smerf"],
+                        "rr_n_per_kn": row["rr_n_per_kn"],
+                    }
+                )
+
+                self.assertEqual(summary["standard_family"], "SAE")
+                self.assertEqual(summary["rr_method"], "SAE_J2452_SMERF_EPA_55_45")
+                self.assertEqual(summary["rr_quality"], "reference_rr_and_smerf_input")
+                self.assertAlmostEqual(summary["smerf"], row["smerf"], places=2)
+                self.assertAlmostEqual(summary["rr_n_per_kn"], row["rr_n_per_kn"], places=2)
 
     def test_summarize_tire_rr_returns_missing_inputs_for_incomplete_sae_payload(self):
         summary = summarize_tire_rr(
@@ -149,6 +264,7 @@ class TireRoadloadServiceTests(unittest.TestCase):
         self.assertIn("mass_used_fallback=False", preview["save_payload"]["tire_calc_notes"])
         self.assertIn("uses_inertia_class_mass=False", preview["save_payload"]["tire_calc_notes"])
         self.assertIn("rear_tire_source=same_tire_front_rear", preview["save_payload"]["tire_calc_notes"])
+        self.assertAlmostEqual(preview["save_payload"]["rrc_N_per_kN"], 9.5)
 
     @patch("src.vde_core.tire_roadload_service.get_tire_roadload_by_id")
     @patch("src.vde_core.tire_roadload_service.get_vde_tire_application")
@@ -211,6 +327,7 @@ class TireRoadloadServiceTests(unittest.TestCase):
             "sae_c": 0.0001,
             "sae_alpha": 1.0,
             "sae_beta": 0.0,
+            "rr_n_per_kn": 9.5,
         }
 
         preview = preview_tire_roadload_for_vde(

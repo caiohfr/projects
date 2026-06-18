@@ -181,6 +181,23 @@ def render_tire_roadload_preview_panel(*, vde_id: int | None, base_row: dict | N
         return
 
     tire_by_id = {int(r["id"]): r for r in tires if r.get("id") is not None}
+    tire_by_code = {
+        str(r.get("tire_test_code") or "").strip(): r
+        for r in tires
+        if str(r.get("tire_test_code") or "").strip()
+    }
+    tire_codes = sorted(tire_by_code.keys())
+    if not tire_codes:
+        st.warning("Active tire records need tire_test_code before VDE Setup can use them.")
+        return
+
+    def _code_for_tire_id(tire_id) -> str:
+        try:
+            row = tire_by_id.get(int(tire_id))
+        except Exception:
+            row = None
+        return str((row or {}).get("tire_test_code") or "").strip()
+
     tire_ids = list(tire_by_id.keys())
     base = dict(base_row or {})
     current_saved = {
@@ -224,11 +241,11 @@ def render_tire_roadload_preview_panel(*, vde_id: int | None, base_row: dict | N
 
         st.divider()
 
-    front_default = ctx.get("front_tire_id") or base.get("front_tire_id")
-    rear_default = ctx.get("rear_tire_id") or base.get("rear_tire_id")
-    if front_default not in tire_ids:
-        front_default = tire_ids[0]
-    if rear_default not in tire_ids:
+    front_default = _code_for_tire_id(ctx.get("front_tire_id") or base.get("front_tire_id"))
+    rear_default = _code_for_tire_id(ctx.get("rear_tire_id") or base.get("rear_tire_id"))
+    if front_default not in tire_codes:
+        front_default = tire_codes[0]
+    if rear_default not in tire_codes:
         rear_default = front_default
 
     same_default = bool(ctx.get("same_tire_front_rear", False) or (front_default == rear_default))
@@ -241,13 +258,14 @@ def render_tire_roadload_preview_panel(*, vde_id: int | None, base_row: dict | N
     )
 
     c1, c2 = st.columns(2)
-    front_tire_id = c1.selectbox(
-        "Front tire",
-        tire_ids,
-        index=tire_ids.index(front_default),
-        format_func=lambda tid: _tire_label(tire_by_id[tid]),
+    front_tire_code = c1.selectbox(
+        "Front tire_test_code",
+        tire_codes,
+        index=tire_codes.index(front_default),
         key=f"tire_preview_front_{vde_id}",
     )
+    front_tire_id = int(tire_by_code[front_tire_code]["id"])
+    c1.caption(_tire_label(tire_by_code[front_tire_code]))
     same_tire = c2.checkbox(
         "Same tire front/rear",
         value=same_default,
@@ -258,13 +276,14 @@ def render_tire_roadload_preview_panel(*, vde_id: int | None, base_row: dict | N
     if same_tire:
         st.caption(f"Rear tire mirrors front tire: {_tire_label(tire_by_id[front_tire_id])}")
     else:
-        rear_tire_id = st.selectbox(
-            "Rear tire",
-            tire_ids,
-            index=tire_ids.index(rear_default),
-            format_func=lambda tid: _tire_label(tire_by_id[tid]),
+        rear_tire_code = st.selectbox(
+            "Rear tire_test_code",
+            tire_codes,
+            index=tire_codes.index(rear_default),
             key=f"tire_preview_rear_{vde_id}",
         )
+        rear_tire_id = int(tire_by_code[rear_tire_code]["id"])
+        st.caption(_tire_label(tire_by_code[rear_tire_code]))
 
     p1, p2, p3, p4 = st.columns(4)
     front_pressure_psi = p1.number_input(
@@ -326,6 +345,8 @@ def render_tire_roadload_preview_panel(*, vde_id: int | None, base_row: dict | N
             )
             ctx["front_tire_id"] = front_tire_id
             ctx["rear_tire_id"] = rear_tire_id
+            ctx["front_tire_test_code"] = front_tire_code
+            ctx["rear_tire_test_code"] = front_tire_code if same_tire else rear_tire_code
             ctx["same_tire_front_rear"] = same_tire
             ctx["front_pressure_psi"] = front_pressure_psi
             ctx["rear_pressure_psi"] = rear_pressure_psi

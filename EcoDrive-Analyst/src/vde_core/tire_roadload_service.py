@@ -40,7 +40,6 @@ from src.vde_core.roadload import (
 
 PSI_TO_KPA = KPA_PER_PSI
 CALCULATION_MODES = ("SAE_J2452", "ISO_28580", "EU_LABEL_ESTIMATED", "CUSTOM")
-SAE_SMERF_LOAD_FACTOR = 0.7
 EPA_TEST_MASS_DEFAULT_DELTA_KG = 136.0
 
 
@@ -282,6 +281,39 @@ def summarize_tire_rr(payload: dict | None) -> dict:
     mode = _normalize_calculation_mode(data.get("calculation_mode"), data.get("standard_family"))
 
     if mode == "SAE_J2452":
+        explicit_smerf = _positive_float(data.get("smerf"))
+        explicit_rr_n_per_kn = _positive_float(data.get("rr_n_per_kn"))
+        if explicit_smerf is not None or explicit_rr_n_per_kn is not None:
+            load_unit = _normalize_unit(data.get("load_unit") or data.get("sae_load_unit"), "kg")
+            reference_load_n = _positive_float(
+                _first_value(
+                    data.get("sae_reference_load_n"),
+                    _load_to_n(data.get("test_load_value"), load_unit),
+                )
+            )
+            if explicit_smerf is not None and explicit_rr_n_per_kn is not None:
+                rr_quality = "reference_rr_and_smerf_input"
+                rr_n_per_kn = explicit_rr_n_per_kn
+            elif explicit_smerf is not None:
+                if reference_load_n is not None:
+                    rr_quality = "reference_smerf_force_input"
+                    rr_n_per_kn = explicit_smerf * 1000.0 / reference_load_n
+                else:
+                    rr_quality = "reference_smerf_input_missing_reference_load"
+                    rr_n_per_kn = explicit_smerf
+            else:
+                rr_quality = "reference_rr_input"
+                rr_n_per_kn = explicit_rr_n_per_kn
+            return {
+                "calculation_mode": mode,
+                "standard_family": "SAE",
+                "rr_n_per_kn": rr_n_per_kn,
+                "smerf": explicit_smerf,
+                "rr_method": "SAE_J2452_SMERF_EPA_55_45",
+                "rr_source": data.get("rr_source") or data.get("test_source") or rr_quality,
+                "rr_quality": data.get("rr_quality") or rr_quality,
+            }
+
         pressure_unit = _normalize_unit(data.get("pressure_unit") or data.get("sae_pressure_unit"), "kPa")
         load_unit = _normalize_unit(data.get("load_unit") or data.get("sae_load_unit"), "kg")
         pressure = _positive_float(
@@ -296,7 +328,7 @@ def summarize_tire_rr(payload: dict | None) -> dict:
                 data.get("sae_reference_load_n"),
             )
         )
-        load_value = None if nominal_load_n is None else nominal_load_n * SAE_SMERF_LOAD_FACTOR
+        load_value = nominal_load_n
         a = _to_float(data.get("sae_a"))
         b = _to_float(data.get("sae_b"))
         c = _to_float(data.get("sae_c"))
@@ -305,7 +337,7 @@ def summarize_tire_rr(payload: dict | None) -> dict:
             return {
                 "calculation_mode": mode,
                 "standard_family": "SAE",
-                "rr_method": "SAE_J2452_SMERF",
+                "rr_method": "SAE_J2452_SMERF_EPA_55_45",
                 "rr_source": data.get("rr_source") or data.get("test_source"),
                 "rr_quality": "missing_sae_inputs",
                 "smerf": None,
@@ -324,7 +356,7 @@ def summarize_tire_rr(payload: dict | None) -> dict:
             return {
                 "calculation_mode": mode,
                 "standard_family": "SAE",
-                "rr_method": "SAE_J2452_SMERF",
+                "rr_method": "SAE_J2452_SMERF_EPA_55_45",
                 "rr_source": data.get("rr_source") or data.get("test_source"),
                 "rr_quality": "missing_sae_inputs",
                 "smerf": None,
@@ -334,7 +366,7 @@ def summarize_tire_rr(payload: dict | None) -> dict:
             "standard_family": "SAE",
             "rr_n_per_kn": result["rr_n_per_kn"],
             "smerf": result["smerf"],
-            "rr_method": "SAE_J2452_SMERF",
+            "rr_method": "SAE_J2452_SMERF_EPA_55_45",
             "rr_source": data.get("rr_source") or data.get("test_source") or "calculated_from_sae_coefficients",
             "rr_quality": "calculated_from_sae_coefficients",
         }
@@ -684,7 +716,7 @@ def preview_tire_roadload_for_vde(vde_id: int, payload: dict | None = None) -> d
         "tire_A_final": calculation["total_final_abc"]["A"],
         "tire_B_final": calculation["total_final_abc"]["B"],
         "tire_C_final": calculation["total_final_abc"]["C"],
-        "rrc_N_per_kN": _derive_rrc_for_vde(calculation),
+        "rrc_N_per_kN": _to_float(calculation.get("applied_rr_n_per_kn"), _derive_rrc_for_vde(calculation)),
         "tire_calc_source": (
             "tire_roadload_db:"
             f"{_normalize_standard_family(front_tire.get('standard_family'))}/"

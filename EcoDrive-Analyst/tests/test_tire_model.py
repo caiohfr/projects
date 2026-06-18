@@ -6,11 +6,15 @@ from src.vde_core.roadload import (
     KPA_PER_PSI,
     MPH_PER_KPH,
     N_PER_LBF,
+    adjust_rrc_to_operating_condition,
     apply_tire_improvement,
     build_tire_component,
+    calculate_applied_rrc_by_axle,
     calculate_axle_loads,
     calculate_axle_tire_abc_from_single,
     calculate_iso_tire_abc_for_single_tire,
+    calculate_mean_force_lbf_from_rrc_n_per_kn,
+    calculate_rrc_n_per_kn_from_mean_force_lbf,
     calculate_sae_smerf_rr_n_per_kn,
     calculate_sae_tire_abc_for_single_tire,
     calculate_single_tire_loads,
@@ -110,10 +114,154 @@ class TireModelTests(unittest.TestCase):
         c_val = scale * inputs["c"]
         f_city = a_val + b_val * 34.04267 + c_val * 1818.112
         f_hwy = a_val + b_val * 77.67619 + c_val * 6297.445
-        expected_rr = ((0.55 * f_city) + (0.45 * f_hwy)) * 1000.0 / inputs["load_n"]
+        expected_smerf = (0.55 * f_city) + (0.45 * f_hwy)
+        expected_rr = expected_smerf * 1000.0 / inputs["load_n"]
 
         self.assertAlmostEqual(result["rr_n_per_kn"], expected_rr)
-        self.assertAlmostEqual(result["smerf"], expected_rr)
+        self.assertAlmostEqual(result["smerf"], expected_smerf)
+        self.assertAlmostEqual(result["smerf_force_n"], expected_smerf)
+
+    def test_adjust_rrc_to_operating_condition_constant_mode_keeps_reference_rrc(self):
+        result = adjust_rrc_to_operating_condition(
+            rrc_ref_n_per_kn=7.0,
+            load_real_n=3500.0,
+            load_ref_n=3000.0,
+            pressure_real_kpa=220.0,
+            pressure_ref_kpa=240.0,
+            pressure_exponent=-0.5,
+            load_exponent=1.2,
+            mode="CONSTANT_RRC",
+        )
+
+        self.assertAlmostEqual(result, 7.0)
+
+    def test_adjust_rrc_to_operating_condition_power_law_uses_pressure_and_load(self):
+        result = adjust_rrc_to_operating_condition(
+            rrc_ref_n_per_kn=7.0,
+            load_real_n=3500.0,
+            load_ref_n=3000.0,
+            pressure_real_kpa=220.0,
+            pressure_ref_kpa=240.0,
+            pressure_exponent=-0.5,
+            load_exponent=1.2,
+            mode="POWER_LAW",
+        )
+
+        expected = 7.0 * ((220.0 / 240.0) ** -0.5) * ((3500.0 / 3000.0) ** 0.2)
+        self.assertAlmostEqual(result, expected)
+
+    def test_adjust_rrc_to_operating_condition_beta_one_removes_load_sensitivity(self):
+        result = adjust_rrc_to_operating_condition(
+            rrc_ref_n_per_kn=7.0,
+            load_real_n=3500.0,
+            load_ref_n=3000.0,
+            load_exponent=1.0,
+            mode="POWER_LAW",
+        )
+
+        self.assertAlmostEqual(result, 7.0)
+
+    def test_calculate_applied_rrc_by_axle_for_iso_constant_rrc(self):
+        tire = {
+            "standard_family": "ISO",
+            "rr_n_per_kn": 10.0,
+        }
+
+        result = calculate_applied_rrc_by_axle(
+            front_tire=tire,
+            rear_tire=tire,
+            inputs={
+                "mass_kg": 1000.0,
+                "front_weight_distribution_pct": 60.0,
+            },
+        )
+
+        self.assertAlmostEqual(result["front_rrc_n_per_kn"], 10.0)
+        self.assertAlmostEqual(result["rear_rrc_n_per_kn"], 10.0)
+        self.assertAlmostEqual(result["vehicle_rrc_n_per_kn"], 10.0)
+        self.assertAlmostEqual(result["vehicle_force_n"], result["loads"]["total_load_n"] * 10.0 / 1000.0)
+
+    def test_calculate_applied_rrc_by_axle_for_sae_power_law(self):
+        tire = {
+            "standard_family": "SAE",
+            "rr_n_per_kn": 7.0,
+            "sae_reference_pressure_kpa": 240.0,
+            "sae_reference_load_n": 3000.0,
+            "sae_alpha": -0.5,
+            "sae_beta": 1.2,
+        }
+
+        result = calculate_applied_rrc_by_axle(
+            front_tire=tire,
+            rear_tire=tire,
+            inputs={
+                "mass_kg": 1000.0,
+                "front_weight_distribution_pct": 60.0,
+                "front_pressure_kpa": 220.0,
+                "rear_pressure_kpa": 260.0,
+            },
+        )
+
+        front_load = result["front_single_tire_load_n"]
+        rear_load = result["rear_single_tire_load_n"]
+        expected_front_rrc = 7.0 * ((220.0 / 240.0) ** -0.5) * ((front_load / 3000.0) ** 0.2)
+        expected_rear_rrc = 7.0 * ((260.0 / 240.0) ** -0.5) * ((rear_load / 3000.0) ** 0.2)
+        expected_force = (2.0 * expected_front_rrc * front_load / 1000.0) + (
+            2.0 * expected_rear_rrc * rear_load / 1000.0
+        )
+        expected_vehicle_rrc = expected_force * 1000.0 / result["loads"]["total_load_n"]
+
+        self.assertAlmostEqual(result["front_rrc_n_per_kn"], expected_front_rrc)
+        self.assertAlmostEqual(result["rear_rrc_n_per_kn"], expected_rear_rrc)
+        self.assertAlmostEqual(result["vehicle_rrc_n_per_kn"], expected_vehicle_rrc)
+
+    def test_reference_mfr_lbf_matches_vehicle_rrc_x1000_from_vde_pse_table(self):
+        reference_rows = [
+            {
+                "config": "Config 1",
+                "test_weight_lbf": 3910.0,
+                "mfr_lbf": 6.89,
+                "vehicle_rrc_x1000": 6.99,
+            },
+            {
+                "config": "Config 2",
+                "test_weight_lbf": 3956.0,
+                "mfr_lbf": 6.89,
+                "vehicle_rrc_x1000": 6.98,
+            },
+            {
+                "config": "Config 3",
+                "test_weight_lbf": 3910.0,
+                "mfr_lbf": 6.89,
+                "vehicle_rrc_x1000": 6.99,
+            },
+            {
+                "config": "Config 4",
+                "test_weight_lbf": 3910.0,
+                "mfr_lbf": 6.89,
+                "vehicle_rrc_x1000": 6.99,
+            },
+            {
+                "config": "Config 5",
+                "test_weight_lbf": 3956.0,
+                "mfr_lbf": 6.89,
+                "vehicle_rrc_x1000": 6.98,
+            },
+        ]
+
+        for row in reference_rows:
+            with self.subTest(config=row["config"]):
+                rrc = calculate_rrc_n_per_kn_from_mean_force_lbf(
+                    row["mfr_lbf"],
+                    row["test_weight_lbf"],
+                )
+                mfr = calculate_mean_force_lbf_from_rrc_n_per_kn(
+                    row["vehicle_rrc_x1000"],
+                    row["test_weight_lbf"],
+                )
+
+                self.assertAlmostEqual(rrc, row["vehicle_rrc_x1000"], delta=0.08)
+                self.assertAlmostEqual(mfr, row["mfr_lbf"], delta=0.08)
 
     def test_calculate_iso_tire_abc_for_single_tire_maps_rr_to_constant_a(self):
         tire = {

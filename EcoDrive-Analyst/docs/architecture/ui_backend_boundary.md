@@ -91,6 +91,17 @@ pages/Tire_Database.py
     -> roadload/tire_model.py
 ```
 
+VDE Setup tire flow:
+
+```text
+components/vde_setup.py
+    -> select/search tire_test_code
+    -> tire_roadload_service.py
+    -> repositories/tire_roadload_repository.py
+    -> roadload/tire_model.py
+    -> repositories/vde_tire_repository.py, only after explicit save
+```
+
 ### Comparison Report
 
 Page flow:

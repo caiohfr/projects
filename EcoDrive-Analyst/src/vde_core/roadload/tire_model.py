@@ -40,6 +40,8 @@ DEFAULT_HWY_V_FACTOR = 77.67619
 DEFAULT_HWY_V2_FACTOR = 6297.445
 DEFAULT_CITY_WEIGHT = 0.55
 DEFAULT_HWY_WEIGHT = 0.45
+CONSTANT_RRC_MODE = "CONSTANT_RRC"
+POWER_LAW_RRC_MODE = "POWER_LAW"
 
 
 def _to_float(value, field_name: str, *, default=None, required: bool = False):
@@ -228,16 +230,16 @@ def calculate_sae_smerf_rr_n_per_kn(
     hwy_weight: float = DEFAULT_HWY_WEIGHT,
 ) -> Dict[str, float]:
     """
-    Calculate SAE/J2452-style SMERF as an RR value in N/kN.
+    Calculate SAE/J2452-style EPA SMERF and reference RRC.
 
-    The spreadsheet logic uses the SAE ABC model to compute a weighted city/highway
-    rolling-resistance force, then normalizes it by tire load:
+    The official EcoDrive tire methodology separates:
 
-        rr_n_per_kn = F_combined * 1000 / Z
+        SMERF_EPA = 0.55 * F_FTP + 0.45 * F_HWFET
+        RRC_ref [N/kN] = SMERF_EPA [N] * 1000 / Z_ref [N]
 
     ``pressure_kpa`` and ``load_n`` are the values used directly by the
-    spreadsheet-style SMERF equation. In the current EcoDrive UI they are
-    resolved as kPa and N before calling this helper.
+    spreadsheet-style SAE equation. They must already be in the same units
+    expected by the coefficients.
     """
     alpha = _to_float(alpha, "sae_alpha", default=0.0)
     beta = _to_float(beta, "sae_beta", default=0.0)
@@ -276,7 +278,8 @@ def calculate_sae_smerf_rr_n_per_kn(
         "F_hwy": f_hwy,
         "F_combined": f_combined,
         "rr_n_per_kn": rr_n_per_kn,
-        "smerf": rr_n_per_kn,
+        "smerf": f_combined,
+        "smerf_force_n": f_combined,
         "pressure_kpa": pressure_kpa,
         "load_n": load_n,
         "city_v_factor": city_v_factor,
@@ -286,6 +289,264 @@ def calculate_sae_smerf_rr_n_per_kn(
         "city_weight": city_weight,
         "hwy_weight": hwy_weight,
     }
+
+
+def _first_present(data: dict | None, *keys: str):
+    if not isinstance(data, dict):
+        return None
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _positive_model_float(value, field_name: str, *, default=None, required: bool = False):
+    out = _to_float(value, field_name, default=default, required=required)
+    if out is None:
+        return None
+    if out <= 0:
+        raise ValueError(f"{field_name} must be greater than zero")
+    return out
+
+
+def _non_negative_model_float(value, field_name: str, *, default=None, required: bool = False):
+    out = _to_float(value, field_name, default=default, required=required)
+    if out is None:
+        return None
+    if out < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    return out
+
+
+def _standard_family(tire: dict) -> str:
+    return str(_dict_get(tire, "standard_family", "") or "").strip().upper()
+
+
+def _reference_rrc_n_per_kn(tire: dict) -> float | None:
+    return _to_float(
+        _first_present(tire, "rr_n_per_kn", "iso_rrc_n_per_kn", "iso_corrected_rrc_n_per_kn"),
+        "tire.rr_n_per_kn",
+        default=None,
+    )
+
+
+def _reference_pressure_kpa(tire: dict) -> float | None:
+    return _to_float(
+        _first_present(tire, "sae_reference_pressure_kpa", "reference_pressure_kpa", "iso_test_pressure_kpa"),
+        "tire.reference_pressure_kpa",
+        default=None,
+    )
+
+
+def _reference_load_n(tire: dict) -> float | None:
+    return _to_float(
+        _first_present(tire, "sae_reference_load_n", "reference_load_n", "iso_test_load_n"),
+        "tire.reference_load_n",
+        default=None,
+    )
+
+
+def _pressure_exponent(tire: dict) -> float | None:
+    return _to_float(
+        _first_present(tire, "sae_alpha_pressure", "alpha_pressure", "sae_alpha"),
+        "tire.alpha_pressure",
+        default=None,
+    )
+
+
+def _load_exponent(tire: dict) -> float | None:
+    return _to_float(
+        _first_present(tire, "sae_beta_load", "beta_load", "sae_beta"),
+        "tire.beta_load",
+        default=None,
+    )
+
+
+def _rrc_adjustment_mode(tire: dict) -> str:
+    mode = str(_dict_get(tire, "rrc_adjustment_mode", "") or "").strip().upper()
+    if mode in {CONSTANT_RRC_MODE, POWER_LAW_RRC_MODE}:
+        return mode
+    if _standard_family(tire) == "SAE" and _reference_load_n(tire) is not None and _load_exponent(tire) is not None:
+        return POWER_LAW_RRC_MODE
+    return CONSTANT_RRC_MODE
+
+
+def adjust_rrc_to_operating_condition(
+    *,
+    rrc_ref_n_per_kn: float,
+    load_real_n: float,
+    load_ref_n: float | None = None,
+    pressure_real_kpa: float | None = None,
+    pressure_ref_kpa: float | None = None,
+    pressure_exponent: float | None = None,
+    load_exponent: float | None = None,
+    mode: str = CONSTANT_RRC_MODE,
+) -> float:
+    """
+    Convert reference tire RRC to the operating load/pressure condition.
+
+    Official power-law correction:
+
+        RRC_real = RRC_ref
+            * (P_real / P_ref) ** alpha_pressure
+            * (Z_real / Z_ref) ** (beta_load - 1)
+
+    Constant mode is the ISO/simple behavior: RRC_real = RRC_ref.
+    """
+    mode = str(mode or CONSTANT_RRC_MODE).strip().upper()
+    rrc_ref_n_per_kn = _non_negative_model_float(rrc_ref_n_per_kn, "rrc_ref_n_per_kn", required=True)
+    load_real_n = _positive_model_float(load_real_n, "load_real_n", required=True)
+
+    if mode == CONSTANT_RRC_MODE:
+        return rrc_ref_n_per_kn
+    if mode != POWER_LAW_RRC_MODE:
+        raise ValueError(f"Unsupported RRC adjustment mode: {mode!r}")
+
+    load_ref_n = _positive_model_float(load_ref_n, "load_ref_n", required=True)
+    load_exponent = _to_float(load_exponent, "load_exponent", required=True)
+    factor = (load_real_n / load_ref_n) ** (load_exponent - 1.0)
+
+    if pressure_exponent is not None:
+        pressure_real_kpa = _positive_model_float(pressure_real_kpa, "pressure_real_kpa", required=True)
+        pressure_ref_kpa = _positive_model_float(pressure_ref_kpa, "pressure_ref_kpa", required=True)
+        pressure_exponent = _to_float(pressure_exponent, "pressure_exponent", required=True)
+        factor *= (pressure_real_kpa / pressure_ref_kpa) ** pressure_exponent
+
+    return rrc_ref_n_per_kn * factor
+
+
+def _applied_rrc_for_tire(tire: dict, *, single_tire_load_n: float, pressure_kpa: float | None) -> Dict[str, float | str | None]:
+    rrc_ref = _non_negative_model_float(_reference_rrc_n_per_kn(tire), "tire.rr_n_per_kn", required=True)
+    mode = _rrc_adjustment_mode(tire)
+    pressure_exponent = _pressure_exponent(tire)
+    pressure_ref_kpa = _reference_pressure_kpa(tire)
+    load_exponent = _load_exponent(tire)
+    load_ref_n = _reference_load_n(tire)
+
+    if mode == POWER_LAW_RRC_MODE and pressure_exponent is not None and pressure_ref_kpa is None:
+        mode = CONSTANT_RRC_MODE
+    if mode == POWER_LAW_RRC_MODE and (load_ref_n is None or load_exponent is None):
+        mode = CONSTANT_RRC_MODE
+
+    rrc_real = adjust_rrc_to_operating_condition(
+        rrc_ref_n_per_kn=rrc_ref,
+        load_real_n=single_tire_load_n,
+        load_ref_n=load_ref_n,
+        pressure_real_kpa=pressure_kpa,
+        pressure_ref_kpa=pressure_ref_kpa,
+        pressure_exponent=pressure_exponent if pressure_ref_kpa is not None else None,
+        load_exponent=load_exponent,
+        mode=mode,
+    )
+    force_n = rrc_real * single_tire_load_n / 1000.0
+    return {
+        "mode": mode,
+        "rrc_ref_n_per_kn": rrc_ref,
+        "rrc_n_per_kn": rrc_real,
+        "single_tire_load_n": single_tire_load_n,
+        "single_tire_force_n": force_n,
+        "reference_load_n": load_ref_n,
+        "reference_pressure_kpa": pressure_ref_kpa,
+        "load_exponent": load_exponent,
+        "pressure_exponent": pressure_exponent,
+        "pressure_kpa": pressure_kpa,
+    }
+
+
+def calculate_applied_rrc_by_axle(front_tire: dict, rear_tire: dict, inputs: dict) -> Dict[str, Any]:
+    """
+    Calculate applied vehicle-equivalent RRC using front/rear tire loads.
+
+    This is separate from the SAE ABC force model. It answers the VDE question:
+    which tire RRC goes to the vehicle calculation after pressure/load correction?
+    """
+    if not isinstance(front_tire, dict):
+        raise TypeError("front_tire must be a dict-like record")
+    if not isinstance(rear_tire, dict):
+        raise TypeError("rear_tire must be a dict-like record")
+    if not isinstance(inputs, dict):
+        raise TypeError("inputs must be a dict")
+
+    loads = calculate_single_tire_loads(
+        mass_kg=_dict_get(inputs, "mass_kg"),
+        front_weight_distribution_pct=_dict_get(inputs, "front_weight_distribution_pct"),
+    )
+    front = _applied_rrc_for_tire(
+        front_tire,
+        single_tire_load_n=loads["front_single_tire_load_n"],
+        pressure_kpa=_dict_get(inputs, "front_pressure_kpa"),
+    )
+    rear = _applied_rrc_for_tire(
+        rear_tire,
+        single_tire_load_n=loads["rear_single_tire_load_n"],
+        pressure_kpa=_dict_get(inputs, "rear_pressure_kpa"),
+    )
+    front_axle_force_n = front["single_tire_force_n"] * 2.0
+    rear_axle_force_n = rear["single_tire_force_n"] * 2.0
+    vehicle_force_n = front_axle_force_n + rear_axle_force_n
+    vehicle_rrc_n_per_kn = vehicle_force_n * 1000.0 / loads["total_load_n"]
+
+    return {
+        "loads": loads,
+        "front": front,
+        "rear": rear,
+        "front_rrc_n_per_kn": front["rrc_n_per_kn"],
+        "rear_rrc_n_per_kn": rear["rrc_n_per_kn"],
+        "front_single_tire_load_n": loads["front_single_tire_load_n"],
+        "rear_single_tire_load_n": loads["rear_single_tire_load_n"],
+        "front_single_tire_force_n": front["single_tire_force_n"],
+        "rear_single_tire_force_n": rear["single_tire_force_n"],
+        "front_axle_force_n": front_axle_force_n,
+        "rear_axle_force_n": rear_axle_force_n,
+        "vehicle_force_n": vehicle_force_n,
+        "vehicle_rrc_n_per_kn": vehicle_rrc_n_per_kn,
+    }
+
+
+def calculate_rrc_n_per_kn_from_mean_force_lbf(
+    mean_force_lbf: float,
+    vehicle_weight_lbf: float,
+    *,
+    tire_count: int = 4,
+) -> float:
+    """
+    Convert per-tire mean rolling force in lbf to vehicle RRC in N/kN.
+
+    N/kN is numerically equal to the common RRC x1000 display:
+        rrc_n_per_kn = total_tire_force_lbf / vehicle_weight_lbf * 1000
+    """
+    mean_force_lbf = _to_float(mean_force_lbf, "mean_force_lbf", required=True)
+    vehicle_weight_lbf = _to_float(vehicle_weight_lbf, "vehicle_weight_lbf", required=True)
+    tire_count = int(tire_count)
+    if mean_force_lbf < 0:
+        raise ValueError("mean_force_lbf must be non-negative")
+    if vehicle_weight_lbf <= 0:
+        raise ValueError("vehicle_weight_lbf must be greater than zero")
+    if tire_count <= 0:
+        raise ValueError("tire_count must be greater than zero")
+    return (mean_force_lbf * tire_count / vehicle_weight_lbf) * 1000.0
+
+
+def calculate_mean_force_lbf_from_rrc_n_per_kn(
+    rrc_n_per_kn: float,
+    vehicle_weight_lbf: float,
+    *,
+    tire_count: int = 4,
+) -> float:
+    """
+    Convert vehicle RRC in N/kN / x1000 back to per-tire mean force in lbf.
+    """
+    rrc_n_per_kn = _to_float(rrc_n_per_kn, "rrc_n_per_kn", required=True)
+    vehicle_weight_lbf = _to_float(vehicle_weight_lbf, "vehicle_weight_lbf", required=True)
+    tire_count = int(tire_count)
+    if rrc_n_per_kn < 0:
+        raise ValueError("rrc_n_per_kn must be non-negative")
+    if vehicle_weight_lbf <= 0:
+        raise ValueError("vehicle_weight_lbf must be greater than zero")
+    if tire_count <= 0:
+        raise ValueError("tire_count must be greater than zero")
+    return (rrc_n_per_kn / 1000.0) * vehicle_weight_lbf / tire_count
 
 
 def calculate_iso_tire_abc_for_single_tire(tire: dict, single_tire_load_n: float) -> Dict[str, float]:
@@ -429,10 +690,7 @@ def calculate_vehicle_tire_abc(front_tire: dict, rear_tire: dict, inputs: dict) 
     rear_axle = calculate_axle_tire_abc_from_single(rear_single, tire_count=2)
     total_base = combine_front_rear_tire_abc(front_axle, rear_axle)
     total_final = apply_tire_improvement(total_base, _dict_get(inputs, "tire_improvement_pct", 0.0))
-
-    applied_rr_n_per_kn = _dict_get(front_tire, "rr_n_per_kn")
-    if applied_rr_n_per_kn in (None, ""):
-        applied_rr_n_per_kn = _dict_get(rear_tire, "rr_n_per_kn")
+    applied_rrc = calculate_applied_rrc_by_axle(front_tire=front_tire, rear_tire=rear_tire, inputs=inputs)
 
     return {
         "loads": loads,
@@ -450,7 +708,8 @@ def calculate_vehicle_tire_abc(front_tire: dict, rear_tire: dict, inputs: dict) 
         "total_final_abc": total_final,
         "tire_improvement_pct": _to_float(_dict_get(inputs, "tire_improvement_pct", 0.0), "tire_improvement_pct", default=0.0),
         "tire_load_mass_used_kg": loads["mass_kg"],
-        "applied_rr_n_per_kn": _to_float(applied_rr_n_per_kn, "applied_rr_n_per_kn", default=None),
+        "applied_rrc": applied_rrc,
+        "applied_rr_n_per_kn": applied_rrc["vehicle_rrc_n_per_kn"],
     }
 
 
@@ -477,16 +736,22 @@ __all__ = [
     "DEFAULT_HWY_V_FACTOR",
     "DEFAULT_HWY_V2_FACTOR",
     "DEFAULT_HWY_WEIGHT",
+    "CONSTANT_RRC_MODE",
     "G_MPS2",
     "KPA_PER_PSI",
     "MPH_PER_KPH",
     "N_PER_KGF",
     "N_PER_LBF",
+    "POWER_LAW_RRC_MODE",
+    "adjust_rrc_to_operating_condition",
     "apply_tire_improvement",
     "build_tire_component",
+    "calculate_applied_rrc_by_axle",
     "calculate_axle_loads",
     "calculate_axle_tire_abc_from_single",
     "calculate_iso_tire_abc_for_single_tire",
+    "calculate_mean_force_lbf_from_rrc_n_per_kn",
+    "calculate_rrc_n_per_kn_from_mean_force_lbf",
     "calculate_sae_smerf_rr_n_per_kn",
     "calculate_sae_tire_abc_for_single_tire",
     "calculate_single_tire_loads",

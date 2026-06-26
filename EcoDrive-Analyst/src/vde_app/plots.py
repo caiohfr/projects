@@ -5,11 +5,7 @@ from typing import Dict, Any, List
 from src.vde_core.pwt_fuel_energy_service import fetch_scatter_join_rows, fetch_vde_rows_by_ids
 
 
-def line_power(df: pd.DataFrame):
-    fig = px.line(df, x="t", y="P", title="Instantaneous Power")
-    return fig
-
-def cycle_chart(df: pd.DataFrame):
+def cycle_chart(df: pd.DataFrame, *, unit_system: str = "Metric"):
     """df deve ter colunas: t (s) e v (m/s)"""
     if not {"t", "v"} <= set(df.columns):
         return None
@@ -207,7 +203,13 @@ def _add_regression_lines(fig, model: Dict[str, Any], electrification: str, y_ki
             fig.add_scatter(x=xs, y=_line(comb["a"], comb["b"]), mode="lines", name="Reg. Combined", line=dict(dash="solid"))
 
 
-def plot_scatter_with_overlays(df: pd.DataFrame, electrification: str, model: Dict[str, Any] | None, eta_lines: List[float] | None):
+def plot_scatter_with_overlays(
+    df: pd.DataFrame,
+    electrification: str,
+    model: Dict[str, Any] | None,
+    eta_lines: List[float] | None,
+    chart_key: str | None = None,
+):
     """Mostra scatter filtrado + reta(s) de regressão + linhas iso-eficiência."""
     if df.empty:
         st.info("No data for the selected filters.")
@@ -270,6 +272,7 @@ def plot_scatter_with_overlays(df: pd.DataFrame, electrification: str, model: Di
         fig.update_layout(margin=dict(l=10,r=10,t=30,b=10), title="ICE/MxHEV: Fuel [L/100km] vs VDE_NET [MJ/km]")
         figs.append(fig)
 
-    for fig in figs:
-        st.plotly_chart(fig, use_container_width=True)
+    for idx, fig in enumerate(figs):
+        plot_key = f"{chart_key}_{idx}" if chart_key else None
+        st.plotly_chart(fig, use_container_width=True, key=plot_key)
 

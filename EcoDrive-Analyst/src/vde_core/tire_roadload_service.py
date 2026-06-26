@@ -684,8 +684,7 @@ def _build_tire_calc_notes(application: dict, mass_resolution: dict, front_tire:
     return "; ".join(f"{key}={value}" for key, value in fields)
 
 
-def preview_tire_roadload_for_vde(vde_id: int, payload: dict | None = None) -> dict:
-    base_row = build_tire_application_inputs_from_vde_row(int(vde_id))
+def _preview_tire_roadload(base_row: dict, payload: dict | None = None, *, vde_id: int | None = None) -> dict:
     base_row = _apply_preview_row_overrides(base_row, payload)
     application = _normalize_application_payload(base_row, payload)
 
@@ -750,7 +749,7 @@ def preview_tire_roadload_for_vde(vde_id: int, payload: dict | None = None) -> d
         }
 
     return {
-        "vde_id": int(vde_id),
+        "vde_id": int(vde_id) if vde_id is not None else None,
         "vde_row": base_row,
         "application": application,
         "front_tire": front_tire,
@@ -762,6 +761,27 @@ def preview_tire_roadload_for_vde(vde_id: int, payload: dict | None = None) -> d
         "save_payload": save_payload,
         "delta_vs_saved": delta_vs_saved,
     }
+
+
+def preview_tire_roadload_from_row(vde_row: dict, payload: dict | None = None) -> dict:
+    base_row = dict(vde_row or {})
+    if not base_row:
+        raise ValueError("preview_tire_roadload_from_row requires a non-empty vde-like row context")
+    preview = _preview_tire_roadload(base_row, payload, vde_id=_to_int(base_row.get("id")))
+    if preview["vde_id"] is None and preview["mass_resolution"].get("source_field") == "test_mass_kg":
+        preview["mass_resolution"]["used_fallback"] = True
+        preview["save_payload"]["tire_calc_notes"] = _build_tire_calc_notes(
+            preview["application"],
+            preview["mass_resolution"],
+            preview["front_tire"],
+            preview["rear_tire"],
+        )
+    return preview
+
+
+def preview_tire_roadload_for_vde(vde_id: int, payload: dict | None = None) -> dict:
+    base_row = build_tire_application_inputs_from_vde_row(int(vde_id))
+    return _preview_tire_roadload(base_row, payload, vde_id=int(vde_id))
 
 
 def save_tire_roadload_to_vde(vde_id: int, calculation_result: dict) -> dict:
@@ -810,6 +830,7 @@ __all__ = [
     "get_tire_by_code",
     "get_tire_by_id",
     "preview_tire_roadload_for_vde",
+    "preview_tire_roadload_from_row",
     "resolve_tire_load_mass",
     "save_tire_roadload_to_vde",
     "summarize_tire_rr",

@@ -29,7 +29,8 @@ def fetch_fuelcons_distinct_electrifications() -> list[str]:
 def fetch_fuelcons_by_vde_id(vde_id: int) -> list[dict]:
     return fetchall(
         (
-            "SELECT id, created_at, method_note, electrification, "
+            "SELECT id, created_at, method_note, electrification, energy_basis, engine_method, engine_version, "
+            "source_vde_revision, assumptions_json, provenance_json, "
             "fuel_l_per_100km, fuel_km_per_l, energy_Wh_per_km, gco2_per_km, "
             "fuel_ftp75_l_per_100km, fuel_hwfet_l_per_100km, "
             "energy_ftp75_Wh_per_km, energy_hwfet_Wh_per_km, "
@@ -43,6 +44,8 @@ def fetch_fuelcons_by_vde_id(vde_id: int) -> list[dict]:
 def fetch_fuelcons_rows(filters: dict[str, Any]) -> list[dict]:
     base = (
         "SELECT f.id, f.created_at, f.vde_id, f.electrification, f.method_note, "
+        "f.energy_basis, f.engine_method, f.engine_version, f.source_vde_revision, "
+        "f.assumptions_json, f.provenance_json, "
         "f.fuel_l_per_100km, f.engine_max_power_kw, f.fuel_km_per_l, "
         "f.energy_Wh_per_km, f.gco2_per_km, f.fuel_ftp75_l_per_100km, "
         "f.fuel_hwfet_l_per_100km, f.energy_ftp75_Wh_per_km, "
@@ -54,6 +57,12 @@ def fetch_fuelcons_rows(filters: dict[str, Any]) -> list[dict]:
     if filters.get("electrification"):
         base += " AND f.electrification = ?"
         params.append(filters["electrification"])
+    if filters.get("vde_id"):
+        base += " AND f.vde_id = ?"
+        params.append(int(filters["vde_id"]))
+    if filters.get("legislation"):
+        base += " AND v.legislation = ?"
+        params.append(str(filters["legislation"]))
     if filters.get("category"):
         base += " AND v.category = ?"
         params.append(filters["category"])
@@ -82,6 +91,9 @@ def fetch_fuelcons_join_rows() -> list[dict]:
             f.energy_Wh_per_km,
             f.gco2_per_km,
             f.method_note,
+            f.energy_basis,
+            f.engine_method,
+            f.source_vde_revision,
             f.engine_max_power_kw,
             v.vde_net_mj_per_km,
             v.engine_size_l,

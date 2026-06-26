@@ -8,6 +8,7 @@ from src.vde_core.tire_roadload_service import (
     build_tire_component_from_result,
     get_tire_by_code,
     preview_tire_roadload_for_vde,
+    preview_tire_roadload_from_row,
     resolve_tire_load_mass,
     save_tire_roadload_to_vde,
     summarize_tire_rr,
@@ -478,6 +479,31 @@ class TireRoadloadServiceTests(unittest.TestCase):
         self.assertTrue(preview["mass_resolution"]["used_fallback"])
         self.assertFalse(preview["mass_resolution"]["used_inertia_class"])
         self.assertIn("mass_source=etw_kg", preview["save_payload"]["tire_calc_notes"])
+
+    @patch("src.vde_core.tire_roadload_service.get_tire_roadload_by_id")
+    def test_preview_tire_roadload_from_row_supports_unsaved_context(self, mock_get_tire_roadload_by_id):
+        mock_get_tire_roadload_by_id.return_value = {"id": 7, "standard_family": "ISO", "rr_n_per_kn": 9.5}
+
+        preview = preview_tire_roadload_from_row(
+            {
+                "legislation": "EPA",
+                "mass_kg": 1500.0,
+                "test_mass_kg": 1636.0,
+                "weight_dist_fr_pct": 60.0,
+                "front_pressure_psi": 31.0,
+                "rear_pressure_psi": 33.0,
+            },
+            {
+                "front_tire_id": 7,
+                "rear_tire_id": 7,
+                "tire_load_mass_basis": "TEST_MASS",
+            },
+        )
+
+        self.assertIsNone(preview["vde_id"])
+        self.assertEqual(preview["application"]["front_tire_id"], 7)
+        self.assertAlmostEqual(preview["mass_resolution"]["mass_kg"], 1636.0)
+        self.assertEqual(preview["component_dict"]["name"], "tire")
         self.assertIn("mass_used_fallback=True", preview["save_payload"]["tire_calc_notes"])
         self.assertIn("uses_inertia_class_mass=False", preview["save_payload"]["tire_calc_notes"])
 

@@ -69,7 +69,14 @@ def ensure_migrations() -> None:
         "rrc_N_per_kN": "REAL",   # <- NOVA
         "crr1_frac_at_120kph": "REAL",  
     })
-    added += ensure_columns("fuelcons_db", {})  # nada por enquanto
+    added += ensure_columns("fuelcons_db", {
+        "energy_basis": "TEXT",
+        "engine_method": "TEXT",
+        "engine_version": "TEXT",
+        "source_vde_revision": "TEXT",
+        "assumptions_json": "TEXT",
+        "provenance_json": "TEXT",
+    })
     # opcional: log
         # >>> NOVOS: rastreabilidade mínima (baseline + deltas) <<<
     added += ensure_columns("vde_db", {
@@ -279,6 +286,12 @@ def ensure_db():
             scenario_payload_kg          REAL,
 
             method_note                  TEXT,
+            energy_basis                 TEXT,
+            engine_method                TEXT,
+            engine_version               TEXT,
+            source_vde_revision          TEXT,
+            assumptions_json             TEXT,
+            provenance_json              TEXT,
 
             -- saídas agregadas (cache)
             energy_Wh_per_km             REAL,

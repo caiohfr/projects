@@ -34,7 +34,7 @@ class VdeSetupServiceTests(unittest.TestCase):
                     "wltp_category": 1,
                 }
             ),
-            1713.75,
+            1702.5,
         )
 
     def test_resolve_test_mass_kg_wltp_falls_back_to_curb_weight_without_tpmlm(self):

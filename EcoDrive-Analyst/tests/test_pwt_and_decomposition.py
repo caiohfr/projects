@@ -3,11 +3,16 @@ from unittest.mock import patch
 
 from src.vde_core.pwt_fuel_energy_service import (
     apply_bev_placeholders,
+    build_fuel_estimate_request_from_vde,
     build_bev_placeholder_payload,
+    compare_saved_scenario_revision,
     compute_vde_total_from_ctx,
     default_electrification_from_vde,
     fetch_distinct_transmission_models,
     fetch_vde_rows_by_ids,
+    preview_fuel_estimate_from_vde,
+    resolve_vde_energy_values,
+    resolve_vde_source_revision,
     save_fuelcons_payload,
 )
 from src.vde_core.roadload.decomposition import (
@@ -24,45 +29,146 @@ class PwtFuelEnergyServiceTests(unittest.TestCase):
         self.assertEqual(payload["transmission_type"], "SS")
         self.assertNotIn("engine_model", {k: v for k, v in payload.items() if v is None})
 
-    def test_compute_vde_total_from_ctx_uses_eta_trans_when_available(self):
-        result = compute_vde_total_from_ctx({"vde_net_mj_per_km": 1.84}, {"eta_trans": 0.92})
+    def test_compute_vde_total_from_ctx_uses_resolved_row_values(self):
+        result = compute_vde_total_from_ctx({"vde_total_mj_per_km": 2.0, "vde_net_mj_per_km": 1.84}, {"eta_trans": 0.92})
         self.assertAlmostEqual(result["vde_net_mj_per_km"], 1.84)
         self.assertAlmostEqual(result["vde_total_mj_per_km"], 2.0)
+        self.assertEqual(result["warnings"], [])
 
-    @patch("src.vde_core.pwt_fuel_energy_service.fetchone")
-    def test_default_electrification_from_vde_maps_engine_type(self, mock_fetchone):
-        mock_fetchone.return_value = {"engine_type": "BEV"}
+    def test_resolve_vde_energy_values_falls_back_from_legacy_net(self):
+        result = resolve_vde_energy_values({"vde_net_mj_per_km": 1.84})
+
+        self.assertAlmostEqual(result["vde_total_mj_per_km"], 1.84)
+        self.assertAlmostEqual(result["vde_net_mj_per_km"], 1.84)
+        self.assertIn("legacy_vde_net_used_as_total_candidate", result["warnings"])
+
+    def test_build_fuel_estimate_request_from_vde_maps_row_into_contract(self):
+        request = build_fuel_estimate_request_from_vde(
+            {
+                "id": 21,
+                "legislation": "EPA",
+                "category": "MIDSIZE",
+                "make": "FORD",
+                "model": "TEST",
+                "year": 2025,
+                "engine_type": "HEV",
+                "cycle_name": "FTP75_HWFET",
+                "engine_size_l": 2.0,
+                "transmission_type": "AT",
+                "drive_type": "FWD",
+                "gear_count": 6,
+                "final_drive_ratio": 3.91,
+                "coast_A_N": 120.0,
+                "coast_B_N_per_kph": 0.03,
+                "coast_C_N_per_kph2": 0.0002,
+                "vde_net_mj_per_km": 1.7,
+                "created_at": "2026-06-20T08:00:00",
+                "updated_at": "2026-06-23T09:30:00",
+            },
+            energy_basis="VDE_TOTAL",
+            method="physics_simple",
+            powertrain_features={"eta_pt_est": 0.34},
+        )
+
+        self.assertEqual(request.vde_id, 21)
+        self.assertEqual(request.energy_basis, "VDE_TOTAL")
+        self.assertEqual(request.method, "physics_simple")
+        self.assertEqual(request.vehicle_features["electrification"], "HEV")
+        self.assertAlmostEqual(request.vehicle_features["vde_total_mj_per_km"], 1.7)
+        self.assertAlmostEqual(request.vehicle_features["engine_size_l"], 2.0)
+        self.assertEqual(request.vehicle_features["transmission_type"], "AT")
+        self.assertAlmostEqual(request.vehicle_features["coast_A_N"], 120.0)
+        self.assertEqual(request.vehicle_features["source_vde_revision"], "2026-06-23T09:30:00")
+        self.assertIn(
+            "legacy_vde_net_used_as_total_candidate",
+            request.vehicle_features["compatibility_warnings"],
+        )
+
+    def test_resolve_vde_source_revision_prefers_updated_at(self):
+        revision = resolve_vde_source_revision(
+            {"created_at": "2026-06-20T08:00:00", "updated_at": "2026-06-23T09:30:00"}
+        )
+        self.assertEqual(revision, "2026-06-23T09:30:00")
+
+    def test_compare_saved_scenario_revision_detects_changed_source(self):
+        state = compare_saved_scenario_revision(
+            "2026-06-21T00:00:00",
+            {"created_at": "2026-06-20T08:00:00", "updated_at": "2026-06-23T09:30:00"},
+        )
+        self.assertEqual(state["status"], "changed")
+        self.assertIn("Refresh / Recalculate required", state["message"])
+
+    def test_compare_saved_scenario_revision_detects_current_source(self):
+        state = compare_saved_scenario_revision(
+            "2026-06-23T09:30:00",
+            {"created_at": "2026-06-20T08:00:00", "updated_at": "2026-06-23T09:30:00"},
+        )
+        self.assertEqual(state["status"], "current")
+
+    def test_preview_fuel_estimate_from_vde_uses_new_estimation_contract(self):
+        result = preview_fuel_estimate_from_vde(
+            {
+                "id": 22,
+                "engine_type": "BEV",
+                "vde_total_mj_per_km": 1.5,
+            },
+            electrification="BEV",
+            energy_basis="VDE_TOTAL",
+            method="physics_simple",
+            powertrain_features={"bev_eff_drive": 0.9},
+        )
+
+        self.assertEqual(result.method, "physics_simple")
+        self.assertEqual(result.energy_basis_used, "VDE_TOTAL")
+        self.assertAlmostEqual(result.energy_Wh_km, 462.962962963, places=6)
+
+    def test_preview_fuel_estimate_from_vde_respects_selected_vde_net_basis(self):
+        result = preview_fuel_estimate_from_vde(
+            {
+                "id": 23,
+                "engine_type": "ICE",
+                "vde_total_mj_per_km": 2.0,
+                "vde_net_mj_per_km": 1.5,
+            },
+            electrification="ICE",
+            energy_basis="VDE_NET",
+            method="physics_simple",
+            powertrain_features={"eta_pt_est": 0.3, "fuel_type": "Gasoline", "LHV_MJ_per_L": 32.0},
+        )
+
+        self.assertEqual(result.energy_basis_used, "VDE_NET")
+        self.assertAlmostEqual(result.fuel_l_100km, 15.625, places=4)
+
+    @patch("src.vde_core.pwt_fuel_energy_service.fetch_vde_engine_type")
+    def test_default_electrification_from_vde_maps_engine_type(self, mock_fetch_vde_engine_type):
+        mock_fetch_vde_engine_type.return_value = "BEV"
         self.assertEqual(default_electrification_from_vde(10), "BEV")
 
-        mock_fetchone.return_value = {"engine_type": "HEV"}
+        mock_fetch_vde_engine_type.return_value = "HEV"
         self.assertEqual(default_electrification_from_vde(11), "HEV")
 
-        mock_fetchone.return_value = {"engine_type": "ICE"}
+        mock_fetch_vde_engine_type.return_value = "ICE"
         self.assertEqual(default_electrification_from_vde(12), "ICE")
 
-    @patch("src.vde_core.pwt_fuel_energy_service.fetchall")
-    def test_fetch_distinct_transmission_models_flattens_rows(self, mock_fetchall):
-        mock_fetchall.return_value = [
-            {"transmission_model": "AT6"},
-            {"transmission_model": "CVT"},
-        ]
+    @patch("src.vde_core.pwt_fuel_energy_service.fetch_vde_distinct_transmission_models")
+    def test_fetch_distinct_transmission_models_flattens_rows(self, mock_fetch_vde_distinct_transmission_models):
+        mock_fetch_vde_distinct_transmission_models.return_value = ["AT6", "CVT"]
         self.assertEqual(fetch_distinct_transmission_models(), ["AT6", "CVT"])
 
-    @patch("src.vde_core.pwt_fuel_energy_service.update_vde")
-    def test_apply_bev_placeholders_updates_snapshot(self, mock_update_vde):
+    def test_apply_bev_placeholders_returns_draft_only_payload(self):
         payload = apply_bev_placeholders(42)
-        mock_update_vde.assert_called_once_with(42, payload)
         self.assertEqual(payload["transmission_type"], "SS")
+        self.assertEqual(payload["engine_size_l"], 0.001)
 
-    @patch("src.vde_core.pwt_fuel_energy_service.insert_fuelcons")
+    @patch("src.vde_core.pwt_fuel_energy_service.insert_fuelcons_row")
     def test_save_fuelcons_payload_returns_inserted_id(self, mock_insert):
         mock_insert.return_value = 123
         result = save_fuelcons_payload({"vde_id": 1})
         self.assertEqual(result, 123)
 
-    @patch("src.vde_core.pwt_fuel_energy_service.fetchall")
-    def test_fetch_vde_rows_by_ids_returns_dataframe(self, mock_fetchall):
-        mock_fetchall.return_value = [{"id": 1, "make": "FORD"}, {"id": 2, "make": "VW"}]
+    @patch("src.vde_core.pwt_fuel_energy_service.fetch_vde_by_ids")
+    def test_fetch_vde_rows_by_ids_returns_dataframe(self, mock_fetch_vde_by_ids):
+        mock_fetch_vde_by_ids.return_value = [{"id": 1, "make": "FORD"}, {"id": 2, "make": "VW"}]
         df = fetch_vde_rows_by_ids([1, 2, 2, None])
         self.assertEqual(df["id"].tolist(), [1, 2])
 

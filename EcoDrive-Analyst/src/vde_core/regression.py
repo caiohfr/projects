@@ -36,6 +36,12 @@ def load_regression_dataset(filters: Dict[str, Any], current_vde_id: Optional[in
     if filters.get("electrification"):
         base += " AND f.electrification = ?"
         params.append(filters["electrification"])
+    if filters.get("vde_id"):
+        base += " AND f.vde_id = ?"
+        params.append(int(filters["vde_id"]))
+    if filters.get("legislation"):
+        base += " AND v.legislation = ?"
+        params.append(str(filters["legislation"]))
     if filters.get("category"):
         base += " AND v.category = ?"
         params.append(filters["category"])

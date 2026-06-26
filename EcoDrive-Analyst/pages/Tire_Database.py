@@ -45,7 +45,7 @@ def _mode_label(mode: str) -> str:
         "SAE_J2452": "SAE J2452",
         "ISO_28580": "ISO 28580",
         "EU_LABEL_ESTIMATED": "EU label estimate",
-        "CUSTOM": "Custom/manual",
+        "CUSTOM": "Custom / manual measured RR",
     }
     return labels.get(str(mode or ""), str(mode or ""))
 
@@ -404,9 +404,10 @@ def _render_iso(prefix: str):
 
 
 def _render_manual_rr(prefix: str):
-    st.markdown("**Manual / Estimated RR**")
+    st.markdown("**Custom / Manual measured RR**")
+    st.caption("Use this mode when you already have a final / equivalent RRC from measurement, estimate, or engineering input.")
     c1, c2, c3 = st.columns(3)
-    c1.number_input("RR [N/kN]", min_value=0.0, step=0.1, format="%.3f", key=f"{prefix}_rr_n_per_kn")
+    c1.number_input("Final / equivalent RRC [N/kN]", min_value=0.0, step=0.1, format="%.3f", key=f"{prefix}_rr_n_per_kn")
     c2.text_input("RR source", key=f"{prefix}_rr_source")
     c3.text_input("RR quality", key=f"{prefix}_rr_quality")
 
@@ -419,7 +420,7 @@ def _render_rr_summary(prefix: str) -> dict:
 
     st.markdown("**RR Summary**")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("RR [N/kN]", "-" if rr is None else f"{float(rr):.4f}")
+    c1.metric("Final RRC [N/kN]", "-" if rr is None else f"{float(rr):.4f}")
     c2.metric("SMERF [N/kN]", "-" if smerf is None else f"{float(smerf):.4f}")
     c3.metric("Method", str(summary.get("rr_method") or "-"))
     c4.metric("Quality", str(summary.get("rr_quality") or "-"))

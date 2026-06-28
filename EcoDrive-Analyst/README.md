@@ -1,180 +1,196 @@
 # EcoDrive Analyzer
 
-EcoDrive Analyzer is a Streamlit application for Vehicle Demanded Energy (VDE) analysis, road-load scenario studies, and fuel or energy correlation workflows.
+EcoDrive Analyzer is a Streamlit application for roadload engineering, VDE workflow management, powertrain consumption estimation, and early comparison reporting.
 
-The project combines:
-- physics-based VDE calculation from A/B/C coastdown coefficients and cycle traces;
-- a modular roadload pipeline for baseline plus delta scenarios;
-- SQLite persistence for VDE snapshots and fuel or energy scenarios;
-- regression and comparison tooling for EPA-oriented analysis.
+The current product is organized around three main blocks:
 
-## Current Scope
+1. `VDE Setup`
+2. `Powertrain Scenario`
+3. `Comparison Report`
 
-Main user flows:
-- `VDE Setup`: create, preview, edit, and save VDE snapshots;
-- `PWT Fuel Energy`: attach fuel or energy scenarios to saved VDE snapshots;
-- `Tire Database`: manage tire roadload records and preview RR-oriented metadata;
-- `Comparison Report`: lightweight VDE ranking, scatter, and export view;
-- roadload scenario preview through `RoadLoadRequest -> run_roadload_scenario() -> EquivalentABC`.
+This repository is now in a stronger Sprint 5 state: `VDE Setup` behaves as the physical roadload workflow, `Powertrain Scenario` behaves as an estimation block, and `Comparison Report` is separated as an early benchmark/report space instead of being mixed into the estimator flow.
 
-Current focus of the codebase:
-- modularize UI from core logic;
-- keep `vde_core` free from Streamlit;
-- reduce page-level SQL and page-level calculation glue;
-- prepare the project for future physical component modeling.
+## Current Product Blocks
 
-## Architecture
+### VDE Setup
 
-The application is organized around a simple boundary:
+`VDE Setup` is the physical and traceable workflow for:
 
-```text
-pages/ -> src/vde_app -> src/vde_core -> SQLite
-```
+- scenario setup and metadata
+- vehicle parameters and mass setup
+- roadload basis selection
+- component build-up
+- transmission losses / TOTAL -> NET bridge
+- cycle preview
+- results as pre-save review
+- save / edit
 
-- `pages/` contains Streamlit page orchestration.
-- `src/vde_app/` contains reusable UI helpers, page components, and plotting helpers.
-- `src/vde_core/` contains calculation, persistence, repository, regression, and service helpers.
-- `src/vde_core/roadload/` contains the modular roadload domain pipeline.
+Core idea:
 
-The canonical roadload flow is:
+- `VDE_TOTAL` is the demand derived from `ABC_TOTAL`
+- `VDE_NET` is available only when transmission losses / neutral drag are resolved
 
-```text
-RoadLoadRequest
-  -> run_roadload_scenario()
-  -> EquivalentABC
-  -> VDE calculation / preview / save
-```
+### Powertrain Scenario
 
-See:
+`Powertrain Scenario` consumes a resolved VDE source and estimates:
+
+- fuel consumption
+- electric energy
+- CO2
+
+Supported estimation methods in the current product:
+
+- `Manual / Imported`
+- `Physics Simple`
+- `Regression`
+- `ML Prediction`
+
+Planned but not delivered as runtime engines:
+
+- `Physics + ML Residual`
+- `Map-Based Simulation`
+
+Important boundary:
+
+- `Powertrain Scenario` does not recalculate roadload
+- it uses an already resolved energy basis such as `VDE_TOTAL` or `VDE_NET`
+
+### Comparison Report
+
+`Comparison Report` is now its own space for:
+
+- scenario comparison
+- method analysis
+- peer outlook / benchmark direction
+
+It is intentionally still an MVP surface. It should be read as the first step toward a future report / benchmark studio, not as a finished BI layer.
+
+## Documentation Index
+
+Sprint 5 documentation:
+
+- [Sprint 5 Closure](docs/SPRINT_5_CLOSURE.md)
+- [VDE Setup Guide](docs/VDE_SETUP_GUIDE.md)
+- [Powertrain Scenario Guide](docs/POWERTRAIN_SCENARIO_GUIDE.md)
+- [ML / SHAP / Nearest Peers](docs/ML_SHAP_NEAREST_PEERS.md)
+
+Architecture references:
+
 - [Project Structure](docs/architecture/project_structure.md)
 - [Roadload Pipeline](docs/architecture/roadload_pipeline.md)
 - [UI and Backend Boundary](docs/architecture/ui_backend_boundary.md)
+- [Sprint 5 Architecture Checkpoint](docs/sprints/SPRINT_5_VDE_FUEL_ARCHITECTURE_2026-06-19.md)
 
-## Project Structure
+Notebook notes:
+
+- [Notebooks README](notebooks/README.md)
+
+## Repository Structure
 
 ```text
 EcoDrive-Analyst/
 |-- app.py
 |-- data/
-|   |-- db/
-|   `-- standards/
 |-- docs/
-|   |-- architecture/
-|   |-- notebooks/
-|   |-- sprints/
-|   `-- archive/
+|-- models/
 |-- notebooks/
-|   |-- roadload/
-|   `-- README.md
 |-- pages/
-|   |-- Comparison_Report.py
-|   |-- home_page.py
-|   |-- Operating_Points.py
-|   |-- PWT_Fuel_Energy.py
-|   |-- Tire_Database.py
-|   `-- VDE_Setup.py
 |-- src/
-|   |-- vde_app/
-|   |   |-- __init__.py
-|   |   |-- components/
-|   |   |   |-- __init__.py
-|   |   |   |-- pwt_fuel_energy.py
-|   |   |   |-- shared.py
-|   |   |   `-- vde_setup.py
-|   |   |-- derivatives.py
-|   |   |-- plots.py
-|   |   |-- state.py
-|   |   `-- ...
-|   `-- vde_core/
-|       |-- comparison_report_service.py
-|       |-- cycles.py
-|       |-- db.py
-|       |-- experimental/
-|       |   |-- __init__.py
-|       |   |-- tech_effects.py
-|       |   `-- vehicle_csv_repo.py
-|       |-- pwt_fuel_energy_service.py
-|       |-- regression.py
-|       |-- repositories/
-|       |   |-- __init__.py
-|       |   |-- fuelcons_repository.py
-|       |   |-- tire_roadload_repository.py
-|       |   |-- vde_repository.py
-|       |   `-- vde_tire_repository.py
-|       |-- services.py
-|       |-- test_mass.py
-|       |-- tire_roadload_service.py
-|       |-- utils.py
-|       |-- vde_calc.py
-|       |-- vde_setup_service.py
-|       `-- roadload/
-|           |-- __init__.py
-|           |-- adapters.py
-|           |-- app_service.py
-|           |-- decomposition.py
-|           |-- engine.py
-|           |-- models.py
-|           |-- physics.py
-|           |-- physics_legacy.py
-|           `-- services.py
-`-- tests/
-    |-- test_core_services.py
-    |-- test_pwt_and_decomposition.py
-    |-- test_roadload_engine.py
-    `-- test_vde_setup_service.py
+|-- tests/
+|-- requirements.txt
+`-- requirements-ml.txt
 ```
 
-## Installation
+Important runtime pages:
+
+- `pages/VDE_Setup.py`
+- `pages/Powertrain_Scenario.py`
+- `pages/Comparison_Report.py`
+- `pages/Tire_Database.py`
+
+## How To Run
+
+Create the local environment:
 
 ```bash
-git clone https://github.com/caiohfr/projects.git
-cd projects/EcoDrive-Analyst
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+```
+
+Optional ML dependencies:
+
+```bash
+pip install -r requirements-ml.txt
+```
+
+Run the Streamlit app:
+
+```bash
 streamlit run app.py
 ```
 
-## Notes About the Environment
+## Testing And Validation
 
-At the moment, the repository contains tests under `tests/`, but the local virtual environment may need to be recreated if it still points to an old Windows Store Python path.
-
-If that happens, recreate it:
+Fast syntax / import pass:
 
 ```bash
-rmdir /s /q .venv
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+python -m compileall -q pages src tests
 ```
 
-## Testing
-
-The test suite currently covers:
-- roadload engine baseline and delta behavior;
-- VDE setup service helpers;
-- phase aggregation and mass/inertia helpers;
-- PWT fuel-energy service helpers;
-- roadload decomposition helpers.
-
-Expected command:
+Run the test suite:
 
 ```bash
-python -m unittest discover -s tests -v
+python -m unittest discover tests
 ```
 
-## Data and Notebooks
+If you want a narrower pass while iterating:
 
-- working notebooks now live under `notebooks/`;
-- notebook-specific narratives and ETL notes live under `docs/notebooks/`;
-- archived backup pages live under `docs/archive/pages/`.
+```bash
+python -m unittest tests.test_vde_workflow_service tests.test_fuel_estimation
+```
 
-## Status
+## ML Runtime Notes
 
-This repository is in an active modularization phase. The current sprint emphasizes hygiene, UI/core separation, roadload consolidation, and test coverage before deeper physical component modeling.
+`ML Prediction` is an inference capability, not a notebook execution mode.
 
-Recent architectural status:
-- `pages/VDE_Setup.py` is now a thin orchestration page;
-- reusable page sections live under `src/vde_app/components/`;
-- VDE session-state defaults and reset helpers live in `src/vde_app/state.py`;
-- repository and service helpers now own most persistence and payload shaping outside the pages.
+Current expectations:
+
+- the notebook remains an experimental/training source
+- runtime inference expects an exported artifact under `models/`
+- the current repository already includes a Powertrain Scenario artifact:
+  - `models/powertrain_scenario_ml.joblib`
+- optional ML dependencies live in `requirements-ml.txt`
+
+Possible ML runtime states:
+
+- artifact found and loaded
+- artifact missing
+- artifact load failed
+- missing features
+- partial / out-of-domain coverage
+
+See [ML / SHAP / Nearest Peers](docs/ML_SHAP_NEAREST_PEERS.md) for the detailed explanation.
+
+## Known Limitations
+
+- ML runtime depends on an exported artifact and compatible dependencies.
+- SHAP availability depends on model form and explainability compatibility.
+- Nearest Peers quality depends on dataset coverage and consistency.
+- Regulatory / label benchmarking is still an early scaffold.
+- Performance simulation is still planned.
+- `Physics + ML Residual` and `Map-Based Simulation` are planned, not production engines.
+- Comparison / benchmark reporting is still in an MVP stage.
+- Hidden component priors are future backlog, not a delivered causal inference capability.
+
+## Sprint 5 Status
+
+Sprint 5 delivered the product foundation the project needed:
+
+- `VDE Setup` as a disciplined physical workflow
+- `Powertrain Scenario` as an estimation-first page
+- `Comparison Report` as a separate reporting direction
+- shared estimation contracts for manual, physics, regression, and ML paths
+- initial ML explainability and peer-guidance capabilities
+
+See [Sprint 5 Closure](docs/SPRINT_5_CLOSURE.md) for the consolidated close-out.

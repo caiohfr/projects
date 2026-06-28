@@ -489,6 +489,7 @@ def _build_fuelcons_payload(result: FuelEstimateResult) -> dict[str, Any]:
     req = result.request
     vehicle = dict(req.vehicle_features or {})
     powertrain = dict(req.powertrain_features or {})
+    utility_factor = _to_float(powertrain.get("utility_factor"))
     method_note = result.method
     if result.method == "physics_simple":
         method_note = f"physics_simple [{result.energy_basis_used}]"
@@ -506,7 +507,7 @@ def _build_fuelcons_payload(result: FuelEstimateResult) -> dict[str, Any]:
         "fuel_type": powertrain.get("fuel_type"),
         "eta_pt_est": powertrain.get("eta_pt_est"),
         "bev_eff_drive": powertrain.get("bev_eff_drive"),
-        "utility_factor_pct": powertrain.get("utility_factor"),
+        "utility_factor_pct": (utility_factor * 100.0) if utility_factor is not None else None,
         "energy_Wh_per_km": result.energy_Wh_km,
         "fuel_l_per_100km": result.fuel_l_100km,
         "gco2_per_km": result.gco2_km,

@@ -645,6 +645,46 @@ def _default_gco2_per_l(fuel_type: str) -> float:
     return float(GCO2_PER_L.get(fuel_type or "Gasoline", GCO2_PER_L["Gasoline"]))
 
 
+def _build_powertrain_features_from_state(vde_row: dict, ctx: Dict[str, Any]) -> Dict[str, Any]:
+    electrification = str(ctx.get("electrification") or "ICE").upper()
+    powertrain_features: Dict[str, Any] = {}
+
+    gear_count = st.session_state.get("pwt_gears") or vde_row.get("gear_count")
+    final_drive_ratio = st.session_state.get("pwt_fdr") or vde_row.get("final_drive_ratio")
+    transmission_model = st.session_state.get("pwt_trans_model") or vde_row.get("transmission_model")
+
+    if gear_count not in (None, ""):
+        powertrain_features["gear_count"] = int(gear_count)
+    if final_drive_ratio not in (None, ""):
+        powertrain_features["final_drive_ratio"] = float(final_drive_ratio)
+    if transmission_model not in (None, ""):
+        powertrain_features["transmission_model"] = transmission_model
+
+    if electrification in ("ICE", "HEV", "PHEV"):
+        fuel_type = st.session_state.get("sb_fuel_type") or "Gasoline"
+        powertrain_features["fuel_type"] = fuel_type
+        powertrain_features["LHV_MJ_per_L"] = float(
+            to_float(st.session_state.get("sb_lhv_override")) or _default_lhv(fuel_type)
+        )
+        powertrain_features["gCO2_per_L"] = _default_gco2_per_l(fuel_type)
+        eta_pt = to_float(st.session_state.get("sb_eta_pt"))
+        if eta_pt and eta_pt > 0:
+            powertrain_features["eta_pt_est"] = float(eta_pt)
+        uf_phev = to_float(st.session_state.get("sb_uf"))
+        if uf_phev is not None:
+            powertrain_features["utility_factor"] = max(0.0, min(1.0, float(uf_phev)))
+
+    if electrification in ("BEV", "PHEV"):
+        eta_drive = to_float(st.session_state.get("sb_eta_drive"))
+        grid = to_float(st.session_state.get("sb_grid"))
+        if eta_drive and eta_drive > 0:
+            powertrain_features["bev_eff_drive"] = float(eta_drive)
+        if grid is not None:
+            powertrain_features["grid_gco2_per_kwh"] = float(grid)
+
+    return powertrain_features
+
+
 def _render_scenario_extras_inputs() -> None:
     with st.expander("Vehicle / Drivetrain Data (optional)", expanded=False):
         c1, c2, c3 = st.columns(3)
@@ -1674,25 +1714,7 @@ def _build_active_fuel_estimate_request(vde_id: int, vde_row: dict, ctx: Dict[st
         )
 
     if method == "Physics Simple":
-        fuel_type = st.session_state.get("sb_fuel_type") or "Gasoline"
-        powertrain_features: Dict[str, Any] = {
-            "fuel_type": fuel_type,
-            "LHV_MJ_per_L": float(to_float(st.session_state.get("sb_lhv_override")) or _default_lhv(fuel_type)),
-            "gCO2_per_L": _default_gco2_per_l(fuel_type),
-        }
-        eta_pt = to_float(st.session_state.get("sb_eta_pt"))
-        eta_drive = to_float(st.session_state.get("sb_eta_drive"))
-        grid = to_float(st.session_state.get("sb_grid"))
-        uf_phev = to_float(st.session_state.get("sb_uf"))
-        if eta_pt and eta_pt > 0:
-            powertrain_features["eta_pt_est"] = float(eta_pt)
-        if eta_drive and eta_drive > 0:
-            powertrain_features["bev_eff_drive"] = float(eta_drive)
-        if grid is not None:
-            powertrain_features["grid_gco2_per_kwh"] = float(grid)
-        if uf_phev is not None:
-            powertrain_features["utility_factor"] = max(0.0, min(1.0, float(uf_phev)))
-
+        powertrain_features = _build_powertrain_features_from_state(vde_row, ctx)
         request = build_fuel_estimate_request_from_vde(
             vde_row,
             electrification=electrification,
@@ -1720,19 +1742,19 @@ def _build_active_fuel_estimate_request(vde_id: int, vde_row: dict, ctx: Dict[st
         )
 
     if method == "ML Prediction":
-        return build_fuel_estimate_request_from_vde(
+        request = build_fuel_estimate_request_from_vde(
             vde_row,
             electrification=electrification,
             energy_basis=energy_basis,
             method="ml_prediction",
-            powertrain_features={
-                "gear_count": st.session_state.get("pwt_gears") or vde_row.get("gear_count"),
-                "final_drive_ratio": st.session_state.get("pwt_fdr") or vde_row.get("final_drive_ratio"),
-            },
+            powertrain_features=_build_powertrain_features_from_state(vde_row, ctx),
             model_options={
                 "ml_artifact_path": st.session_state.get("pwt_ml_artifact_path"),
             },
         )
+        if electrification == "BEV" and bool(ctx.get("draft_bev_placeholders")):
+            request.vehicle_features.update(apply_bev_placeholders(vde_id))
+        return request
 
     return None
 

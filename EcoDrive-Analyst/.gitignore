@@ -30,3 +30,9 @@ Thumbs.db
 *.db-wal
 
 *.db
+
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz

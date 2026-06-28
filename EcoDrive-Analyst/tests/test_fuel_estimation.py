@@ -288,6 +288,28 @@ class FuelEstimationTests(unittest.TestCase):
         self.assertIn("fuel_ftp75_l_per_100km", staged.payload)
         self.assertIn("fuel_hwfet_l_per_100km", staged.payload)
 
+    def test_build_fuel_scenario_save_payload_scales_utility_factor_to_percent_field(self):
+        result = run_fuel_estimation(
+            FuelEstimateRequest(
+                vde_id=70,
+                energy_basis="VDE_TOTAL",
+                method="physics_simple",
+                vehicle_features={"electrification": "PHEV", "vde_total_mj_per_km": 1.8},
+                powertrain_features={
+                    "fuel_type": "Gasoline",
+                    "eta_pt_est": 0.3,
+                    "LHV_MJ_per_L": 32.0,
+                    "bev_eff_drive": 0.9,
+                    "utility_factor": 0.4,
+                    "grid_gco2_per_kwh": 400.0,
+                },
+            )
+        )
+
+        staged = build_fuel_scenario_save_payload(result)
+
+        self.assertAlmostEqual(staged.payload["utility_factor_pct"], 40.0)
+
     @patch("src.vde_core.fuel_estimation.insert_fuelcons_row")
     def test_save_fuel_estimate_result_persists_insert_payload(self, mock_insert):
         mock_insert.return_value = 99

@@ -53,6 +53,9 @@ class PwtFuelEnergyServiceTests(unittest.TestCase):
                 "year": 2025,
                 "engine_type": "HEV",
                 "cycle_name": "FTP75_HWFET",
+                "mass_kg": 1735.0,
+                "test_mass_kg": 1814.0,
+                "inertia_class": 1814.0,
                 "engine_size_l": 2.0,
                 "transmission_type": "AT",
                 "drive_type": "FWD",
@@ -75,6 +78,9 @@ class PwtFuelEnergyServiceTests(unittest.TestCase):
         self.assertEqual(request.method, "physics_simple")
         self.assertEqual(request.vehicle_features["electrification"], "HEV")
         self.assertAlmostEqual(request.vehicle_features["vde_total_mj_per_km"], 1.7)
+        self.assertAlmostEqual(request.vehicle_features["mass_kg"], 1735.0)
+        self.assertAlmostEqual(request.vehicle_features["test_mass_kg"], 1814.0)
+        self.assertAlmostEqual(request.vehicle_features["inertia_class"], 1814.0)
         self.assertAlmostEqual(request.vehicle_features["engine_size_l"], 2.0)
         self.assertEqual(request.vehicle_features["transmission_type"], "AT")
         self.assertAlmostEqual(request.vehicle_features["coast_A_N"], 120.0)

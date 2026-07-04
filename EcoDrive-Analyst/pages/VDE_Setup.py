@@ -22,6 +22,7 @@ from src.vde_app.components.vde_setup import (
     render_vehicle_aero_section,
     render_vehicle_meta_header,
     render_vehicle_basics_sidebar,
+    render_vde_setup_spreadsheet_workbook,
     render_vde_setup_view_selector,
     render_vde_edit_delete_panel,
 )
@@ -161,7 +162,7 @@ def main():
     with h1:
         st.title("VDE Setup")
         st.caption("Roadload / Component Build-up / Transmission Losses / VDE TOTAL-NET workflow")
-    render_vehicle_basics_sidebar(reset_ctx=lambda preserve_meta=True: reset_vde_setup_state(st.session_state, preserve_meta=preserve_meta))
+    input_mode = render_vehicle_basics_sidebar(reset_ctx=lambda preserve_meta=True: reset_vde_setup_state(st.session_state, preserve_meta=preserve_meta))
 
     logo_path = search_logo(ctx, base_dir="data/images/logos", fallback="_unknown.png") or ""
     leg_icon = get_legislation_icon(ctx, base_dir="data/images") or ""
@@ -173,9 +174,21 @@ def main():
     show_if_exists(i2, ctx["leg_icon"], width=50, caption=ctx["legislation"])
 
     render_executive_summary_panel()
-    active_view = render_vde_setup_view_selector()
 
     st.divider()
+
+    if input_mode == "Spreadsheet":
+        render_vde_setup_spreadsheet_workbook(
+            defaults_df_getter=get_defaults_df,
+            defaults_path=DEFAULTS_PATH,
+            reset_ctx=lambda preserve_meta=True: reset_vde_setup_state(st.session_state, preserve_meta=preserve_meta),
+            roadload_base_row=roadload_base_row,
+            roadload_saved_vde_id=roadload_saved_vde_id,
+            roadload_transmission_prefill=roadload_transmission_prefill,
+        )
+        return
+
+    active_view = render_vde_setup_view_selector()
 
     if active_view == "Scenario Setup":
         with st.container(border=True):

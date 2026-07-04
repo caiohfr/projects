@@ -11,8 +11,10 @@ from dataclasses import dataclass, field
 import json
 from typing import Any
 
+from src.vde_core.estimate_confidence import build_estimate_confidence_summary
 from src.vde_core.fuel_energy import GCO2_PER_L, LHV_MJ_PER_L, MJ_TO_Wh
 from src.vde_core.ml_prediction import predict_fuel_with_ml
+from src.vde_core.powertrain_efficiency import build_powertrain_efficiency_summary
 from src.vde_core.repositories import delete_fuelcons_by_id, insert_fuelcons_row, update_fuelcons_by_id
 
 
@@ -433,6 +435,20 @@ def _build_provenance_payload(result: FuelEstimateResult) -> dict[str, Any]:
         "source_vde_created_at": vehicle.get("source_vde_created_at"),
         "source_vde_updated_at": vehicle.get("source_vde_updated_at"),
         "confidence": result.confidence,
+        "confidence_summary": dict((result.assumptions or {}).get("confidence_summary") or {}),
+        "pse_summary": dict((result.assumptions or {}).get("pse_summary") or {}),
+        "scenario_feature_sources": dict(vehicle.get("scenario_feature_sources") or {}),
+        "scenario_feature_values": dict(vehicle.get("scenario_feature_values") or {}),
+        "scenario_feature_overrides": dict(vehicle.get("scenario_feature_overrides") or {}),
+        "scenario_feature_missing": list(vehicle.get("scenario_feature_missing") or []),
+        "scenario_feature_imputed": list(vehicle.get("scenario_feature_imputed") or []),
+        "scenario_feature_confidence_impacts": list(vehicle.get("scenario_feature_confidence_impacts") or []),
+        "scenario_feature_readiness": dict(vehicle.get("scenario_feature_readiness") or {}),
+        "powertrain_reference": dict(vehicle.get("powertrain_reference") or {}),
+        "baseline_estimate": dict(vehicle.get("baseline_estimate") or {}),
+        "technology_deltas": list(vehicle.get("technology_deltas") or []),
+        "proposal_result": dict(vehicle.get("proposal_result") or {}),
+        "scenario_lineage": dict(vehicle.get("scenario_lineage") or {}),
         "warnings": list(result.warnings),
     }
 
@@ -463,6 +479,22 @@ def run_fuel_estimation(request: FuelEstimateRequest | dict[str, Any]) -> FuelEs
         warnings.extend(method_warnings)
     else:
         warnings.append(f"unsupported_method:{method}")
+
+    assumptions["pse_summary"] = build_powertrain_efficiency_summary(
+        request=req,
+        method=method,
+        energy_basis_used=basis_used,
+        fuel_l_100km=outputs.get("fuel_l_100km"),
+        energy_Wh_km=outputs.get("energy_Wh_km"),
+        assumptions=assumptions,
+    )
+    assumptions["confidence_summary"] = build_estimate_confidence_summary(
+        request=req,
+        method=method,
+        confidence=confidence,
+        warnings=warnings,
+        assumptions=assumptions,
+    )
 
     resolved_phase_outputs = _phase_outputs_for_result(
         req,
@@ -508,6 +540,9 @@ def _build_fuelcons_payload(result: FuelEstimateResult) -> dict[str, Any]:
         "eta_pt_est": powertrain.get("eta_pt_est"),
         "bev_eff_drive": powertrain.get("bev_eff_drive"),
         "utility_factor_pct": (utility_factor * 100.0) if utility_factor is not None else None,
+        "engine_max_power_kw": powertrain.get("engine_max_power_kw"),
+        "gear_count": powertrain.get("gear_count") or vehicle.get("gear_count"),
+        "final_drive_ratio": powertrain.get("final_drive_ratio") or vehicle.get("final_drive_ratio"),
         "energy_Wh_per_km": result.energy_Wh_km,
         "fuel_l_per_100km": result.fuel_l_100km,
         "gco2_per_km": result.gco2_km,

@@ -8,7 +8,7 @@ The current product is organized around three main blocks:
 2. `Powertrain Scenario`
 3. `Comparison Report`
 
-This repository is now in a stronger Sprint 5 state: `VDE Setup` behaves as the physical roadload workflow, `Powertrain Scenario` behaves as an estimation block, and `Comparison Report` is separated as an early benchmark/report space instead of being mixed into the estimator flow.
+This repository is now in a stronger Sprint 6 closure state: `VDE Setup` behaves as a spreadsheet-first technical roadload workflow, `Powertrain Scenario` behaves as a guided estimation block, and `Comparison Report` remains separated as an early benchmark/report space instead of being mixed into the estimator flow.
 
 ## Current Product Blocks
 
@@ -38,6 +38,12 @@ Core idea:
 - electric energy
 - CO2
 
+Inside that page, the current interpretation flow is:
+
+1. `Vehicle Demand`
+2. `Powertrain System Efficiency (PSE)`
+3. final fuel / electric result
+
 Supported estimation methods in the current product:
 
 - `Manual / Imported`
@@ -55,6 +61,12 @@ Important boundary:
 - `Powertrain Scenario` does not recalculate roadload
 - it uses an already resolved energy basis such as `VDE_TOTAL` or `VDE_NET`
 
+Practical reading:
+
+- `VDE_TOTAL` or `VDE_NET` tells us how much energy the vehicle demands on the cycle
+- `PSE` tells us how effectively the powertrain converts supply energy into that delivered demand
+- fuel, electricity, and CO2 are the final outputs of that relationship
+
 ### Comparison Report
 
 `Comparison Report` is now its own space for:
@@ -70,6 +82,7 @@ It is intentionally still an MVP surface. It should be read as the first step to
 Sprint 5 documentation:
 
 - [Sprint 5 Closure](docs/SPRINT_5_CLOSURE.md)
+- [Sprint 6 Plan](docs/sprints/SPRINT_6_VALIDATION_SCENARIO_BENCH_RELEASE_2026-06-28.md)
 - [VDE Setup Guide](docs/VDE_SETUP_GUIDE.md)
 - [Powertrain Scenario Guide](docs/POWERTRAIN_SCENARIO_GUIDE.md)
 - [ML / SHAP / Nearest Peers](docs/ML_SHAP_NEAREST_PEERS.md)
@@ -161,6 +174,9 @@ Current expectations:
 - the current repository already includes a Powertrain Scenario artifact:
   - `models/powertrain_scenario_ml.joblib`
 - optional ML dependencies live in `requirements-ml.txt`
+- the current ML artifact predicts final fuel / energy outputs
+- `PSE` shown in the UI is currently derived from those outputs plus the active demand basis
+- direct ML prediction of cycle-effective `PSE` is future work unless a dedicated artifact is trained for that target
 
 Possible ML runtime states:
 
@@ -182,6 +198,7 @@ See [ML / SHAP / Nearest Peers](docs/ML_SHAP_NEAREST_PEERS.md) for the detailed 
 - `Physics + ML Residual` and `Map-Based Simulation` are planned, not production engines.
 - Comparison / benchmark reporting is still in an MVP stage.
 - Hidden component priors are future backlog, not a delivered causal inference capability.
+- current `PSE` is cycle-effective system efficiency, not pure engine efficiency.
 
 ## Sprint 5 Status
 
@@ -191,6 +208,25 @@ Sprint 5 delivered the product foundation the project needed:
 - `Powertrain Scenario` as an estimation-first page
 - `Comparison Report` as a separate reporting direction
 - shared estimation contracts for manual, physics, regression, and ML paths
+- first-class `PSE` interpretation across estimator, review, and comparison flows
 - initial ML explainability and peer-guidance capabilities
 
 See [Sprint 5 Closure](docs/SPRINT_5_CLOSURE.md) for the consolidated close-out.
+
+## Sprint Closure
+
+Current sprint closure:
+
+- `VDE Setup` moved to spreadsheet-first technical input mode.
+- `Powertrain Scenario` is consolidated as a guided workflow:
+  `Scenario Pairing -> Baseline Estimate -> Technology Delta -> Result & Save`.
+- Technical diagnostics were moved behind advanced / technical details by default.
+- No schema, VDE formula, or ML training changes were introduced in this closure.
+
+Next steps for Sprint 7:
+
+- `Comparison Report` v0
+- baseline vs proposal storytelling
+- delta decomposition
+- `VehicleScenario` internal contract
+- future `Scenario Builder`

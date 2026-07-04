@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import pickle
 from typing import Any
+from pathlib import Path
 
 from src.vde_core.fuel_energy import GCO2_PER_L
 from src.vde_core.ml_explainability import compute_ml_explanation
@@ -69,7 +69,7 @@ ML_NOTEBOOK_SUMMARY = {
             "drive_type",
             "electrification",
         ],
-        "pipeline": "ColumnTransformer(StandardScaler + OneHotEncoder(handle_unknown='ignore'))",
+        "pipeline": "ColumnTransformer(SimpleImputer + StandardScaler + OneHotEncoder(handle_unknown='ignore'))",
     },
     "targets_by_electrification": {
         "BEV": ["energy_Wh_per_km", "gco2_per_km"],
@@ -347,9 +347,9 @@ def build_ml_features(request: Any, vde_row: dict[str, Any] | None = None, conte
         "make": vehicle.get("make") or row.get("make"),
         "model": vehicle.get("model") or row.get("model"),
         "year": vehicle.get("year") or row.get("year"),
-        "engine_size_l": vehicle.get("engine_size_l") or row.get("engine_size_l"),
-        "transmission_type": vehicle.get("transmission_type") or row.get("transmission_type"),
-        "drive_type": vehicle.get("drive_type") or row.get("drive_type"),
+        "engine_size_l": powertrain.get("engine_size_l") or vehicle.get("engine_size_l") or row.get("engine_size_l"),
+        "transmission_type": powertrain.get("transmission_type") or vehicle.get("transmission_type") or row.get("transmission_type"),
+        "drive_type": powertrain.get("drive_type") or vehicle.get("drive_type") or row.get("drive_type"),
         "electrification": _clean_text(
             vehicle.get("electrification") or ctx.get("electrification") or row.get("engine_type"),
             "ICE",
@@ -548,6 +548,25 @@ def _evaluate_domain_coverage(
     }
 
 
+def _downgrade_ml_confidence(
+    base_confidence: str,
+    *,
+    coverage_status: str | None,
+    missing_features: list[str] | None,
+) -> str:
+    normalized = _clean_text(base_confidence, "medium", upper=False) or "medium"
+    missing_count = len(missing_features or [])
+    coverage = _clean_text(coverage_status, "unknown", upper=False) or "unknown"
+
+    if coverage == "out_of_domain":
+        return "low"
+    if normalized == "high" and (coverage == "partial_domain" or missing_count > 0):
+        return "medium"
+    if normalized == "medium" and missing_count >= 5:
+        return "low"
+    return normalized
+
+
 def describe_ml_prediction_setup(
     request: Any,
     *,
@@ -717,6 +736,11 @@ def predict_fuel_with_ml(
         "medium",
         upper=False,
     ) or "medium"
+    confidence = _downgrade_ml_confidence(
+        confidence,
+        coverage_status=assumptions.get("coverage_status"),
+        missing_features=assumptions.get("missing_features"),
+    )
     return build_ml_prediction_result(
         outputs=outputs,
         assumptions=assumptions,

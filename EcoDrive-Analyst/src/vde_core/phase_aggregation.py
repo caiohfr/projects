@@ -4,7 +4,7 @@ from typing import Dict, Optional, Union
 
 import pandas as pd
 
-from src.vde_core.test_mass import compute_mro_from_stda, compute_wltp_test_mass, inertia_class_from_mass
+from src.vde_core.test_mass import inertia_class_from_mass
 from src.vde_core.vde_calc import compute_vde_net
 
 
@@ -108,15 +108,7 @@ def wltp_phases_from_phase(
         "extrahigh": "vde_extra_high_mj_per_km",
     }
 
-    tm = None
-    try:
-        mro_kg = compute_mro_from_stda(mass, includes_driver=False)
-        tm = compute_wltp_test_mass(mro_kg)
-    except Exception:
-        tm = None
-
-    if tm is None:
-        tm = float(mass)
+    tm = float(mass)
 
     E_sum = 0.0
     S_sum = 0.0

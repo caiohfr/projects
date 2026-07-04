@@ -2,6 +2,7 @@ import unittest
 
 import pandas as pd
 
+from src.vde_app.plots import compute_roadload_curve, roadload_curve_comparison_chart
 from src.vde_app.units import (
     UNIT_SYSTEM_METRIC,
     UNIT_SYSTEM_US,
@@ -14,6 +15,50 @@ from src.vde_core.vde_workflow_service import build_vde_setup_preview_from_ctx
 
 
 class VdeAppUnitsTests(unittest.TestCase):
+    def test_compute_roadload_curve_metric_display(self):
+        curve_df = compute_roadload_curve(100.0, 0.5, 0.04, unit_system=UNIT_SYSTEM_METRIC)
+
+        self.assertEqual(curve_df["speed_unit"].iloc[0], "km/h")
+        self.assertEqual(curve_df["force_unit"].iloc[0], "N")
+        self.assertEqual(curve_df["speed_display"].iloc[0], 0.0)
+        self.assertEqual(curve_df["speed_display"].iloc[-1], 160.0)
+        self.assertAlmostEqual(curve_df["force_display"].iloc[0], 100.0, places=9)
+        self.assertAlmostEqual(curve_df["force_display"].iloc[-1], 1204.0, places=9)
+        self.assertAlmostEqual(curve_df["power_kW"].iloc[-1], 53.5111111111, places=6)
+
+    def test_compute_roadload_curve_us_display(self):
+        curve_df = compute_roadload_curve(100.0, 0.5, 0.04, unit_system=UNIT_SYSTEM_US)
+
+        self.assertEqual(curve_df["speed_unit"].iloc[0], "mph")
+        self.assertEqual(curve_df["force_unit"].iloc[0], "lbf")
+        self.assertEqual(curve_df["speed_display"].iloc[0], 0.0)
+        self.assertEqual(curve_df["speed_display"].iloc[-1], 100.0)
+        self.assertAlmostEqual(curve_df["speed_kph"].iloc[-1], 160.9344, places=6)
+        self.assertAlmostEqual(curve_df["force_N"].iloc[-1], 1216.4624441344001, places=6)
+        self.assertAlmostEqual(curve_df["force_display"].iloc[-1], 273.4716363863451, places=6)
+
+    def test_compute_roadload_curve_accepts_us_and_si_aliases(self):
+        us_curve_df = compute_roadload_curve(100.0, 0.5, 0.04, unit_system="US")
+        si_curve_df = compute_roadload_curve(100.0, 0.5, 0.04, unit_system="SI")
+
+        self.assertEqual(us_curve_df["speed_unit"].iloc[0], "mph")
+        self.assertEqual(si_curve_df["speed_unit"].iloc[0], "km/h")
+
+    def test_roadload_curve_comparison_chart_renders_total_and_net(self):
+        fig = roadload_curve_comparison_chart(
+            [
+                {"label": "ABC_TOTAL", "A_N": 100.0, "B_N_per_kph": 0.5, "C_N_per_kph2": 0.04},
+                {"label": "ABC_NET", "A_N": 90.0, "B_N_per_kph": 0.45, "C_N_per_kph2": 0.038},
+            ],
+            unit_system=UNIT_SYSTEM_US,
+        )
+
+        self.assertIsNotNone(fig)
+        self.assertEqual(len(fig.data), 2)
+        self.assertEqual({trace.name for trace in fig.data}, {"ABC_TOTAL", "ABC_NET"})
+        self.assertEqual(fig.layout.xaxis.title.text, "Vehicle Speed [mph]")
+        self.assertEqual(fig.layout.yaxis.title.text, "Road Load Force [lbf]")
+
     def test_roundtrip_conversions(self):
         cases = [
             ("mass", 1550.0),

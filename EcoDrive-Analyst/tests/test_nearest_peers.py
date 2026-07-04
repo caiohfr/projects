@@ -249,8 +249,48 @@ class NearestPeersTests(unittest.TestCase):
                 n=4,
             )
         self.assertEqual(analysis["summary"]["peer_count"], 4)
+        self.assertEqual(analysis["candidate_pool_size"], 4)
+        self.assertEqual(analysis["filtered_sample_size"], 4)
+        self.assertEqual(analysis["display_peer_count"], 4)
         self.assertIn("label", analysis["quality"])
         self.assertIsInstance(analysis["hints"], list)
+
+    def test_build_peer_analysis_keeps_candidate_pool_separate_from_top_n_display(self):
+        class DummyRequest:
+            vde_id = 55
+
+            def __init__(self):
+                self.vehicle_features = {
+                    "legislation": "EPA",
+                    "category": "B",
+                    "make": "AUDI",
+                    "model": "A1",
+                    "year": 2025,
+                    "engine_size_l": 1.5,
+                    "transmission_type": "AT",
+                    "drive_type": "FWD",
+                    "electrification": "ICE",
+                    "gear_count": 6,
+                    "final_drive_ratio": 3.9,
+                    "coast_A_N": 120,
+                    "coast_B_N_per_kph": 0.03,
+                    "coast_C_N_per_kph2": 0.0002,
+                    "vde_total_mj_per_km": 1.92,
+                    "vde_net_mj_per_km": 1.70,
+                }
+                self.powertrain_features = {"fuel_type": "Gasoline", "gear_count": 6}
+
+        extended_df = pd.concat([self._candidate_df(), self._candidate_df().assign(vde_id=[200, 201, 202, 203])], ignore_index=True)
+        with unittest.mock.patch(
+            "src.vde_core.nearest_peers.load_peer_candidates",
+            return_value=extended_df,
+        ):
+            analysis = build_peer_analysis_for_request(DummyRequest(), outputs={"fuel_l_100km": 7.0}, n=5)
+
+        self.assertEqual(analysis["candidate_pool_size"], 8)
+        self.assertEqual(analysis["filtered_sample_size"], 8)
+        self.assertEqual(analysis["display_peer_count"], 5)
+        self.assertEqual(analysis["summary"]["peer_count"], 5)
 
     def test_build_peer_analysis_for_request_does_not_mutate_request_or_outputs(self):
         class DummyRequest:

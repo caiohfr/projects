@@ -10,6 +10,9 @@ Important boundaries:
 - the notebook is an experimental source, not the production inference path
 - runtime inference should use an exported artifact
 - the runtime result must remain compatible with the common estimation contract
+- the current artifact predicts final fuel / energy outputs
+- the `PSE` shown in the UI is currently derived from those outputs and the active VDE demand basis
+- direct ML prediction of cycle-effective `PSE` is future work unless a dedicated target and artifact are trained for it
 
 ### Artifact Expectations
 
@@ -47,6 +50,10 @@ In simple terms, SHAP tries to answer:
 
 > Which features influenced the model prediction?
 
+In the current product, that means:
+
+> Which features influenced the model's predicted fuel or energy result?
+
 ### What SHAP Is Not
 
 SHAP does not prove physical causality.
@@ -58,6 +65,10 @@ SHAP should be read as a model explainability signal.
 Required interpretation warning:
 
 > These are model attribution signals, not proven physical causes.
+
+Additional boundary for the current page:
+
+> SHAP explains the ML result first. Any displayed `PSE` is interpreted afterward from demand and consumed energy.
 
 ### Suggested Engineering Grouping
 
@@ -136,6 +147,12 @@ The current quality idea is simple guidance, not certification:
 
 This is statistical guidance only.
 
+Nearest peers can support the same interpretation ladder:
+
+- demand side: similar `VDE_TOTAL` / `VDE_NET` context
+- conversion side: similar efficiency behavior when `PSE` is available
+- outcome side: similar final fuel / electric result
+
 ## Investigation Hints
 
 Investigation hints are not automatic editors.
@@ -153,6 +170,14 @@ Examples:
 - highway penalty -> investigate aero, tires, gearing
 - poor fuel result with good VDE -> investigate powertrain efficiency or calibration
 - `TOTAL` much higher than `NET` -> review transmission / neutral drag assumptions
+
+With the current page structure, a useful reading sequence is:
+
+1. confirm maneuver and cycle context
+2. confirm resolved VDE demand
+3. inspect `PSE`
+4. inspect final fuel / electric outcome
+5. use SHAP and peers to understand why the ML output landed where it did
 
 ## Regression
 
@@ -199,6 +224,7 @@ Important note:
 
 - hidden component priors are not a current delivered capability
 - nearest peers are not causal inference
+- current `PSE` is a cycle-effective interpretation layer, not a direct causal engine state
 
 ## Known Limitations
 
@@ -207,6 +233,7 @@ Important note:
 - nearest-peer guidance depends on data quality and coverage
 - peer guidance is advisory, not authoritative
 - regression remains empirical
+- current ML explainability applies directly to predicted outputs, not to a dedicated `PSE` target
 
 ## Related Docs
 

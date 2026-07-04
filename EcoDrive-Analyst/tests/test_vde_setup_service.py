@@ -27,14 +27,14 @@ class VdeSetupServiceTests(unittest.TestCase):
             resolve_test_mass_kg(
                 {
                     "legislation": "WLTP",
-                    "mass_kg": 1500.0,
-                    "mro_kg": 1575.0,
-                    "tpmlm_kg": 2000.0,
-                    "options_kg": 50.0,
-                    "wltp_category": 1,
+                    "mass_kg": 2666.0,
+                    "payload_kg": 373.0,
+                    "options_kg": 22.0,
+                    "wltp_category": "M1",
+                    "test_mass_basis": "WLTP_TMH",
                 }
             ),
-            1702.5,
+            2825.65,
         )
 
     def test_resolve_test_mass_kg_wltp_falls_back_to_curb_weight_without_tpmlm(self):
@@ -136,6 +136,9 @@ class VdeSetupServiceTests(unittest.TestCase):
         )
         ctx = {
             "mass_kg": 1550.0,
+            "payload_kg": 0.0,
+            "options_kg": 0.0,
+            "wltp_category": "M1",
             "engine_type": "ICE",
             "transmission_type": "AT",
             "tire_size": "225/50R17",
@@ -176,6 +179,7 @@ class VdeSetupServiceTests(unittest.TestCase):
         self.assertEqual(row["coast_A_N"], 121.0)
         self.assertEqual(row["mass_kg"], 1550.0)
         self.assertEqual(row["test_mass_kg"], 1686.0)
+        self.assertEqual(row["test_mass_basis"], "PHYSICAL_TEST_MASS")
         self.assertEqual(row["vde_urb_mj_per_km"], 1.1)
         self.assertEqual(row["vde_hw_mj_per_km"], 1.4)
         self.assertEqual(row["vde_id_parent"], 77)

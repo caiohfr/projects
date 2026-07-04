@@ -14,6 +14,7 @@ from src.vde_core.pwt_fuel_energy_service import (
     resolve_vde_energy_values,
     resolve_vde_source_revision,
     save_fuelcons_payload,
+    summarize_saved_scenario_revision_states,
 )
 from src.vde_core.roadload.decomposition import (
     component_delta_vs_baseline,
@@ -110,6 +111,22 @@ class PwtFuelEnergyServiceTests(unittest.TestCase):
             {"created_at": "2026-06-20T08:00:00", "updated_at": "2026-06-23T09:30:00"},
         )
         self.assertEqual(state["status"], "current")
+
+    def test_summarize_saved_scenario_revision_states_counts_refresh_required(self):
+        summary = summarize_saved_scenario_revision_states(
+            [
+                {"source_vde_revision": "2026-06-23T09:30:00"},
+                {"source_vde_revision": "2026-06-21T00:00:00"},
+                {"source_vde_revision": None},
+            ],
+            {"created_at": "2026-06-20T08:00:00", "updated_at": "2026-06-23T09:30:00"},
+        )
+
+        self.assertEqual(summary["total"], 3)
+        self.assertEqual(summary["current"], 1)
+        self.assertEqual(summary["changed"], 1)
+        self.assertEqual(summary["missing"], 1)
+        self.assertEqual(summary["refresh_required"], 2)
 
     def test_preview_fuel_estimate_from_vde_uses_new_estimation_contract(self):
         result = preview_fuel_estimate_from_vde(

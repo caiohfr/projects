@@ -3,6 +3,134 @@ import plotly.express as px
 import streamlit as st
 from typing import Dict, Any, List
 from src.vde_core.pwt_fuel_energy_service import fetch_scatter_join_rows, fetch_vde_rows_by_ids
+from src.vde_app.units import UNIT_SYSTEM_METRIC, UNIT_SYSTEM_US, normalize_unit_system
+
+
+KPH_PER_MPH = 1.609344
+N_PER_LBF = 4.4482216152605
+KW_PER_HP = 0.745699872
+
+
+def _normalize_roadload_unit_system(unit_system: str | None) -> str:
+    value = str(unit_system or "").strip()
+    if value.upper() == "US":
+        return UNIT_SYSTEM_US
+    if value.upper() == "SI":
+        return UNIT_SYSTEM_METRIC
+    return normalize_unit_system(value or None)
+
+
+def compute_roadload_curve(
+    A_N: float,
+    B_N_per_kph: float,
+    C_N_per_kph2: float,
+    *,
+    unit_system: str = "US",
+) -> pd.DataFrame:
+    system = _normalize_roadload_unit_system(unit_system)
+    if system == UNIT_SYSTEM_US:
+        speed_display = list(range(0, 101, 5))
+        speed_unit = "mph"
+        force_unit = "lbf"
+        speed_mph = pd.Series(speed_display, dtype=float)
+        speed_kph = speed_mph * KPH_PER_MPH
+    else:
+        speed_display = list(range(0, 161, 10))
+        speed_unit = "km/h"
+        force_unit = "N"
+        speed_kph = pd.Series(speed_display, dtype=float)
+        speed_mph = speed_kph / KPH_PER_MPH
+
+    force_N = (
+        float(A_N)
+        + (float(B_N_per_kph) * speed_kph)
+        + (float(C_N_per_kph2) * (speed_kph ** 2))
+    )
+    force_lbf = force_N / N_PER_LBF
+    power_kW = (force_N * (speed_kph / 3.6)) / 1000.0
+    power_hp = power_kW / KW_PER_HP
+
+    curve_df = pd.DataFrame(
+        {
+            "speed_kph": speed_kph.astype(float),
+            "speed_mph": speed_mph.astype(float),
+            "force_N": force_N.astype(float),
+            "force_lbf": force_lbf.astype(float),
+            "power_kW": power_kW.astype(float),
+            "power_hp": power_hp.astype(float),
+        }
+    )
+    if system == UNIT_SYSTEM_US:
+        curve_df["speed_display"] = curve_df["speed_mph"]
+        curve_df["force_display"] = curve_df["force_lbf"]
+    else:
+        curve_df["speed_display"] = curve_df["speed_kph"]
+        curve_df["force_display"] = curve_df["force_N"]
+    curve_df["speed_unit"] = speed_unit
+    curve_df["force_unit"] = force_unit
+    return curve_df
+
+
+def roadload_curve_chart(curve_df: pd.DataFrame):
+    if curve_df is None or curve_df.empty:
+        return None
+    speed_unit = str(curve_df["speed_unit"].iloc[0])
+    force_unit = str(curve_df["force_unit"].iloc[0])
+    fig = px.line(
+        curve_df,
+        x="speed_display",
+        y="force_display",
+        markers=True,
+        labels={
+            "speed_display": f"Vehicle Speed [{speed_unit}]",
+            "force_display": f"Road Load Force [{force_unit}]",
+        },
+        title="Road Load Plot",
+    )
+    fig.update_layout(margin=dict(l=0, r=0, t=35, b=0), height=300)
+    return fig
+
+
+def roadload_curve_comparison_chart(
+    curves: list[dict[str, float | str]],
+    *,
+    unit_system: str = "Metric",
+):
+    frames: list[pd.DataFrame] = []
+    for curve in curves:
+        label = str(curve.get("label") or "").strip()
+        if not label:
+            continue
+        curve_df = compute_roadload_curve(
+            float(curve.get("A_N") or 0.0),
+            float(curve.get("B_N_per_kph") or 0.0),
+            float(curve.get("C_N_per_kph2") or 0.0),
+            unit_system=unit_system,
+        ).copy()
+        curve_df["series"] = label
+        frames.append(curve_df)
+
+    if not frames:
+        return None
+
+    chart_df = pd.concat(frames, ignore_index=True)
+    speed_unit = str(chart_df["speed_unit"].iloc[0])
+    force_unit = str(chart_df["force_unit"].iloc[0])
+    fig = px.line(
+        chart_df,
+        x="speed_display",
+        y="force_display",
+        color="series",
+        markers=True,
+        labels={
+            "speed_display": f"Vehicle Speed [{speed_unit}]",
+            "force_display": f"Road Load Force [{force_unit}]",
+            "series": "Curve",
+        },
+        title="Road Load Plot",
+    )
+    fig.update_layout(margin=dict(l=0, r=0, t=35, b=0), height=320)
+    return fig
 
 
 def cycle_chart(df: pd.DataFrame, *, unit_system: str = "Metric"):

@@ -18,7 +18,7 @@ def drop_empty(d: dict) -> dict:
 # =============================================================================
 # Regressão (stubs leves que já rodam)
 # =============================================================================
-def load_regression_dataset(filters: Dict[str, Any], current_vde_id: Optional[int] = None) -> pd.DataFrame:
+def load_regression_dataset(filters: Dict[str, Any]) -> pd.DataFrame:
     base = (
         "SELECT f.vde_id, f.electrification, "
         "f.fuel_l_per_100km, f.energy_Wh_per_km, f.engine_max_power_kw, "
@@ -36,9 +36,6 @@ def load_regression_dataset(filters: Dict[str, Any], current_vde_id: Optional[in
     if filters.get("electrification"):
         base += " AND f.electrification = ?"
         params.append(filters["electrification"])
-    if filters.get("vde_id"):
-        base += " AND f.vde_id = ?"
-        params.append(int(filters["vde_id"]))
     if filters.get("legislation"):
         base += " AND v.legislation = ?"
         params.append(str(filters["legislation"]))
@@ -48,6 +45,12 @@ def load_regression_dataset(filters: Dict[str, Any], current_vde_id: Optional[in
     if filters.get("make"):
         base += " AND v.make = ?"
         params.append(filters["make"])
+    if filters.get("fuelcons_ids"):
+        ids = [int(value) for value in (filters.get("fuelcons_ids") or []) if value not in (None, "")]
+        if ids:
+            placeholders = ",".join("?" for _ in ids)
+            base += f" AND f.id IN ({placeholders})"
+            params.extend(ids)
 
     if "power_kw_range" in filters and filters["power_kw_range"] is not None:
         pmin, pmax = filters["power_kw_range"]

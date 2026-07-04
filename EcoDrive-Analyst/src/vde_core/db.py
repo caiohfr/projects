@@ -61,6 +61,9 @@ def ensure_migrations() -> None:
         "mro_kg": "REAL",
         "options_kg": "REAL",
         "wltp_category": "INT",
+        "test_mass_low_kg": "REAL",
+        "test_mass_high_kg": "REAL",
+        "test_mass_basis": "TEXT",
         "vde_urb_mj_per_km": "REAL",
         "vde_hw_mj_per_km": "REAL",
         "parasitic_A_coef_N": "REAL",
@@ -127,12 +130,6 @@ def ensure_migrations() -> None:
     if added:
         print("[db] migrações aplicadas:", added)
 
-    with _con() as con:
-        cur = con.cursor()
-        cur.execute(
-            "UPDATE vde_db SET test_mass_kg = mass_kg "
-            "WHERE test_mass_kg IS NULL AND mass_kg IS NOT NULL;"
-        )
     if added:
         print("[db] migraÃ§Ãµes aplicadas:", added)
 
@@ -178,6 +175,9 @@ def ensure_db():
             -- massa e aero
             mass_kg              REAL NOT NULL,
             test_mass_kg         REAL,
+            test_mass_low_kg     REAL,
+            test_mass_high_kg    REAL,
+            test_mass_basis      TEXT,
             inertia_class        REAL,                      -- ETW / Inércia WLTP / NBR
             cda_m2               REAL,                      -- Cd*Af_FE
             weight_dist_fr_pct   REAL,                      -- distribuição F/R [%]

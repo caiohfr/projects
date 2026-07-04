@@ -5,7 +5,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -13,6 +13,7 @@ import joblib
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
@@ -90,10 +91,28 @@ def load_notebook_dataset() -> pd.DataFrame:
 def build_preprocessor() -> ColumnTransformer:
     return ColumnTransformer(
         transformers=[
-            ("num", StandardScaler(), CONTINUOUS_FEATURES),
-            ("cat", OneHotEncoder(handle_unknown="ignore"), CATEGORICAL_FEATURES),
+            (
+                "num",
+                Pipeline(
+                    [
+                        ("imputer", SimpleImputer(strategy="median")),
+                        ("scaler", StandardScaler()),
+                    ]
+                ),
+                CONTINUOUS_FEATURES,
+            ),
+            (
+                "cat",
+                Pipeline(
+                    [
+                        ("imputer", SimpleImputer(strategy="most_frequent")),
+                        ("onehot", OneHotEncoder(handle_unknown="ignore")),
+                    ]
+                ),
+                CATEGORICAL_FEATURES,
+            ),
         ],
-        remainder="passthrough",
+        remainder="drop",
     )
 
 
@@ -249,6 +268,7 @@ def export_artifact() -> Path:
         "training_split": {"test_size": 0.2, "random_state": 42},
         "notes": [
             "Export reproduces the notebook-style BEV vs non-BEV split.",
+            "Runtime pre-processing imputes missing numeric/categorical powertrain features before inference.",
             "BEV predicts energy targets; non-BEV predicts fuel targets.",
             "CO2 is derived at runtime from the request context when possible.",
         ],

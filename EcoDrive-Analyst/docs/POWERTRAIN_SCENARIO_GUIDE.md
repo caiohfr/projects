@@ -10,19 +10,33 @@ It is not meant to be a complete dashboard or benchmark center. Its role is to t
 - electric energy
 - CO2
 
+The page now tells that story through a simple engineering chain:
+
+1. `Vehicle Demand`
+2. `Powertrain System Efficiency (PSE)`
+3. final fuel / electric result
+
 The page consumes VDE. It does not recalculate roadload.
 
 ## Current Workflow
 
 The page is organized as:
 
-1. `Context & Energy`
-2. `Powertrain Inputs`
-3. `Estimation Engine`
-4. `Results & Save`
-5. `Saved Estimates`
+1. `Scenario Bench`
+2. `Context & Energy`
+3. `Powertrain Inputs`
+4. `Estimation Engine`
+5. `Results & Save`
+6. `Saved Estimates`
 
-Each tab has one main responsibility.
+The `Scenario Bench` is the fast reading layer of the page. It summarizes:
+
+- maneuver / cycle context
+- resolved vehicle demand from VDE
+- powertrain efficiency interpretation
+- final result
+
+Each remaining tab has one main responsibility.
 
 ## Context & Energy
 
@@ -55,6 +69,8 @@ Important rule:
 - `Powertrain Scenario` uses this basis for estimation
 - it does not rebuild `ABC`, roadload, or transmission from scratch
 
+That means the page treats VDE as the demand side of the story. The powertrain layer is interpreted afterward.
+
 ## Powertrain Inputs
 
 This tab stages powertrain assumptions and optional drivetrain metadata.
@@ -73,6 +89,11 @@ Typical inputs:
 - transmission model metadata when applicable
 
 These inputs support the estimation methods but do not modify the VDE snapshot itself.
+
+`eta_pt_est` and related values should be read carefully:
+
+- in physics mode, they can act as explicit efficiency assumptions
+- in imported, regression, or ML modes, the visible `PSE` can be derived from the resulting energy balance instead of coming from a direct user-entered target
 
 ## Estimation Engine
 
@@ -99,6 +120,8 @@ It combines:
 
 Use it when a direct and interpretable estimation path is desired.
 
+In this method, `PSE` may come directly from an explicit engineering assumption.
+
 ### Regression
 
 Regression remains an empirical estimation method.
@@ -111,11 +134,19 @@ It should be used with visual review of the active dataset and scatter whenever 
 
 But it is not the center of the page. It is one estimation method inside the broader workflow.
 
+Here, `PSE` is generally a derived interpretation of the regression result relative to the active demand basis.
+
 ### ML Prediction
 
 `ML Prediction` is a runtime inference capability when an exported artifact is available.
 
 It should still produce a result compatible with the common estimation contract used by the other methods.
+
+Important boundary:
+
+- the current ML artifact predicts final fuel / energy outputs
+- the `PSE` shown in the page is currently derived from those outputs plus the chosen VDE basis
+- direct ML prediction of cycle-effective `PSE` is future work unless a dedicated model is trained for that target
 
 ### Planned Methods
 
@@ -134,6 +165,7 @@ Expected responsibilities:
 
 - preview the estimate
 - show assumptions
+- show `PSE` as a first-class interpretation layer
 - show warnings
 - show provenance
 - expose the staged payload in a technical expander
@@ -170,6 +202,12 @@ The runtime may report one of several states:
 
 That behavior is expected and should be documented, not hidden.
 
+When ML is active, keep the interpretation boundary clear:
+
+- SHAP explains the model's final fuel / energy prediction
+- nearest peers contextualize similar scenarios
+- `PSE` remains a derived engineering view in the current artifact generation
+
 See [ML / SHAP / Nearest Peers](ML_SHAP_NEAREST_PEERS.md) for the detailed model-related explanation.
 
 ## Regression Guidance
@@ -196,6 +234,7 @@ That separation exists so:
 - nearest peers and guidance depend on dataset coverage
 - richer reporting and regulatory layers are still evolving
 - performance simulation remains planned, not delivered
+- current `PSE` is cycle-effective system efficiency, not pure engine efficiency
 
 ## Related Docs
 

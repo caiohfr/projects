@@ -422,6 +422,9 @@ def build_peer_analysis_for_request(
     hints = generate_investigation_hints(target_peer_row, peer_summary)
     return {
         "target": target_peer_row,
+        "candidate_pool_size": int(len(peer_df)),
+        "filtered_sample_size": int(len(peer_df)),
+        "display_peer_count": int(len(peer_state.get("peers") or [])),
         "peers": list(peer_state.get("peers") or []),
         "warnings": list(peer_state.get("warnings") or []),
         "feature_coverage": dict(peer_state.get("feature_coverage") or {}),

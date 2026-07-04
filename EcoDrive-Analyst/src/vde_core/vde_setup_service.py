@@ -14,7 +14,11 @@ import pandas as pd
 from src.vde_core.roadload import cdA_to_C, resolve_equiv_from_ctx
 from src.vde_core.cycles import default_cycle_for_legislation
 from src.vde_core.phase_aggregation import epa_city_hwy_from_phase, wltp_phases_from_phase
-from src.vde_core.test_mass import compute_mro_from_stda, compute_wltp_test_mass, inertia_class_from_mass
+from src.vde_core.test_mass import (
+    compute_wltp_test_masses,
+    inertia_class_from_mass,
+    resolve_test_mass_kg as resolve_test_mass_from_basis,
+)
 from src.vde_core.repositories import (
     count_linked_fuelcons_rows,
     delete_vde_by_id,
@@ -38,6 +42,9 @@ _VDE_EXTRA_CTX_FIELDS = [
     "drive_type",
     "inertia_class",
     "test_mass_kg",
+    "test_mass_low_kg",
+    "test_mass_high_kg",
+    "test_mass_basis",
     "cda_m2",
     "weight_dist_fr_pct",
     "payload_kg",
@@ -96,38 +103,70 @@ def to_float(value, default=None):
         return default
 
 
-def resolve_test_mass_kg(ctx: dict) -> float | None:
+def resolve_test_mass_state(ctx: dict) -> dict:
     data = dict(ctx or {})
     base_mass = to_float(data.get("mass_kg"))
-    manual_test_mass = to_float(data.get("test_mass_kg"))
-    if manual_test_mass is not None and manual_test_mass > 0:
-        if base_mass is not None and base_mass > 0 and manual_test_mass < base_mass:
-            raise ValueError("Test mass cannot be lower than curb weight.")
-        return manual_test_mass
-
-    if base_mass is None or base_mass <= 0:
-        return None
-
+    payload_kg = to_float(data.get("payload_kg"))
+    options_kg = to_float(data.get("options_kg"), 0.0)
+    inertia_class = to_float(data.get("inertia_class"))
     legislation = str(data.get("legislation") or "").strip().upper()
-    if legislation == "EPA":
-        return base_mass + EPA_TEST_MASS_DEFAULT_DELTA_KG
-    if legislation == "WLTP":
-        mro_kg = to_float(data.get("mro_kg"))
-        if mro_kg is None and base_mass is not None and base_mass > 0:
-            mro_kg = compute_mro_from_stda(base_mass, includes_driver=False)
-        options_kg = to_float(data.get("options_kg"), 0.0)
-        tpmlm_kg = to_float(data.get("tpmlm_kg"))
-        wltp_category = data.get("wltp_category", 1)
-        if mro_kg is not None and tpmlm_kg is not None:
-            tm = compute_wltp_test_mass(
-                mro_kg,
-                options_kg=options_kg or 0.0,
-                tpmlm_kg=tpmlm_kg,
-                category=wltp_category,
-            )
-            if tm is not None:
-                return tm
-    return base_mass
+    existing_basis = str(data.get("test_mass_basis") or "").strip().upper() or None
+    existing_test_mass = to_float(data.get("test_mass_kg"))
+
+    wltp_result = compute_wltp_test_masses(
+        mass_kg=base_mass,
+        payload_kg=payload_kg,
+        options_kg=options_kg,
+        wltp_category=data.get("wltp_category"),
+    )
+
+    basis = existing_basis
+    manual_test_mass = existing_test_mass if basis in {"CUSTOM", "PHYSICAL_TEST_MASS"} else None
+
+    if basis is None:
+        if existing_test_mass is not None:
+            basis = "CUSTOM"
+            manual_test_mass = existing_test_mass
+        elif legislation == "WLTP" and wltp_result.test_mass_high_kg is not None:
+            basis = "WLTP_TMH"
+        elif legislation == "EPA" and resolve_tire_load_mass_basis(data) == "TWC" and inertia_class is not None:
+            basis = "EPA_INERTIA_CLASS"
+        elif legislation == "EPA" and base_mass is not None and base_mass > 0:
+            basis = "PHYSICAL_TEST_MASS"
+            manual_test_mass = base_mass + EPA_TEST_MASS_DEFAULT_DELTA_KG
+        elif base_mass is not None and base_mass > 0:
+            basis = "CURB_FALLBACK"
+
+    resolved_mass, resolved_basis, warnings = resolve_test_mass_from_basis(
+        basis=basis,
+        mass_kg=base_mass,
+        options_kg=options_kg,
+        test_mass_low_kg=wltp_result.test_mass_low_kg,
+        test_mass_high_kg=wltp_result.test_mass_high_kg,
+        inertia_class=inertia_class,
+        manual_test_mass_kg=manual_test_mass,
+    )
+
+    if resolved_mass is not None and base_mass is not None and base_mass > 0 and resolved_mass < base_mass:
+        raise ValueError("Test mass cannot be lower than curb weight.")
+
+    return {
+        "test_mass_kg": resolved_mass,
+        "test_mass_basis": resolved_basis,
+        "test_mass_low_kg": wltp_result.test_mass_low_kg,
+        "test_mass_high_kg": wltp_result.test_mass_high_kg,
+        "laden_mass_kg": wltp_result.laden_mass_kg,
+        "available_load_low_kg": wltp_result.available_load_low_kg,
+        "available_load_high_kg": wltp_result.available_load_high_kg,
+        "reference_mass_kg": wltp_result.reference_mass_kg,
+        "light_duty_scope_warning": wltp_result.light_duty_scope_warning,
+        "wltp_category": wltp_result.wltp_category,
+        "warnings": list(wltp_result.warnings) + list(warnings),
+    }
+
+
+def resolve_test_mass_kg(ctx: dict) -> float | None:
+    return resolve_test_mass_state(ctx).get("test_mass_kg")
 
 
 def is_test_mass_defaulted(ctx: dict) -> bool:
@@ -142,7 +181,7 @@ def build_test_mass_hint(ctx: dict) -> str:
     if legislation == "EPA":
         return "default Curb +300 pounds / 136 kg"
     if legislation == "WLTP":
-        return "default WLTP uses MRO/TPMLM when available; otherwise curb weight"
+        return "WLTP-like test mass uses base mass, payload, optional equipment, and WLTP category when available"
     return ""
 
 
@@ -160,6 +199,7 @@ def resolve_tire_calculation_mass(ctx: dict) -> dict:
     data = dict(ctx or {})
     legislation = str(data.get("legislation") or "").strip().upper()
     basis = resolve_tire_load_mass_basis(data)
+    test_mass_state = resolve_test_mass_state(data)
 
     if basis == "TWC":
         base_mass = to_float(data.get("mass_kg"))
@@ -183,14 +223,21 @@ def resolve_tire_calculation_mass(ctx: dict) -> dict:
 
     return {
         "basis": basis,
-        "mass_kg": resolve_test_mass_kg(data),
-        "source": "test_mass_kg",
+        "mass_kg": test_mass_state.get("test_mass_kg"),
+        "source": test_mass_state.get("test_mass_basis") or "test_mass_kg",
     }
 
 
 def _with_effective_test_mass(ctx: dict) -> dict:
     out = dict(ctx or {})
-    effective_test_mass = resolve_test_mass_kg(out)
+    test_mass_state = resolve_test_mass_state(out)
+    effective_test_mass = test_mass_state.get("test_mass_kg")
+    if test_mass_state.get("test_mass_low_kg") is not None:
+        out["test_mass_low_kg"] = test_mass_state.get("test_mass_low_kg")
+    if test_mass_state.get("test_mass_high_kg") is not None:
+        out["test_mass_high_kg"] = test_mass_state.get("test_mass_high_kg")
+    if test_mass_state.get("test_mass_basis") is not None:
+        out["test_mass_basis"] = test_mass_state.get("test_mass_basis")
     if effective_test_mass is not None:
         out["test_mass_kg"] = effective_test_mass
         out["mass_kg_effective_for_calc"] = effective_test_mass
@@ -365,6 +412,12 @@ def build_delta_mode_ctx_updates(base: dict) -> dict:
         "C": float(base.get("C", base.get("coast_C_N_per_kph2", 0.0)) or 0.0),
         "mass_kg": float(base.get("mass_kg", 0.0) or 0.0),
         "test_mass_kg": to_float(base.get("test_mass_kg")),
+        "test_mass_low_kg": to_float(base.get("test_mass_low_kg")),
+        "test_mass_high_kg": to_float(base.get("test_mass_high_kg")),
+        "test_mass_basis": str(base.get("test_mass_basis") or "").strip().upper() or None,
+        "payload_kg": to_float(base.get("payload_kg")),
+        "options_kg": to_float(base.get("options_kg"), 0.0),
+        "wltp_category": base.get("wltp_category"),
     }
     if base.get("crr1_frac_at_120kph") is not None:
         updates["crr1_frac_at_120kph"] = to_float(base.get("crr1_frac_at_120kph"))
@@ -513,6 +566,7 @@ def build_vde_insert_row(
     deltas: dict,
     decomp: Optional[dict] = None,
 ) -> dict:
+    test_mass_state = resolve_test_mass_state({**dict(ctx or {}), "legislation": leg})
     row = {
         "legislation": leg,
         "category": cat,
@@ -521,7 +575,10 @@ def build_vde_insert_row(
         "year": year,
         "notes": notes,
         "mass_kg": to_float(ctx.get("mass_kg"), equiv.mass_kg),
-        "test_mass_kg": resolve_test_mass_kg({**dict(ctx or {}), "legislation": leg}),
+        "test_mass_kg": test_mass_state.get("test_mass_kg"),
+        "test_mass_low_kg": test_mass_state.get("test_mass_low_kg"),
+        "test_mass_high_kg": test_mass_state.get("test_mass_high_kg"),
+        "test_mass_basis": test_mass_state.get("test_mass_basis"),
         "coast_A_N": equiv.A,
         "coast_B_N_per_kph": equiv.B,
         "coast_C_N_per_kph2": equiv.C,

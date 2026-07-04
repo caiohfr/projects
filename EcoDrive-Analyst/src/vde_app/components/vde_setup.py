@@ -40,6 +40,7 @@ from src.vde_core.vde_setup_service import (
     resolve_tire_calculation_mass,
     resolve_tire_load_mass_basis,
     resolve_test_mass_kg,
+    resolve_test_mass_state,
     to_float,
     validate_core,
     update_vde_snapshot,
@@ -51,13 +52,19 @@ from src.vde_core.vde_workflow_service import (
     save_vde_setup_result,
     summarize_component_build_up_from_ctx,
 )
-from src.vde_app.plots import cycle_chart
+from src.vde_app.plots import (
+    compute_roadload_curve,
+    cycle_chart,
+    roadload_curve_chart,
+    roadload_curve_comparison_chart,
+)
 from src.vde_app.components.shared import show_vde_feedback
 from src.vde_app.units import (
     format_quantity,
     normalize_unit_system,
     quantity_input,
     quantity_metric,
+    to_canonical,
     to_display,
     unit_label,
 )
@@ -78,6 +85,97 @@ def _tire_label(row: dict) -> str:
 
 def _current_unit_system() -> str:
     return normalize_unit_system(st.session_state.get("unit_system"))
+
+
+def _current_vde_input_mode(ctx: dict | None = None) -> str:
+    data = dict(ctx or st.session_state.get("ctx", {}))
+    mode = str(data.get("vde_setup_input_mode") or "Spreadsheet").strip()
+    return mode if mode in {"Guided", "Spreadsheet"} else "Spreadsheet"
+
+
+def render_vde_setup_input_mode_selector(*, host=st) -> str:
+    ctx = st.session_state.ctx
+    current = _current_vde_input_mode(ctx)
+    options = ["Spreadsheet", "Guided"]
+    ctx["vde_setup_input_mode"] = host.radio(
+        "Input mode",
+        options,
+        horizontal=True,
+        index=options.index(current),
+        key="vde_setup_input_mode_selector",
+    )
+    st.session_state["vde_spreadsheet_mode"] = ctx["vde_setup_input_mode"]
+    host.caption("Spreadsheet is now the default engineering editor. Guided remains available for step-by-step review.")
+    if ctx["vde_setup_input_mode"] == "Guided":
+        ctx["spreadsheet_roadload_errors"] = []
+        ctx["spreadsheet_transmission_errors"] = []
+        ctx["spreadsheet_component_errors"] = []
+    return str(ctx["vde_setup_input_mode"])
+
+
+def _render_roadload_plot(a_force, b_force, c_force):
+    unit_system = _current_unit_system()
+    curve_df = compute_roadload_curve(
+        to_float(a_force, 0.0),
+        to_float(b_force, 0.0),
+        to_float(c_force, 0.0),
+        unit_system=unit_system,
+    )
+    fig = roadload_curve_chart(curve_df)
+    if fig is not None:
+        st.plotly_chart(fig, use_container_width=True)
+
+    speed_unit = str(curve_df["speed_unit"].iloc[0])
+    force_unit = str(curve_df["force_unit"].iloc[0])
+    table_points = [0, 30, 60, 80, 100] if unit_system == "US customary" else [0, 50, 100, 130, 160]
+    table_df = curve_df[curve_df["speed_display"].round(6).isin([float(value) for value in table_points])][
+        ["speed_display", "force_display", "power_kW"]
+    ].copy()
+    table_df.rename(
+        columns={
+            "speed_display": f"Speed [{speed_unit}]",
+            "force_display": f"Force [{force_unit}]",
+            "power_kW": "Power [kW]",
+        },
+        inplace=True,
+    )
+    st.dataframe(table_df, use_container_width=True, hide_index=True)
+
+
+def render_step_header(number: int, title: str, caption: str):
+    st.markdown(f"<div class='vde-step-title'>{number}. {title}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='vde-step-caption'>{caption}</div>", unsafe_allow_html=True)
+
+
+def _render_preview_roadload_curves(abc_total: dict | None, abc_net: dict | None) -> None:
+    curves: list[dict[str, float | str]] = []
+    total = dict(abc_total or {})
+    net = dict(abc_net or {})
+
+    if any(to_float(total.get(key)) is not None for key in ("A", "B", "C")):
+        curves.append(
+            {
+                "label": "ABC_TOTAL",
+                "A_N": float(to_float(total.get("A"), 0.0) or 0.0),
+                "B_N_per_kph": float(to_float(total.get("B"), 0.0) or 0.0),
+                "C_N_per_kph2": float(to_float(total.get("C"), 0.0) or 0.0),
+            }
+        )
+
+    if any(to_float(net.get(key)) is not None for key in ("A", "B", "C")):
+        curves.append(
+            {
+                "label": "ABC_NET",
+                "A_N": float(to_float(net.get("A"), 0.0) or 0.0),
+                "B_N_per_kph": float(to_float(net.get("B"), 0.0) or 0.0),
+                "C_N_per_kph2": float(to_float(net.get("C"), 0.0) or 0.0),
+            }
+        )
+
+    fig = roadload_curve_comparison_chart(curves, unit_system=_current_unit_system())
+    if fig is not None:
+        st.caption("Current Roadload Curves")
+        st.plotly_chart(fig, use_container_width=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -157,6 +255,620 @@ def _truthy_flag(value) -> bool:
         return bool(value)
     text = str(value or "").strip().lower()
     return text in {"1", "true", "yes", "y", "on"}
+
+
+def _editor_float_or_none(value):
+    numeric = to_float(value)
+    if numeric is None:
+        return None
+    try:
+        if pd.isna(numeric):
+            return None
+    except Exception:
+        pass
+    return float(numeric)
+
+
+def _editor_canonical_or_none(value, quantity: str):
+    numeric = _editor_float_or_none(value)
+    if numeric is None:
+        return None
+    return float(to_canonical(numeric, quantity, _current_unit_system()))
+
+
+def _build_roadload_spreadsheet_df(ctx: dict) -> pd.DataFrame:
+    preview = _safe_workflow_preview(ctx)
+    derived_net = dict(preview.get("abc_net") or {})
+    manual_net_apply = bool(ctx.get("spreadsheet_abc_net_apply"))
+
+    manual_net = {
+        "A": to_float(ctx.get("spreadsheet_abc_net_A")),
+        "B": to_float(ctx.get("spreadsheet_abc_net_B")),
+        "C": to_float(ctx.get("spreadsheet_abc_net_C")),
+    }
+    if manual_net_apply and any(value is not None for value in manual_net.values()):
+        net_values = manual_net
+        net_basis = str(ctx.get("spreadsheet_abc_net_basis") or "manual")
+        net_source = str(ctx.get("spreadsheet_abc_net_source") or "manual")
+    else:
+        net_values = derived_net
+        net_basis = str(ctx.get("spreadsheet_abc_net_basis") or ("derived/manual" if derived_net else "derived/manual"))
+        net_source = str(ctx.get("spreadsheet_abc_net_source") or ("trans loss removed" if derived_net else "trans loss removed"))
+
+    return pd.DataFrame(
+        [
+            {
+                "roadload_set": "ABC_TOTAL",
+                "A": to_display(to_float(ctx.get("A")), "force", _current_unit_system()),
+                "B": to_display(to_float(ctx.get("B")), "force_per_speed", _current_unit_system()),
+                "C": to_display(to_float(ctx.get("C")), "force_per_speed_squared", _current_unit_system()),
+                "basis": str(ctx.get("spreadsheet_roadload_total_basis") or "coastdown"),
+                "source": str(ctx.get("spreadsheet_roadload_total_source") or "measured/manual"),
+                "apply": True,
+            },
+            {
+                "roadload_set": "ABC_NET",
+                "A": to_display(to_float(net_values.get("A")), "force", _current_unit_system()),
+                "B": to_display(to_float(net_values.get("B")), "force_per_speed", _current_unit_system()),
+                "C": to_display(to_float(net_values.get("C")), "force_per_speed_squared", _current_unit_system()),
+                "basis": net_basis,
+                "source": net_source,
+                "apply": manual_net_apply,
+            },
+        ]
+    )
+
+
+def _apply_roadload_spreadsheet_changes(editor_df: pd.DataFrame) -> list[str]:
+    ctx = st.session_state.ctx
+    errors: list[str] = []
+    if editor_df is None or editor_df.empty:
+        errors.append("Roadload spreadsheet is empty.")
+        ctx["spreadsheet_roadload_errors"] = errors
+        return errors
+
+    rows = {
+        str(row.get("roadload_set") or "").strip(): row
+        for row in editor_df.to_dict(orient="records")
+    }
+    total_row = rows.get("ABC_TOTAL")
+    net_row = rows.get("ABC_NET")
+    if not total_row:
+        errors.append("ABC_TOTAL row is required.")
+        ctx["spreadsheet_roadload_errors"] = errors
+        return errors
+
+    total_apply = bool(total_row.get("apply"))
+    if not total_apply:
+        errors.append("ABC_TOTAL must stay applied.")
+
+    total_a = _editor_canonical_or_none(total_row.get("A"), "force")
+    total_b = _editor_canonical_or_none(total_row.get("B"), "force_per_speed")
+    total_c = _editor_canonical_or_none(total_row.get("C"), "force_per_speed_squared")
+    if total_a is None or total_a < 0.0:
+        errors.append("ABC_TOTAL A must be a valid non-negative number.")
+    if total_b is None:
+        errors.append("ABC_TOTAL B must be a valid number.")
+    if total_c is None or total_c < 0.0:
+        errors.append("ABC_TOTAL C must be a valid non-negative number.")
+
+    if not errors:
+        ctx["A"] = total_a
+        ctx["B"] = total_b
+        ctx["C"] = total_c
+        st.session_state["abc"] = {"A": float(total_a), "B": float(total_b), "C": float(total_c)}
+
+    ctx["spreadsheet_roadload_total_basis"] = str(total_row.get("basis") or "coastdown").strip() or "coastdown"
+    ctx["spreadsheet_roadload_total_source"] = str(total_row.get("source") or "measured/manual").strip() or "measured/manual"
+
+    manual_net_apply = bool((net_row or {}).get("apply"))
+    ctx["spreadsheet_abc_net_apply"] = manual_net_apply
+    ctx["spreadsheet_abc_net_basis"] = str((net_row or {}).get("basis") or "derived/manual").strip() or "derived/manual"
+    ctx["spreadsheet_abc_net_source"] = str((net_row or {}).get("source") or "trans loss removed").strip() or "trans loss removed"
+
+    if manual_net_apply:
+        net_a = _editor_canonical_or_none((net_row or {}).get("A"), "force")
+        net_b = _editor_canonical_or_none((net_row or {}).get("B"), "force_per_speed")
+        net_c = _editor_canonical_or_none((net_row or {}).get("C"), "force_per_speed_squared")
+        ctx["spreadsheet_abc_net_A"] = net_a
+        ctx["spreadsheet_abc_net_B"] = net_b
+        ctx["spreadsheet_abc_net_C"] = net_c
+        if net_a is None or net_a < 0.0:
+            errors.append("ABC_NET A must be a valid non-negative number when apply is enabled.")
+        if net_b is None:
+            errors.append("ABC_NET B must be a valid number when apply is enabled.")
+        if net_c is None or net_c < 0.0:
+            errors.append("ABC_NET C must be a valid non-negative number when apply is enabled.")
+        if not errors:
+            trans_a = float(total_a - net_a)
+            trans_b = float(total_b - net_b)
+            trans_c = float(total_c - net_c)
+            if min(trans_a, trans_b, trans_c) < -1e-9:
+                errors.append("ABC_NET cannot exceed ABC_TOTAL. Manual ABC_NET would imply negative transmission losses.")
+            else:
+                ctx["transmission_losses_source"] = "Manual"
+                ctx["trans_A_coef_N"] = trans_a
+                ctx["trans_B_coef_Npkph"] = trans_b
+                ctx["trans_C_coef_Npkph2"] = trans_c
+                ctx["trans_B_Npkph"] = trans_b
+    else:
+        preview = _safe_workflow_preview(ctx)
+        derived_net = dict(preview.get("abc_net") or {})
+        ctx["spreadsheet_abc_net_A"] = to_float(derived_net.get("A"))
+        ctx["spreadsheet_abc_net_B"] = to_float(derived_net.get("B"))
+        ctx["spreadsheet_abc_net_C"] = to_float(derived_net.get("C"))
+
+    ctx["spreadsheet_roadload_errors"] = errors
+    return errors
+
+
+def _build_transmission_spreadsheet_df(ctx: dict, *, prefill: dict | None = None) -> pd.DataFrame:
+    base = dict(prefill or {})
+    current_source = str(ctx.get("transmission_losses_source") or ("Baseline" if base.get("trans_A_coef_N") is not None else "Missing")).strip().title()
+    if current_source == "Baseline":
+        a_val = to_float(base.get("trans_A_coef_N"))
+        b_val = to_float(base.get("trans_B_coef_Npkph", base.get("trans_B_Npkph")))
+        c_val = to_float(base.get("trans_C_coef_Npkph2"))
+        source_label = "baseline"
+        apply_flag = True
+    elif current_source == "Manual":
+        a_val = to_float(ctx.get("trans_A_coef_N"))
+        b_val = to_float(ctx.get("trans_B_coef_Npkph"))
+        c_val = to_float(ctx.get("trans_C_coef_Npkph2"))
+        source_label = str(ctx.get("spreadsheet_transmission_source_label") or "test/manual")
+        apply_flag = True
+    else:
+        a_val = to_float(ctx.get("trans_A_coef_N"))
+        b_val = to_float(ctx.get("trans_B_coef_Npkph"))
+        c_val = to_float(ctx.get("trans_C_coef_Npkph2"))
+        source_label = str(ctx.get("spreadsheet_transmission_source_label") or "test/manual")
+        apply_flag = False
+
+    return pd.DataFrame(
+        [
+            {
+                "loss_set": "Neutral drag",
+                "A_loss": to_display(a_val, "force", _current_unit_system()),
+                "B_loss": to_display(b_val, "force_per_speed", _current_unit_system()),
+                "C_loss": to_display(c_val, "force_per_speed_squared", _current_unit_system()),
+                "source": source_label,
+                "apply": apply_flag,
+            }
+        ]
+    )
+
+
+def _apply_transmission_spreadsheet_changes(editor_df: pd.DataFrame) -> list[str]:
+    ctx = st.session_state.ctx
+    errors: list[str] = []
+    if editor_df is None or editor_df.empty:
+        errors.append("Transmission spreadsheet is empty.")
+        ctx["spreadsheet_transmission_errors"] = errors
+        return errors
+
+    row = dict(editor_df.to_dict(orient="records")[0] or {})
+    apply_flag = bool(row.get("apply"))
+    ctx["spreadsheet_transmission_source_label"] = str(row.get("source") or "test/manual").strip() or "test/manual"
+
+    if not apply_flag:
+        ctx["transmission_losses_source"] = "Missing"
+        ctx["trans_A_coef_N"] = 0.0
+        ctx["trans_B_coef_Npkph"] = 0.0
+        ctx["trans_C_coef_Npkph2"] = 0.0
+        ctx["trans_B_Npkph"] = 0.0
+        ctx["spreadsheet_abc_net_apply"] = False
+        ctx["spreadsheet_transmission_errors"] = errors
+        return errors
+
+    a_loss = _editor_canonical_or_none(row.get("A_loss"), "force")
+    b_loss = _editor_canonical_or_none(row.get("B_loss"), "force_per_speed")
+    c_loss = _editor_canonical_or_none(row.get("C_loss"), "force_per_speed_squared")
+    if a_loss is None or a_loss < 0.0:
+        errors.append("Transmission A_loss must be a valid non-negative number.")
+    if b_loss is None:
+        errors.append("Transmission B_loss must be a valid number.")
+    if c_loss is None or c_loss < 0.0:
+        errors.append("Transmission C_loss must be a valid non-negative number.")
+
+    if not errors:
+        ctx["transmission_losses_source"] = "Manual"
+        ctx["trans_A_coef_N"] = float(a_loss)
+        ctx["trans_B_coef_Npkph"] = float(b_loss)
+        ctx["trans_C_coef_Npkph2"] = float(c_loss)
+        ctx["trans_B_Npkph"] = float(b_loss)
+        ctx["spreadsheet_abc_net_apply"] = False
+
+    ctx["spreadsheet_transmission_errors"] = errors
+    return errors
+
+
+def _spreadsheet_validation_errors(ctx: dict | None = None) -> list[str]:
+    data = dict(ctx or st.session_state.get("ctx", {}))
+    return (
+        list(data.get("spreadsheet_roadload_errors") or [])
+        + list(data.get("spreadsheet_transmission_errors") or [])
+        + list(data.get("spreadsheet_component_errors") or [])
+    )
+
+
+def _cycle_distance_km(ctx: dict) -> float | None:
+    cycle_df = ctx.get("cycle_df")
+    if cycle_df is None:
+        return None
+    try:
+        df_cycle = cycle_df.copy()
+        t_vals = pd.to_numeric(df_cycle["t"], errors="coerce")
+        v_vals = pd.to_numeric(df_cycle["v"], errors="coerce")
+        if t_vals.isna().all() or v_vals.isna().all():
+            return None
+        return float(np.trapezoid(v_vals, t_vals) / 1000.0)
+    except Exception:
+        return None
+
+
+def _source_label_for_field(ctx: dict, field_name: str) -> str:
+    baseline = dict(ctx.get("selected_baseline_row") or ctx.get("baseline_dict") or {})
+    if field_name in baseline and baseline.get(field_name) not in (None, "", []):
+        return "baseline"
+    return "scenario"
+
+
+def _build_vehicle_scenario_spreadsheet_df(ctx: dict) -> pd.DataFrame:
+    _ensure_vehicle_metadata_defaults(ctx)
+    rows = [
+        {"field": "vehicle_label", "value": f"{ctx.get('make', '')} {ctx.get('model', '')}".strip() or "-", "source": "review", "editable": False, "notes": "Review only"},
+        {"field": "legislation", "value": str(ctx.get("legislation") or ""), "source": _source_label_for_field(ctx, "legislation"), "editable": True, "notes": "EPA / WLTP / ABNT"},
+        {"field": "category", "value": str(ctx.get("category") or ""), "source": _source_label_for_field(ctx, "category"), "editable": True, "notes": "Vehicle class/category"},
+        {"field": "manufacturer", "value": str(ctx.get("make") or ""), "source": _source_label_for_field(ctx, "make"), "editable": True, "notes": "Saved as make"},
+        {"field": "model", "value": str(ctx.get("model") or ""), "source": _source_label_for_field(ctx, "model"), "editable": True, "notes": "Model / description"},
+        {"field": "model_year", "value": int(to_float(ctx.get("year"), 2024) or 2024), "source": _source_label_for_field(ctx, "year"), "editable": True, "notes": "Saved as year"},
+        {"field": "electrification", "value": str(ctx.get("electrification") or "ICE"), "source": _source_label_for_field(ctx, "electrification"), "editable": True, "notes": "ICE / HEV / PHEV / BEV"},
+        {"field": "transmission_type", "value": str(ctx.get("transmission_type") or "AT"), "source": _source_label_for_field(ctx, "transmission_type"), "editable": True, "notes": "AT / AMT / CVT / MT / OT"},
+        {"field": "drive_type", "value": str(ctx.get("drive_type") or ""), "source": _source_label_for_field(ctx, "drive_type"), "editable": True, "notes": "Optional review/edit"},
+        {"field": "fuel_type", "value": str(ctx.get("fuel_type") or ""), "source": _source_label_for_field(ctx, "fuel_type"), "editable": bool("fuel_type" in ctx), "notes": "Review only if not used in this flow"},
+        {"field": "notes", "value": str(ctx.get("notes") or ""), "source": _source_label_for_field(ctx, "notes"), "editable": True, "notes": "Scenario notes"},
+    ]
+    return pd.DataFrame(rows)
+
+
+def _apply_vehicle_scenario_spreadsheet_changes(editor_df: pd.DataFrame) -> list[str]:
+    ctx = st.session_state.ctx
+    errors: list[str] = []
+    if editor_df is None or editor_df.empty:
+        return ["Vehicle / Scenario spreadsheet is empty."]
+
+    st.session_state["vde_vehicle_table"] = editor_df.copy()
+    rows = {
+        str(row.get("field") or "").strip(): row
+        for row in editor_df.to_dict(orient="records")
+    }
+
+    year_value = to_float((rows.get("model_year") or {}).get("value"))
+    if year_value is None or int(year_value) < 1900 or int(year_value) > 2100:
+        errors.append("model_year must be a valid year between 1900 and 2100.")
+    else:
+        ctx["year"] = int(year_value)
+
+    field_map = {
+        "legislation": "legislation",
+        "category": "category",
+        "manufacturer": "make",
+        "model": "model",
+        "electrification": "electrification",
+        "transmission_type": "transmission_type",
+        "drive_type": "drive_type",
+        "fuel_type": "fuel_type",
+        "notes": "notes",
+    }
+    for source_field, target_field in field_map.items():
+        row = rows.get(source_field) or {}
+        if not bool(row.get("editable", True)) and source_field == "fuel_type" and "fuel_type" not in ctx:
+            continue
+        value = str(row.get("value") or "").strip()
+        if target_field in {"legislation", "category", "make", "electrification", "transmission_type", "drive_type", "fuel_type"}:
+            value = value.upper()
+        ctx[target_field] = value
+
+    required_fields = {
+        "legislation": str(ctx.get("legislation") or "").strip(),
+        "category": str(ctx.get("category") or "").strip(),
+        "make": str(ctx.get("make") or "").strip(),
+        "model": str(ctx.get("model") or "").strip(),
+        "electrification": str(ctx.get("electrification") or "").strip(),
+        "transmission_type": str(ctx.get("transmission_type") or "").strip(),
+    }
+    missing = [field for field, value in required_fields.items() if not value]
+    if missing:
+        errors.append("Vehicle / Scenario is missing required fields: " + ", ".join(missing) + ".")
+    return errors
+
+
+def _build_mass_cycle_spreadsheet_df(ctx: dict) -> pd.DataFrame:
+    test_mass_state = resolve_test_mass_state(dict(ctx))
+    cycle_distance_km = _cycle_distance_km(ctx)
+    rows = [
+        {"parameter": "mass_kg", "value": to_display(to_float(ctx.get("mass_kg")), "mass", _current_unit_system()), "unit": unit_label("mass"), "source": _source_label_for_field(ctx, "mass_kg"), "apply": True, "notes": "Curb/base vehicle mass"},
+        {"parameter": "test_mass_basis", "value": str(test_mass_state.get("test_mass_basis") or ctx.get("test_mass_basis") or ""), "unit": "-", "source": "resolved", "apply": True, "notes": "WLTP_TMH / WLTP_TML / CURB / EPA_INERTIA_CLASS / PHYSICAL_TEST_MASS / CUSTOM"},
+        {"parameter": "test_mass_kg", "value": to_display(to_float(test_mass_state.get("test_mass_kg")), "mass", _current_unit_system()), "unit": unit_label("mass"), "source": "resolved", "apply": True, "notes": "Preferred VDE mass when available"},
+        {"parameter": "payload_kg", "value": to_display(to_float(ctx.get("payload_kg")), "mass", _current_unit_system()), "unit": unit_label("mass"), "source": _source_label_for_field(ctx, "payload_kg"), "apply": True, "notes": "Payload / added load"},
+        {"parameter": "options_kg", "value": to_display(to_float(ctx.get("options_kg")), "mass", _current_unit_system()), "unit": unit_label("mass"), "source": _source_label_for_field(ctx, "options_kg"), "apply": True, "notes": "Optional equipment mass"},
+        {"parameter": "weight_dist_fr_pct", "value": float(to_float(ctx.get("weight_dist_fr_pct"), 50.0) or 50.0), "unit": "%", "source": _source_label_for_field(ctx, "weight_dist_fr_pct"), "apply": True, "notes": "Front weight distribution"},
+        {"parameter": "wltp_category", "value": str(ctx.get("wltp_category") or "M1"), "unit": "-", "source": _source_label_for_field(ctx, "wltp_category"), "apply": True, "notes": "WLTP category"},
+        {"parameter": "tire_load_mass_basis", "value": str(ctx.get("tire_load_mass_basis") or "TEST_MASS"), "unit": "-", "source": "roadload", "apply": True, "notes": "TEST_MASS / TWC"},
+        {"parameter": "cycle_name", "value": str(ctx.get("cycle_name") or default_cycle_for_legislation(ctx.get("legislation") or "EPA") or ""), "unit": "-", "source": "cycle", "apply": True, "notes": "Standard cycle name or uploaded file name"},
+        {"parameter": "cycle_source", "value": str(ctx.get("cycle_source") or ("loaded" if ctx.get("cycle_df") is not None else "")), "unit": "-", "source": "cycle", "apply": False, "notes": "Review only"},
+        {"parameter": "cycle_distance_km", "value": float(cycle_distance_km) if cycle_distance_km is not None else None, "unit": "km", "source": "derived", "apply": False, "notes": "Review only"},
+    ]
+    return pd.DataFrame(rows)
+
+
+def _apply_mass_cycle_spreadsheet_changes(editor_df: pd.DataFrame) -> list[str]:
+    ctx = st.session_state.ctx
+    errors: list[str] = []
+    if editor_df is None or editor_df.empty:
+        return ["Mass & Cycle spreadsheet is empty."]
+
+    st.session_state["vde_mass_cycle_table"] = editor_df.copy()
+    rows = {
+        str(row.get("parameter") or "").strip(): row
+        for row in editor_df.to_dict(orient="records")
+    }
+
+    mass_kg = _editor_canonical_or_none((rows.get("mass_kg") or {}).get("value"), "mass")
+    if mass_kg is None or mass_kg <= 0.0:
+        errors.append("mass_kg must be a valid positive number.")
+    else:
+        ctx["mass_kg"] = float(mass_kg)
+
+    payload_kg = _editor_canonical_or_none((rows.get("payload_kg") or {}).get("value"), "mass")
+    options_kg = _editor_canonical_or_none((rows.get("options_kg") or {}).get("value"), "mass")
+    if payload_kg is not None:
+        ctx["payload_kg"] = float(payload_kg)
+    if options_kg is not None:
+        ctx["options_kg"] = float(options_kg)
+
+    weight_dist = to_float((rows.get("weight_dist_fr_pct") or {}).get("value"))
+    if weight_dist is None or weight_dist < 0.0 or weight_dist > 100.0:
+        errors.append("weight_dist_fr_pct must be between 0 and 100.")
+    else:
+        ctx["weight_dist_fr_pct"] = float(weight_dist)
+
+    wltp_category = str((rows.get("wltp_category") or {}).get("value") or "").strip().upper()
+    if wltp_category:
+        ctx["wltp_category"] = wltp_category
+
+    tire_load_mass_basis = str((rows.get("tire_load_mass_basis") or {}).get("value") or "").strip().upper()
+    if tire_load_mass_basis in {"TEST_MASS", "TWC"}:
+        ctx["tire_load_mass_basis"] = tire_load_mass_basis
+    elif tire_load_mass_basis:
+        errors.append("tire_load_mass_basis must be TEST_MASS or TWC.")
+
+    allowed_test_mass_basis = {"WLTP_TMH", "WLTP_TML", "CURB_PLUS_DRIVER", "CURB", "EPA_INERTIA_CLASS", "PHYSICAL_TEST_MASS", "CUSTOM"}
+    selected_test_mass_basis = str((rows.get("test_mass_basis") or {}).get("value") or "").strip().upper()
+    if selected_test_mass_basis:
+        if selected_test_mass_basis not in allowed_test_mass_basis:
+            errors.append("test_mass_basis is invalid.")
+        else:
+            ctx["test_mass_basis"] = selected_test_mass_basis
+
+    edited_test_mass = _editor_canonical_or_none((rows.get("test_mass_kg") or {}).get("value"), "mass")
+    if ctx.get("test_mass_basis") in {"CUSTOM", "PHYSICAL_TEST_MASS"}:
+        if edited_test_mass is None or edited_test_mass <= 0.0:
+            errors.append("test_mass_kg is required when test_mass_basis is CUSTOM or PHYSICAL_TEST_MASS.")
+        else:
+            ctx["test_mass_kg"] = float(edited_test_mass)
+    elif edited_test_mass is not None:
+        ctx["test_mass_kg"] = float(edited_test_mass)
+
+    cycle_name = str((rows.get("cycle_name") or {}).get("value") or "").strip()
+    if cycle_name:
+        try:
+            cycle_df = load_cycle_csv(cycle_name)
+            ctx["cycle_df"] = cycle_df
+            ctx["cycle_name"] = cycle_name
+            ctx["cycle_source"] = "spreadsheet"
+        except Exception:
+            errors.append("cycle_name could not be loaded. Use a standard cycle name or the advanced cycle loader.")
+    elif ctx.get("cycle_df") is None:
+        errors.append("cycle_name is required or use the advanced cycle loader.")
+
+    final_test_mass_state = resolve_test_mass_state(dict(ctx))
+    ctx["test_mass_kg"] = final_test_mass_state.get("test_mass_kg")
+    ctx["test_mass_low_kg"] = final_test_mass_state.get("test_mass_low_kg")
+    ctx["test_mass_high_kg"] = final_test_mass_state.get("test_mass_high_kg")
+    ctx["test_mass_basis"] = final_test_mass_state.get("test_mass_basis")
+    ctx["test_mass_use_default"] = ctx.get("test_mass_basis") not in {"CUSTOM", "PHYSICAL_TEST_MASS"}
+
+    return errors
+
+
+def _spreadsheet_source_signature(ctx: dict) -> tuple[str, object, str]:
+    return (
+        str(ctx.get("mode") or ""),
+        ctx.get("baseline_id") or ctx.get("vde_id_parent"),
+        str(ctx.get("abc_total_source_ui") or ""),
+    )
+
+
+def _component_spreadsheet_apply_value(ctx: dict, component: str) -> bool:
+    key = f"spreadsheet_component_{component}_apply"
+    stored = ctx.get(key)
+    if isinstance(stored, bool):
+        return stored
+    if component == "tires":
+        source = str(ctx.get("tire_component_source") or "Manual RR").strip()
+        if source == "Tire DB":
+            return bool(ctx.get("include_tire_component")) and bool(ctx.get("tire_preview_result"))
+        return any(abs(float(to_float(ctx.get(name), 0.0) or 0.0)) > 0.0 for name in ("rr_alpha_N", "rr_beta_Npkph"))
+    if component == "brakes":
+        return any(abs(float(to_float(ctx.get(name), 0.0) or 0.0)) > 0.0 for name in ("brake_A_coef_N", "brake_B_Npkph", "brake_C_coef_Npkph2"))
+    if component == "parasitics":
+        return any(abs(float(to_float(ctx.get(name), 0.0) or 0.0)) > 0.0 for name in ("parasitic_A_coef_N", "parasitic_B_Npkph", "parasitic_C_coef_Npkph2"))
+    return False
+
+
+def _resolved_tire_spreadsheet_values(ctx: dict) -> tuple[float, float, float]:
+    source = str(ctx.get("tire_component_source") or "Manual RR").strip()
+    if source == "Tire DB":
+        preview = dict(ctx.get("tire_preview_result") or {})
+        component = dict(preview.get("component_dict") or {})
+        return (
+            float(to_float(component.get("A"), 0.0) or 0.0),
+            float(to_float(component.get("B"), 0.0) or 0.0),
+            float(to_float(component.get("C"), 0.0) or 0.0),
+        )
+    return (
+        float(to_float(ctx.get("rr_alpha_N"), 0.0) or 0.0),
+        float(to_float(ctx.get("rr_beta_Npkph"), 0.0) or 0.0),
+        0.0,
+    )
+
+
+def _build_component_spreadsheet_df(ctx: dict) -> pd.DataFrame:
+    tire_a, tire_b, tire_c = _resolved_tire_spreadsheet_values(ctx)
+    return pd.DataFrame(
+        [
+            {
+                "component": "Tires",
+                "source": str(ctx.get("tire_component_source") or "Manual RR").strip() or "Manual RR",
+                "A": to_display(tire_a, "force", _current_unit_system()),
+                "B": to_display(tire_b, "force_per_speed", _current_unit_system()),
+                "C": to_display(tire_c, "force_per_speed_squared", _current_unit_system()),
+                "apply": _component_spreadsheet_apply_value(ctx, "tires"),
+            },
+            {
+                "component": "Brakes",
+                "source": "Manual",
+                "A": to_display(to_float(ctx.get("brake_A_coef_N")), "force", _current_unit_system()),
+                "B": to_display(to_float(ctx.get("brake_B_Npkph")), "force_per_speed", _current_unit_system()),
+                "C": to_display(to_float(ctx.get("brake_C_coef_Npkph2")), "force_per_speed_squared", _current_unit_system()),
+                "apply": _component_spreadsheet_apply_value(ctx, "brakes"),
+            },
+            {
+                "component": "Parasitics / Hubs / Axle",
+                "source": "Manual",
+                "A": to_display(to_float(ctx.get("parasitic_A_coef_N")), "force", _current_unit_system()),
+                "B": to_display(to_float(ctx.get("parasitic_B_Npkph")), "force_per_speed", _current_unit_system()),
+                "C": to_display(to_float(ctx.get("parasitic_C_coef_Npkph2")), "force_per_speed_squared", _current_unit_system()),
+                "apply": _component_spreadsheet_apply_value(ctx, "parasitics"),
+            },
+            {
+                "component": "Trailer",
+                "source": "Reserved",
+                "A": to_display(0.0, "force", _current_unit_system()),
+                "B": to_display(0.0, "force_per_speed", _current_unit_system()),
+                "C": to_display(0.0, "force_per_speed_squared", _current_unit_system()),
+                "apply": False,
+            },
+        ]
+    )
+
+
+def _set_component_spreadsheet_disabled_state(ctx: dict, component_key: str) -> None:
+    if component_key == "tires":
+        ctx["component_mode_tires"] = "Spreadsheet excluded"
+        ctx["include_tire_component"] = False
+    elif component_key == "brakes":
+        ctx["component_mode_brakes"] = "Spreadsheet excluded"
+    elif component_key == "parasitics":
+        ctx["component_mode_parasitics_hubs_axle"] = "Spreadsheet excluded"
+
+
+def _apply_component_spreadsheet_changes(editor_df: pd.DataFrame) -> list[str]:
+    ctx = st.session_state.ctx
+    errors: list[str] = []
+    if editor_df is None or editor_df.empty:
+        errors.append("Component spreadsheet is empty.")
+        ctx["spreadsheet_component_errors"] = errors
+        return errors
+
+    rows = {
+        str(row.get("component") or "").strip(): row
+        for row in editor_df.to_dict(orient="records")
+    }
+
+    tire_row = dict(rows.get("Tires") or {})
+    tire_source = str(tire_row.get("source") or "Manual RR").strip()
+    if tire_source not in {"Manual RR", "Tire DB"}:
+        errors.append("Tires source must be Manual RR or Tire DB.")
+        tire_source = "Manual RR"
+    tire_apply = bool(tire_row.get("apply"))
+    ctx["spreadsheet_component_tires_apply"] = tire_apply
+    ctx["tire_component_source"] = tire_source
+    if tire_source == "Manual RR":
+        tire_a = _editor_canonical_or_none(tire_row.get("A"), "force")
+        tire_b = _editor_canonical_or_none(tire_row.get("B"), "force_per_speed")
+        tire_c = _editor_canonical_or_none(tire_row.get("C"), "force_per_speed_squared")
+        if tire_apply:
+            if tire_a is None or tire_a < 0.0:
+                errors.append("Tires A must be a valid non-negative number when Manual RR is applied.")
+            if tire_b is None:
+                errors.append("Tires B must be a valid number when Manual RR is applied.")
+            if tire_c is None:
+                errors.append("Tires C must be a valid number when Manual RR is applied.")
+        if tire_a is not None:
+            ctx["rr_alpha_N"] = float(tire_a)
+        if tire_b is not None:
+            ctx["rr_beta_Npkph"] = float(tire_b)
+        if tire_apply:
+            ctx["component_mode_tires"] = "Replace / manual input"
+            ctx["include_tire_component"] = False
+            if abs(float(to_float(tire_c, 0.0) or 0.0)) > 1e-9:
+                errors.append("Tires C is not used for Manual RR in the current workflow. Keep it at zero.")
+        else:
+            _set_component_spreadsheet_disabled_state(ctx, "tires")
+    else:
+        if tire_apply and not ctx.get("tire_preview_result"):
+            errors.append("Preview a Tire DB component before applying Tires from Tire DB.")
+        ctx["component_mode_tires"] = "Lookup from DB" if tire_apply else "Spreadsheet excluded"
+        ctx["include_tire_component"] = bool(tire_apply and ctx.get("tire_preview_result"))
+
+    component_specs = [
+        ("Brakes", "brakes", ("brake_A_coef_N", "brake_B_Npkph", "brake_C_coef_Npkph2"), "component_mode_brakes"),
+        ("Parasitics / Hubs / Axle", "parasitics", ("parasitic_A_coef_N", "parasitic_B_Npkph", "parasitic_C_coef_Npkph2"), "component_mode_parasitics_hubs_axle"),
+    ]
+    for label, slug, field_names, mode_key in component_specs:
+        row = dict(rows.get(label) or {})
+        apply_flag = bool(row.get("apply"))
+        ctx[f"spreadsheet_component_{slug}_apply"] = apply_flag
+        a_value = _editor_canonical_or_none(row.get("A"), "force")
+        b_value = _editor_canonical_or_none(row.get("B"), "force_per_speed")
+        c_value = _editor_canonical_or_none(row.get("C"), "force_per_speed_squared")
+        if a_value is not None:
+            ctx[field_names[0]] = float(a_value)
+        if b_value is not None:
+            ctx[field_names[1]] = float(b_value)
+        if c_value is not None:
+            ctx[field_names[2]] = float(c_value)
+        if apply_flag:
+            if a_value is None:
+                errors.append(f"{label} A must be a valid number when applied.")
+            if b_value is None:
+                errors.append(f"{label} B must be a valid number when applied.")
+            if c_value is None:
+                errors.append(f"{label} C must be a valid number when applied.")
+            ctx[mode_key] = "Replace / manual input"
+        else:
+            _set_component_spreadsheet_disabled_state(ctx, slug)
+
+    ctx["spreadsheet_component_errors"] = errors
+    return errors
+
+
+def _render_component_spreadsheet_tire_db_block(*, base_row: dict | None = None, saved_vde_id: int | None = None, tires_df=None) -> None:
+    ctx = st.session_state.ctx
+    if str(ctx.get("tire_component_source") or "Manual RR").strip() != "Tire DB":
+        return
+    with st.expander("Tire DB selector / preview", expanded=False):
+        st.caption("Use the existing tire preview flow to resolve the tire component, then the spreadsheet row will consume that preview as the active Tires source.")
+        render_tire_component_section(
+            base_row=base_row,
+            saved_vde_id=saved_vde_id,
+            tires_df=tires_df,
+            source_mode_override="Tire DB",
+            show_source_selector=False,
+        )
+
 
 
 def _mm_display(value) -> str:
@@ -1631,6 +2343,43 @@ def render_mass_setup_section(*, prefill=None):
         scenario_mass_for_calcs = float(ctx["mass_kg"])
         ctx["delta_mass_kg"] = float(to_float(ctx.get("delta_mass_kg"), 0.0) or 0.0)
 
+    payload_default = to_float(base.get("payload_kg"), to_float(ctx.get("payload_kg"), 0.0))
+    options_default = to_float(base.get("options_kg"), to_float(ctx.get("options_kg"), 0.0))
+    wltp_category_default = str(base.get("wltp_category") or ctx.get("wltp_category") or "").strip().upper()
+
+    derived1, derived2, derived3 = st.columns(3)
+    ctx["payload_kg"] = quantity_input(
+        derived1,
+        "Payload",
+        to_float(payload_default, 0.0),
+        "mass",
+        key="mass_setup_payload",
+        min_canonical=0.0,
+        max_canonical=5000.0,
+        step_canonical=1.0,
+        format_str="%.1f",
+    )
+    ctx["options_kg"] = quantity_input(
+        derived2,
+        "Optional equipment mass",
+        to_float(options_default, 0.0),
+        "mass",
+        key="mass_setup_options",
+        min_canonical=0.0,
+        max_canonical=1000.0,
+        step_canonical=1.0,
+        format_str="%.1f",
+    )
+    wltp_category_options = ["", "M1", "M2", "N1", "N2"]
+    if wltp_category_default not in wltp_category_options:
+        wltp_category_options.append(wltp_category_default)
+    ctx["wltp_category"] = derived3.selectbox(
+        "WLTP category",
+        wltp_category_options,
+        index=wltp_category_options.index(wltp_category_default if wltp_category_default in wltp_category_options else ""),
+        key="mass_setup_wltp_category",
+    )
+
     row1c1, row1c2, row1c3 = st.columns(3)
     row1c1.metric("Legislation", str(ctx.get("legislation") or "-"))
     ctx["weight_dist_fr_pct"] = row1c2.number_input(
@@ -1664,36 +2413,85 @@ def render_mass_setup_section(*, prefill=None):
         ctx["tire_load_mass_basis"] = "TEST_MASS"
         row1c3.metric("VDE calculation mass", "TEST_MASS")
 
-    test_mass_default = resolve_test_mass_kg({**ctx, "mass_kg": scenario_mass_for_calcs, "test_mass_kg": None})
-    if not baseline_inherited_mode:
-        saved_use_default = bool(ctx.get("test_mass_use_default", True))
-        if test_mass_prefill is not None and test_mass_default is not None and abs(test_mass_prefill - test_mass_default) > 1e-9:
-            saved_use_default = False
+    test_mass_context = {**ctx, "mass_kg": scenario_mass_for_calcs}
+    initial_test_mass_state = resolve_test_mass_state(test_mass_context)
+    ctx["test_mass_low_kg"] = initial_test_mass_state.get("test_mass_low_kg")
+    ctx["test_mass_high_kg"] = initial_test_mass_state.get("test_mass_high_kg")
 
-        row2c1, row2c2, row2c3 = st.columns([1, 1.4, 1.4])
-        use_default = row2c1.checkbox("Use default test mass", value=saved_use_default, key="mass_setup_use_default_test_mass")
-        ctx["test_mass_use_default"] = use_default
-        if use_default:
-            ctx["test_mass_kg"] = None
-            quantity_metric(row2c2, "Test mass", test_mass_default, "mass", format_str="%.1f")
+    derived_laden_mass = initial_test_mass_state.get("laden_mass_kg")
+    row2c1, row2c2, row2c3 = st.columns(3)
+    quantity_metric(row2c1, "Derived laden mass", derived_laden_mass, "mass", format_str="%.1f")
+    quantity_metric(row2c2, "WLTP Test Mass Low", initial_test_mass_state.get("test_mass_low_kg"), "mass", format_str="%.1f")
+    quantity_metric(row2c3, "WLTP Test Mass High", initial_test_mass_state.get("test_mass_high_kg"), "mass", format_str="%.1f")
+    scope_warning = initial_test_mass_state.get("light_duty_scope_warning")
+    if scope_warning:
+        st.warning(scope_warning, icon=":material/warning:")
+
+    test_mass_basis_options = [
+        "WLTP_TMH",
+        "WLTP_TML",
+        "CURB_PLUS_DRIVER",
+        "CURB",
+        "EPA_INERTIA_CLASS",
+        "PHYSICAL_TEST_MASS",
+        "CUSTOM",
+    ]
+    selected_test_mass_basis = str(
+        ctx.get("test_mass_basis")
+        or initial_test_mass_state.get("test_mass_basis")
+        or ""
+    ).strip().upper()
+    if selected_test_mass_basis not in test_mass_basis_options:
+        if legislation == "WLTP" and initial_test_mass_state.get("test_mass_high_kg") is not None:
+            selected_test_mass_basis = "WLTP_TMH"
+        elif legislation == "EPA" and ctx.get("tire_load_mass_basis") == "TWC":
+            selected_test_mass_basis = "EPA_INERTIA_CLASS"
         else:
-            ctx["test_mass_kg"] = quantity_input(
-                row2c2,
-                "Test mass",
-                max(test_mass_prefill if test_mass_prefill is not None else (test_mass_default or scenario_mass_for_calcs or 0.0), scenario_mass_for_calcs or 0.0),
-                "mass",
-                key="mass_setup_manual_test_mass",
-                min_canonical=float(scenario_mass_for_calcs or 0.0),
-                max_canonical=5000.0,
-                step_canonical=1.0,
-                format_str="%.1f",
-            )
+            selected_test_mass_basis = "CURB"
 
-        hint = build_test_mass_hint(ctx)
-        if hint:
-            row2c3.caption(hint)
+    selector1, selector2 = st.columns([1.2, 1.2])
+    ctx["test_mass_basis"] = selector1.selectbox(
+        "Test mass used for calculation",
+        test_mass_basis_options,
+        index=test_mass_basis_options.index(selected_test_mass_basis),
+        key="mass_setup_test_mass_basis",
+    )
+
+    manual_test_mass_input = None
+    if ctx["test_mass_basis"] in {"CUSTOM", "PHYSICAL_TEST_MASS"}:
+        manual_default = max(
+            to_float(ctx.get("test_mass_kg"), initial_test_mass_state.get("test_mass_kg") or scenario_mass_for_calcs or 0.0),
+            scenario_mass_for_calcs or 0.0,
+        )
+        manual_test_mass_input = quantity_input(
+            selector2,
+            "Manual test mass",
+            manual_default,
+            "mass",
+            key="mass_setup_manual_test_mass",
+            min_canonical=float(scenario_mass_for_calcs or 0.0),
+            max_canonical=5000.0,
+            step_canonical=1.0,
+            format_str="%.1f",
+        )
+        ctx["test_mass_kg"] = manual_test_mass_input
     else:
-        st.caption(build_test_mass_hint(ctx))
+        ctx["test_mass_kg"] = None
+        selector2.caption(build_test_mass_hint({**ctx, "legislation": legislation}))
+
+    final_test_mass_state = resolve_test_mass_state(
+        {
+            **ctx,
+            "mass_kg": scenario_mass_for_calcs,
+            "test_mass_basis": ctx.get("test_mass_basis"),
+            "test_mass_kg": ctx.get("test_mass_kg"),
+        }
+    )
+    ctx["test_mass_kg"] = final_test_mass_state.get("test_mass_kg")
+    ctx["test_mass_low_kg"] = final_test_mass_state.get("test_mass_low_kg")
+    ctx["test_mass_high_kg"] = final_test_mass_state.get("test_mass_high_kg")
+    ctx["test_mass_basis"] = final_test_mass_state.get("test_mass_basis")
+    ctx["test_mass_use_default"] = ctx.get("test_mass_basis") not in {"CUSTOM", "PHYSICAL_TEST_MASS"}
 
     tire_mass_resolution = resolve_tire_calculation_mass({**ctx, "mass_kg": scenario_mass_for_calcs})
     calc_mass_kg = tire_mass_resolution.get("mass_kg")
@@ -1701,10 +2499,11 @@ def render_mass_setup_section(*, prefill=None):
         ctx["inertia_class"] = calc_mass_kg
         ctx["twc_kg"] = calc_mass_kg
 
-    row3c1, row3c2, row3c3 = st.columns(3)
+    row3c1, row3c2, row3c3, row3c4 = st.columns(4)
     quantity_metric(row3c1, "Resolved calc mass", calc_mass_kg, "mass", format_str="%.1f")
-    row3c2.metric("Mass basis", str(ctx.get("tire_load_mass_basis") or "TEST_MASS"))
-    row3c3.metric("Weight distribution", f"{float(ctx.get('weight_dist_fr_pct') or 50.0):.1f}%")
+    row3c2.metric("Roadload basis", str(ctx.get("tire_load_mass_basis") or "TEST_MASS"))
+    row3c3.metric("Test mass basis", str(ctx.get("test_mass_basis") or "-"))
+    row3c4.metric("Weight distribution", f"{float(ctx.get('weight_dist_fr_pct') or 50.0):.1f}%")
     st.caption("Mass setup is centralized here so tire, preview, and transmission sections can reuse the same resolved vehicle state.")
 
 
@@ -3109,6 +3908,8 @@ def render_vehicle_basics_sidebar(*, reset_ctx):
             horizontal=True,
             key="unit_system",
         )
+        input_mode = render_vde_setup_input_mode_selector(host=st)
+    return input_mode
 
 
 def render_scenario_origin_section(*, reset_ctx):
@@ -3268,6 +4069,152 @@ def render_vehicle_meta_header():
     ctx["notes"] = r2c5.text_input("Proposal / Scenario", value=ctx.get("notes", ""), key="hdr_notes")
 
     st.caption("Required for Vehicle Data = OK: legislation, category, make, model, year, electrification, and transmission.")
+
+
+def render_vehicle_scenario_spreadsheet_section(*, reset_ctx) -> None:
+    ctx = st.session_state.ctx
+    render_scenario_origin_section(reset_ctx=reset_ctx)
+    if ctx["mode"] == "From baseline (editable)":
+        render_baseline_picker_and_editor_panel()
+    else:
+        st.info("Manual/test origin is active. This scenario will be built from the current workbook state without loading a baseline snapshot.")
+
+    st.caption("Vehicle / Scenario workbook")
+    vehicle_df = _build_vehicle_scenario_spreadsheet_df(ctx)
+    edited_df = st.data_editor(
+        vehicle_df,
+        key="vde_vehicle_scenario_spreadsheet_editor",
+        hide_index=True,
+        use_container_width=True,
+        disabled=["field", "source", "notes"],
+        column_config={
+            "field": st.column_config.TextColumn("field"),
+            "value": st.column_config.TextColumn("value"),
+            "source": st.column_config.TextColumn("source"),
+            "editable": st.column_config.CheckboxColumn("editable"),
+            "notes": st.column_config.TextColumn("notes"),
+        },
+    )
+    errors = _apply_vehicle_scenario_spreadsheet_changes(edited_df)
+    for error in errors:
+        st.warning(error)
+    with st.expander("Advanced vehicle metadata", expanded=False):
+        render_vehicle_meta_header()
+
+
+def render_mass_cycle_spreadsheet_section(*, prefill=None) -> None:
+    ctx = st.session_state.ctx
+    st.caption("Mass changes affect VDE. Powertrain Scenario does not override mass; edit mass here.")
+    mass_cycle_df = _build_mass_cycle_spreadsheet_df(ctx)
+    edited_df = st.data_editor(
+        mass_cycle_df,
+        key="vde_mass_cycle_spreadsheet_editor",
+        hide_index=True,
+        use_container_width=True,
+        disabled=["parameter", "unit", "source", "notes"],
+        column_config={
+            "parameter": st.column_config.TextColumn("parameter"),
+            "value": st.column_config.TextColumn("value"),
+            "unit": st.column_config.TextColumn("unit"),
+            "source": st.column_config.TextColumn("source"),
+            "apply": st.column_config.CheckboxColumn("apply"),
+            "notes": st.column_config.TextColumn("notes"),
+        },
+    )
+    errors = _apply_mass_cycle_spreadsheet_changes(edited_df)
+    for error in errors:
+        st.warning(error)
+    with st.expander("Advanced mass parameters", expanded=False):
+        render_mass_setup_section(prefill=prefill)
+    with st.expander("Cycle loader / uploader", expanded=False):
+        render_cycle_section(include_preview_snapshot=False)
+
+
+def render_vde_setup_spreadsheet_workbook(
+    *,
+    defaults_df_getter,
+    defaults_path,
+    reset_ctx,
+    roadload_base_row: dict | None = None,
+    roadload_saved_vde_id: int | None = None,
+    roadload_transmission_prefill: dict | None = None,
+) -> None:
+    ctx = st.session_state.ctx
+    signature = _spreadsheet_source_signature(ctx)
+    previous_signature = st.session_state.get("vde_spreadsheet_source_signature")
+    st.session_state["vde_spreadsheet_source_signature"] = signature
+    if previous_signature is not None and previous_signature != signature:
+        st.info("Active VDE source changed. Spreadsheet inputs were refreshed from the selected source.")
+
+    st.caption("VDE Setup is now a controlled technical workbook: edit mass, cycle, ABC, losses, and components; the app validates, previews, and saves.")
+    tabs = st.tabs([
+        "Vehicle / Scenario",
+        "Mass & Cycle",
+        "Roadload ABC",
+        "Transmission Losses",
+        "Component Build-up",
+        "Preview & Save",
+    ])
+
+    with tabs[0]:
+        render_step_header(1, "Vehicle / Scenario", "Define scenario origin and review the vehicle metadata in one compact workbook block.")
+        render_vehicle_scenario_spreadsheet_section(reset_ctx=reset_ctx)
+
+    with tabs[1]:
+        render_step_header(2, "Mass & Cycle", "Edit mass and cycle inputs in table form, then use the advanced loader only when needed.")
+        render_mass_cycle_spreadsheet_section(
+            prefill=dict(ctx.get("selected_baseline_row") or ctx.get("baseline_dict") or {}) if ctx["mode"] == "From baseline (editable)" else None
+        )
+
+    with tabs[2]:
+        render_step_header(3, "Roadload ABC", "ABC_TOTAL is the primary roadload source. ABC_NET stays explicit and only becomes active when losses or manual NET are defined.")
+        if ctx.get("abc_total_source_ui") == "Baseline ABC":
+            st.info("Roadload source path is currently set to inherit baseline ABC_TOTAL. Switch the source path to 'From test coastdown' if you want to edit ABC directly here.")
+            baseline = dict(ctx.get("selected_baseline_row") or ctx.get("baseline_dict") or {})
+            if baseline:
+                b1, b2, b3 = st.columns(3)
+                quantity_metric(b1, "Baseline A", baseline.get("A"), "force", format_str="%.2f")
+                quantity_metric(b2, "Baseline B", baseline.get("B"), "force_per_speed", format_str="%.5f")
+                quantity_metric(b3, "Baseline C", baseline.get("C"), "force_per_speed_squared", format_str="%.6f")
+        elif ctx.get("abc_total_source_ui") == "Component Build-up":
+            st.info("Roadload source path is currently set to Component Build-up. ABC_TOTAL will be resolved from the Component Build-up tab.")
+            preview = _safe_workflow_preview(ctx)
+            abc_total = dict(preview.get("abc_total") or {})
+            if abc_total:
+                st.metric("Current resolved ABC_TOTAL", _compact_abc(abc_total))
+                _render_roadload_plot(abc_total.get("A"), abc_total.get("B"), abc_total.get("C"))
+        else:
+            render_from_test_section()
+            with st.expander("Advanced NET auxiliary estimate", expanded=False):
+                render_auxiliaries_section(defaults_df_getter=defaults_df_getter)
+
+    with tabs[3]:
+        render_step_header(4, "Transmission Losses", "Transmission losses stay central because they bridge TOTAL and NET explicitly.")
+        render_transmission_losses_section(prefill=roadload_transmission_prefill)
+
+    with tabs[4]:
+        render_step_header(5, "Component Build-up", "Use the compact component table for the current source path. Tire DB preview remains available as an auxiliary block.")
+        if ctx.get("abc_total_source_ui") != "Component Build-up":
+            st.info("Component Build-up edits only become the active ABC_TOTAL source when the source path is set to 'Component Build-up' in Vehicle / Scenario.")
+        render_component_build_up_panel(
+            base_row=roadload_base_row,
+            saved_vde_id=roadload_saved_vde_id,
+        )
+
+    with tabs[5]:
+        render_step_header(6, "Preview & Save", "Preview remains the source of truth. Save/update still uses the existing workflow payload and persistence path.")
+        render_vde_results_review_panel()
+        st.divider()
+        render_compute_and_save_panel(
+            defaults_df_getter=defaults_df_getter,
+            reset_ctx=reset_ctx,
+        )
+        st.divider()
+        render_vde_edit_delete_panel(
+            defaults_path=defaults_path,
+            defaults_df_getter=defaults_df_getter,
+            reset_ctx=reset_ctx,
+        )
 
 
 def _render_tire_component_editor(*, base_row: dict | None = None, saved_vde_id: int | None = None, tires_df=None):
@@ -4195,18 +5142,46 @@ def render_component_build_up_panel(*, base_row: dict | None = None, saved_vde_i
         active = "Tires"
     ctx["component_editor_active"] = active
 
-    _render_component_overview_table(ctx)
-    st.divider()
+    if _current_vde_input_mode(ctx) == "Spreadsheet":
+        st.caption("Spreadsheet mode edits the active TOTAL components in one compact table. Tire DB still uses the existing preview flow and feeds the Tires row.")
+        component_df = _build_component_spreadsheet_df(ctx)
+        editor_key = f"vde_component_spreadsheet_{str(ctx.get('mode') or 'default').replace(' ', '_')}"
+        edited_df = st.data_editor(
+            component_df,
+            key=editor_key,
+            hide_index=True,
+            use_container_width=True,
+            disabled=["component"],
+            column_config={
+                "component": st.column_config.TextColumn("component"),
+                "source": st.column_config.SelectboxColumn(
+                    "source",
+                    options=["Manual RR", "Tire DB", "Manual", "Reserved"],
+                ),
+                "A": st.column_config.NumberColumn(f"A [{unit_label('force')}]", format="%.6f"),
+                "B": st.column_config.NumberColumn(f"B [{unit_label('force_per_speed')}]", format="%.6f"),
+                "C": st.column_config.NumberColumn(f"C [{unit_label('force_per_speed_squared')}]", format="%.6f"),
+                "apply": st.column_config.CheckboxColumn("apply"),
+            },
+        )
+        st.session_state["vde_component_table"] = edited_df.copy()
+        errors = _apply_component_spreadsheet_changes(edited_df)
+        for error in errors:
+            st.warning(error)
+        _render_component_spreadsheet_tire_db_block(base_row=base_row, saved_vde_id=saved_vde_id, tires_df=tires_df)
+    else:
+        _render_component_overview_table(ctx)
+        st.divider()
 
-    with st.container(border=True):
-        if ctx["component_editor_active"] == "Tires":
-            _render_tire_component_editor(base_row=base_row, saved_vde_id=saved_vde_id, tires_df=tires_df)
-        elif ctx["component_editor_active"] == "Brakes":
-            _render_brake_component_editor(base_row=base_row)
-        elif ctx["component_editor_active"] == "Parasitics / Hubs / Axle":
-            _render_parasitic_component_editor(base_row=base_row)
-        else:
-            st.info("Trailer stays as a reserved slot in Sprint 5. The visual slot exists now so future component DBs can follow the same pattern.")
+        with st.container(border=True):
+            if ctx["component_editor_active"] == "Tires":
+                _render_tire_component_editor(base_row=base_row, saved_vde_id=saved_vde_id, tires_df=tires_df)
+            elif ctx["component_editor_active"] == "Brakes":
+                _render_brake_component_editor(base_row=base_row)
+            elif ctx["component_editor_active"] == "Parasitics / Hubs / Axle":
+                _render_parasitic_component_editor(base_row=base_row)
+            else:
+                st.info("Trailer stays as a reserved slot in Sprint 5. The visual slot exists now so future component DBs can follow the same pattern.")
 
     summary = summarize_component_build_up_from_ctx(ctx)
     if summary.get("enabled"):
@@ -4277,7 +5252,7 @@ def render_baseline_picker_and_editor_panel():
         "legislation", "category", "make", "model", "year", "notes",
         "engine_type", "engine_model", "engine_size_l", "engine_aspiration",
         "transmission_type", "transmission_model", "drive_type",
-        "mass_kg", "test_mass_kg", "inertia_class", "cda_m2", "weight_dist_fr_pct", "payload_kg",
+        "mass_kg", "test_mass_kg", "test_mass_low_kg", "test_mass_high_kg", "test_mass_basis", "inertia_class", "cda_m2", "weight_dist_fr_pct", "payload_kg",
         "mro_kg", "options_kg", "wltp_category",
         "tire_size", "tire_rr_note", "smerf", "front_pressure_psi", "rear_pressure_psi",
         "rrc_N_per_kN", "crr1_frac_at_120kph", "rr_load_kpa",
@@ -4330,6 +5305,12 @@ def render_baseline_picker_and_editor_panel():
         if "test_mass_kg" in display_df.columns:
             display_df["test_mass_kg"] = display_df["test_mass_kg"].apply(lambda value: to_display(value, "mass"))
             rename_map["test_mass_kg"] = f"test_mass [{unit_label('mass')}]"
+        if "test_mass_low_kg" in display_df.columns:
+            display_df["test_mass_low_kg"] = display_df["test_mass_low_kg"].apply(lambda value: to_display(value, "mass"))
+            rename_map["test_mass_low_kg"] = f"test_mass_low [{unit_label('mass')}]"
+        if "test_mass_high_kg" in display_df.columns:
+            display_df["test_mass_high_kg"] = display_df["test_mass_high_kg"].apply(lambda value: to_display(value, "mass"))
+            rename_map["test_mass_high_kg"] = f"test_mass_high [{unit_label('mass')}]"
         if "coast_A_N" in display_df.columns:
             display_df["coast_A_N"] = display_df["coast_A_N"].apply(lambda value: to_display(value, "force"))
             rename_map["coast_A_N"] = f"coast_A [{unit_label('force')}]"
@@ -4427,6 +5408,10 @@ def render_compute_and_save_panel(*, defaults_df_getter, reset_ctx):
     errs, warns = validate_core(ctx["A"], ctx["B"], ctx["C"], ctx["mass_kg"])
     for warning in (warns or []):
         st.warning(warning)
+    spreadsheet_errors = _spreadsheet_validation_errors(ctx) if _current_vde_input_mode(ctx) == "Spreadsheet" else []
+    for error in spreadsheet_errors:
+        st.warning(error)
+    errs.extend(spreadsheet_errors)
     if ctx.get("cycle_df") is None:
         errs.append("Cycle not loaded. Pick default or upload a CSV.")
     for error in (errs or []):
@@ -4584,6 +5569,8 @@ def _render_cycle_preview_snapshot() -> None:
     top1.metric("Preview VDE_TOTAL", _format_energy_value(vde_total.get("mj_per_km"), unavailable="-"))
     top2.metric("Preview VDE_NET", _format_energy_value(vde_net.get("mj_per_km")))
     top3.metric("Cycle", str(ctx.get("cycle_name") or "-"))
+
+    _render_preview_roadload_curves(workflow_preview.get("abc_total"), workflow_preview.get("abc_net"))
 
     phase_order = ["city", "hwy", "low", "mid", "high", "xhigh"]
     present_phases = [key for key in phase_order if key in total_phases or key in net_phases]
@@ -4868,6 +5855,8 @@ def render_live_vde_preview_panel():
         d3.metric("Scenario origin", _line_source_summary(ctx))
         d4.metric("Cycle", str(ctx.get("cycle_name") or line_source.get("cycle_name") or "-"))
 
+        _render_preview_roadload_curves(abc_total, abc_net)
+
         if warnings:
             st.warning("Workflow warnings: " + ", ".join(warnings))
 
@@ -5040,6 +6029,49 @@ def render_from_test_section():
     ctx = st.session_state.ctx
     st.subheader("From test - direct coastdown (A/B/C)")
 
+    if _current_vde_input_mode(ctx) == "Spreadsheet":
+        st.caption(
+            "Edit ABC_TOTAL directly in the table. ABC_NET may also be staged manually; when applied, "
+            "the app derives transmission losses from ABC_TOTAL - ABC_NET using the existing TOTAL -> NET logic."
+        )
+        roadload_df = _build_roadload_spreadsheet_df(ctx)
+        editor_key = f"vde_roadload_spreadsheet_{str(ctx.get('mode') or 'default').replace(' ', '_')}"
+        edited_df = st.data_editor(
+            roadload_df,
+            key=editor_key,
+            hide_index=True,
+            use_container_width=True,
+            disabled=["roadload_set"],
+            column_config={
+                "roadload_set": st.column_config.TextColumn("roadload_set"),
+                "A": st.column_config.NumberColumn(f"A [{unit_label('force')}]", format="%.6f"),
+                "B": st.column_config.NumberColumn(f"B [{unit_label('force_per_speed')}]", format="%.6f"),
+                "C": st.column_config.NumberColumn(f"C [{unit_label('force_per_speed_squared')}]", format="%.6f"),
+                "basis": st.column_config.SelectboxColumn("basis", options=["coastdown", "derived/manual", "manual"]),
+                "source": st.column_config.TextColumn("source"),
+                "apply": st.column_config.CheckboxColumn("apply"),
+            },
+        )
+        st.session_state["vde_abc_table"] = edited_df.copy()
+        errors = _apply_roadload_spreadsheet_changes(edited_df)
+        for error in errors:
+            st.warning(error)
+
+        preview = _safe_workflow_preview(ctx)
+        abc_total = dict(preview.get("abc_total") or {})
+        abc_net = dict(preview.get("abc_net") or {})
+        vde_total = dict(preview.get("vde_total") or {})
+        vde_net = dict(preview.get("vde_net") or {})
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("ABC_TOTAL", _compact_abc(abc_total))
+        p2.metric("ABC_NET", _compact_abc(abc_net) if abc_net else "Unavailable")
+        p3.metric("VDE_TOTAL", _format_energy_value(vde_total.get("mj_per_km"), unavailable="-"))
+        p4.metric("VDE_NET", _format_energy_value(vde_net.get("mj_per_km")))
+        st.caption("Mass and test-mass inputs are managed in Vehicle Parameters.")
+        _render_roadload_plot(ctx.get("A"), ctx.get("B"), ctx.get("C"))
+        # TODO: Component build-up spreadsheet stays out of scope for this first spreadsheet-input round.
+        return
+
     colA, colB, colC = st.columns(3)
     A = quantity_input(colA, "A", to_float(ctx.get("A"), 30.0), "force", key="from_test_A", min_canonical=0.0, max_canonical=500.0, step_canonical=0.1, format_str="%.2f")
     B = quantity_input(colB, "B", to_float(ctx.get("B"), 0.80), "force_per_speed", key="from_test_B", min_canonical=-1.0, max_canonical=5.0, step_canonical=0.01, format_str="%.5f")
@@ -5049,6 +6081,7 @@ def render_from_test_section():
     st.session_state["abc"] = {"A": float(A), "B": float(B), "C": float(C)}
     st.session_state["manual_mass"] = to_float(ctx.get("mass_kg"))
     st.caption("Mass and test-mass inputs are managed in Vehicle Parameters.")
+    _render_roadload_plot(ctx["A"], ctx["B"], ctx["C"])
 
 
 def render_aero_section(*, prefill=None):
@@ -5214,6 +6247,58 @@ def render_transmission_losses_section(*, prefill=None):
     st.caption("Transmission is configured separately from Components because it bridges ABC_TOTAL to ABC_NET, but it behaves like a technical component with explicit reference and explicit application.")
 
     prefill = dict(prefill or {})
+    if _current_vde_input_mode(ctx) == "Spreadsheet":
+        st.caption("Edit the applied transmission losses in a compact table. The existing preview remains the source of truth for TOTAL -> NET.")
+        transmission_df = _build_transmission_spreadsheet_df(ctx, prefill=prefill)
+        editor_key = f"vde_transmission_spreadsheet_{str(ctx.get('mode') or 'default').replace(' ', '_')}"
+        edited_df = st.data_editor(
+            transmission_df,
+            key=editor_key,
+            hide_index=True,
+            use_container_width=True,
+            disabled=["loss_set"],
+            column_config={
+                "loss_set": st.column_config.TextColumn("loss_set"),
+                "A_loss": st.column_config.NumberColumn(f"A_loss [{unit_label('force')}]", format="%.6f"),
+                "B_loss": st.column_config.NumberColumn(f"B_loss [{unit_label('force_per_speed')}]", format="%.6f"),
+                "C_loss": st.column_config.NumberColumn(f"C_loss [{unit_label('force_per_speed_squared')}]", format="%.6f"),
+                "source": st.column_config.TextColumn("source"),
+                "apply": st.column_config.CheckboxColumn("apply"),
+            },
+        )
+        st.session_state["vde_trans_loss_table"] = edited_df.copy()
+        errors = _apply_transmission_spreadsheet_changes(edited_df)
+        for error in errors:
+            st.warning(error)
+
+        applied_trans = {
+            "A": float(to_float(ctx.get("trans_A_coef_N"), 0.0) or 0.0),
+            "B": float(to_float(ctx.get("trans_B_coef_Npkph"), 0.0) or 0.0),
+            "C": float(to_float(ctx.get("trans_C_coef_Npkph2"), 0.0) or 0.0),
+        }
+        with st.container(border=True):
+            _render_tire_editor_block_header(
+                "Instant TOTAL -> NET Preview",
+                "Read-only bridge preview using the current ABC_TOTAL and applied transmission losses.",
+            )
+            preview = _safe_workflow_preview(ctx)
+            abc_total = dict(preview.get("abc_total") or {})
+            abc_net = dict(preview.get("abc_net") or {})
+            vde_net = dict(preview.get("vde_net") or {})
+            transmission_ready = bool((edited_df.to_dict(orient="records")[0] or {}).get("apply")) and not errors
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Current ABC_TOTAL", _compact_abc(abc_total))
+            c2.metric("Applied ABC_TRANS", _compact_abc(applied_trans))
+            if transmission_ready and abc_net:
+                c3.metric("Resolved ABC_NET", _compact_abc(abc_net))
+                c4.metric("VDE_NET", _format_energy_value(vde_net.get("mj_per_km")))
+                st.caption("ABC_NET = ABC_TOTAL - ABC_TRANS. VDE_TOTAL is still based on ABC_TOTAL.")
+            else:
+                c3.metric("Resolved ABC_NET", "Unavailable")
+                c4.metric("VDE_NET", "Unavailable")
+                st.caption("VDE_TOTAL remains available; NET outputs require applied transmission losses.")
+        return
+
     source_options = ["Missing", "Baseline", "Manual"]
     source_default = str(
         ctx.get("transmission_losses_source")

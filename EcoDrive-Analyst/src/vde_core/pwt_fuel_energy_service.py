@@ -139,6 +139,34 @@ def compare_saved_scenario_revision(saved_revision: str | None, current_vde_row:
     }
 
 
+def summarize_saved_scenario_revision_states(
+    rows: list[dict[str, Any]] | None,
+    current_vde_row: dict | None,
+) -> dict[str, Any]:
+    summary = {
+        "total": 0,
+        "current": 0,
+        "changed": 0,
+        "missing": 0,
+        "unknown": 0,
+        "refresh_required": 0,
+    }
+    if not rows:
+        return summary
+
+    for row in rows:
+        state = compare_saved_scenario_revision(dict(row).get("source_vde_revision"), current_vde_row)
+        status = str(state.get("status") or "unknown")
+        summary["total"] += 1
+        if status in ("current", "changed", "missing", "unknown"):
+            summary[status] += 1
+        else:
+            summary["unknown"] += 1
+
+    summary["refresh_required"] = summary["changed"] + summary["missing"]
+    return summary
+
+
 def resolve_vde_energy_values(vde_row: dict) -> dict[str, Any]:
     row = dict(vde_row or {})
     vde_total = to_float(row.get("vde_total_mj_per_km"))

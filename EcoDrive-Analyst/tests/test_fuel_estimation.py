@@ -63,6 +63,10 @@ class FuelEstimationTests(unittest.TestCase):
         self.assertAlmostEqual(result.fuel_l_100km, 18.75, places=4)
         self.assertAlmostEqual(result.gco2_km, 433.125, places=4)
         self.assertIsNone(result.energy_Wh_km)
+        self.assertAlmostEqual(result.assumptions["pse_summary"]["value"], 0.3, places=6)
+        self.assertEqual(result.assumptions["pse_summary"]["mode"], "assumed")
+        self.assertEqual(result.assumptions["pse_summary"]["source"], "physics_assumption")
+        self.assertEqual(result.assumptions["pse_summary"]["source_label"], "Physics efficiency assumption")
 
     def test_run_fuel_estimation_physics_simple_bev(self):
         result = run_fuel_estimation(
@@ -78,6 +82,8 @@ class FuelEstimationTests(unittest.TestCase):
         self.assertAlmostEqual(result.energy_Wh_km, 462.962962963, places=6)
         self.assertAlmostEqual(result.gco2_km, 185.1851851852, places=6)
         self.assertIsNone(result.fuel_l_100km)
+        self.assertAlmostEqual(result.assumptions["pse_summary"]["value"], 0.9, places=6)
+        self.assertEqual(result.assumptions["pse_summary"]["status"], "PSE Available")
 
     def test_run_fuel_estimation_physics_simple_phev_combines_both_paths(self):
         result = run_fuel_estimation(
@@ -121,6 +127,10 @@ class FuelEstimationTests(unittest.TestCase):
         self.assertAlmostEqual(result.fuel_l_100km, 7.2)
         self.assertAlmostEqual(result.gco2_km, 155.0)
         self.assertEqual(result.assumptions["source"], "lab_sheet")
+        self.assertIn("Measured / Imported", result.assumptions["confidence_summary"]["status_items"])
+        self.assertEqual(result.assumptions["pse_summary"]["mode"], "derived")
+        self.assertEqual(result.assumptions["pse_summary"]["source"], "imported_result")
+        self.assertEqual(result.assumptions["pse_summary"]["source_label"], "Derived from imported/observed result")
 
     def test_run_fuel_estimation_regression_existing_accepts_runner(self):
         def regression_runner(request_dict, vde_mj_per_km):
@@ -148,6 +158,8 @@ class FuelEstimationTests(unittest.TestCase):
         self.assertEqual(result.confidence, "medium")
         self.assertAlmostEqual(result.phase_outputs["fuel_ftp75_l_per_100km"], 7.1)
         self.assertAlmostEqual(result.phase_outputs["fuel_hwfet_l_per_100km"], 5.8)
+        self.assertEqual(result.assumptions["pse_summary"]["source"], "regression_fuel_estimate")
+        self.assertEqual(result.assumptions["pse_summary"]["source_label"], "Derived from regression fuel estimate")
 
     @patch("src.vde_core.ml_prediction.find_ml_artifact_paths", return_value=[])
     def test_run_fuel_estimation_ml_prediction_without_artifact_is_honest(self, _mock_find_artifacts):
@@ -222,6 +234,10 @@ class FuelEstimationTests(unittest.TestCase):
         self.assertAlmostEqual(result.phase_outputs["fuel_hwfet_l_per_100km"], 5.5)
         self.assertTrue(result.assumptions["shap_available"])
         self.assertEqual(result.assumptions["ml_explanation"]["status"], "available")
+        self.assertEqual(result.assumptions["pse_summary"]["mode"], "derived")
+        self.assertEqual(result.assumptions["pse_summary"]["source"], "ml_fuel_prediction")
+        self.assertEqual(result.assumptions["pse_summary"]["source_label"], "Derived from ML fuel prediction")
+        self.assertEqual(result.assumptions["pse_summary"]["target_type"], "fuel_direct")
 
     def test_run_fuel_estimation_ml_prediction_reports_out_of_domain_when_target_is_far(self):
         def ml_predictor(request_dict, feature_row, metadata):
@@ -252,6 +268,94 @@ class FuelEstimationTests(unittest.TestCase):
 
         self.assertIn(result.assumptions["coverage_status"], {"partial_domain", "out_of_domain", "metadata_unavailable"})
         self.assertIn("coverage_details", result.assumptions)
+
+    def test_run_fuel_estimation_builds_confidence_summary_for_missing_inputs(self):
+        result = run_fuel_estimation(
+            FuelEstimateRequest(
+                vde_id=13,
+                energy_basis="VDE_NET",
+                method="physics_simple",
+                vehicle_features={"electrification": "ICE"},
+                powertrain_features={"eta_pt_est": 0.3, "fuel_type": "Gasoline"},
+            )
+        )
+
+        summary = result.assumptions["confidence_summary"]
+        self.assertEqual(summary["method_status"], "Physics Estimate")
+        self.assertIn("Missing Critical Inputs", summary["status_items"])
+        self.assertIn("PSE Unavailable", summary["status_items"])
+
+    def test_run_fuel_estimation_regression_does_not_double_count_equivalent_energy_for_ice_pse(self):
+        def regression_runner(request_dict, vde_mj_per_km):
+            del request_dict, vde_mj_per_km
+            return {
+                "fuel_l_100km": 6.12,
+                "energy_Wh_km": 581.000,
+                "gco2_km": 141.372,
+                "assumptions": {"dataset_rows": 137},
+                "warnings": [],
+                "confidence": "medium",
+            }
+
+        result = run_fuel_estimation(
+            FuelEstimateRequest(
+                vde_id=15,
+                energy_basis="VDE_NET",
+                method="regression_existing",
+                vehicle_features={
+                    "electrification": "ICE",
+                    "vde_total_mj_per_km": 0.50,
+                    "vde_net_mj_per_km": 0.451,
+                },
+                model_options={"regression_runner": regression_runner},
+            )
+        )
+
+        pse_summary = result.assumptions["pse_summary"]
+        expected_consumed_mj = (6.12 / 100.0) * 32.0
+        self.assertAlmostEqual(result.fuel_l_100km, 6.12)
+        self.assertAlmostEqual(result.energy_Wh_km, 581.0)
+        self.assertAlmostEqual(pse_summary["fuel_consumed_mj_per_km"], expected_consumed_mj, places=6)
+        self.assertAlmostEqual(pse_summary["consumed_energy_mj_per_km"], expected_consumed_mj, places=6)
+        self.assertAlmostEqual(pse_summary["value"], 0.451 / expected_consumed_mj, places=6)
+        self.assertIn(
+            "Equivalent Wh/km derived from fuel is informational for ICE/HEV and is not added twice into PSE.",
+            pse_summary["limitations"],
+        )
+
+    def test_run_fuel_estimation_builds_confidence_summary_for_ml_statuses(self):
+        def ml_predictor(request_dict, feature_row, metadata):
+            del request_dict, feature_row, metadata
+            return {
+                "fuel_l_100km": 9.1,
+                "gco2_km": 210.0,
+                "confidence": "low",
+            }
+
+        result = run_fuel_estimation(
+            FuelEstimateRequest(
+                vde_id=14,
+                energy_basis="VDE_TOTAL",
+                method="ml_prediction",
+                vehicle_features={
+                    "electrification": "ICE",
+                    "category": "UNKNOWN_SEGMENT",
+                    "make": "RAREBRAND",
+                    "year": 2099,
+                    "engine_size_l": 9.9,
+                    "vde_total_mj_per_km": 9.9,
+                    "vde_net_mj_per_km": 9.1,
+                },
+                model_options={"ml_predictor": ml_predictor},
+            )
+        )
+
+        summary = result.assumptions["confidence_summary"]
+        self.assertIn("ML Prediction", summary["status_items"])
+        self.assertIn("SHAP Unavailable", summary["status_items"])
+        self.assertTrue(
+            any(item in summary["status_items"] for item in ("Out of Domain", "Low Coverage"))
+        )
 
     def test_build_fuel_scenario_save_payload_is_common_across_methods(self):
         result = run_fuel_estimation(
@@ -285,8 +389,72 @@ class FuelEstimationTests(unittest.TestCase):
         self.assertEqual(staged.payload["source_vde_revision"], "2026-06-23T10:00:00")
         self.assertIn("\"eta_pt_est\": 0.3", staged.payload["assumptions_json"])
         self.assertIn("\"engine_method\": \"physics_simple\"", staged.payload["provenance_json"])
+        self.assertIn("\"confidence_summary\":", staged.payload["provenance_json"])
+        self.assertIn("\"pse_summary\":", staged.payload["provenance_json"])
         self.assertIn("fuel_ftp75_l_per_100km", staged.payload)
         self.assertIn("fuel_hwfet_l_per_100km", staged.payload)
+
+    def test_build_fuel_scenario_save_payload_keeps_local_feature_readiness_provenance(self):
+        result = run_fuel_estimation(
+            FuelEstimateRequest(
+                vde_id=71,
+                energy_basis="VDE_TOTAL",
+                method="physics_simple",
+                vehicle_features={
+                    "electrification": "ICE",
+                    "category": "SUBCOMPACT CARS",
+                    "mass_kg": 1600.0,
+                    "test_mass_kg": 1680.0,
+                    "vde_total_mj_per_km": 1.8,
+                    "source_vde_revision": "2026-06-30T01:00:00",
+                    "scenario_feature_sources": {
+                        "engine_size_l": "scenario_override",
+                        "drive_type": "missing",
+                        "gear_count": "scenario_override",
+                    },
+                    "scenario_feature_values": {
+                        "engine_size_l": 2.0,
+                        "gear_count": 7,
+                        "final_drive_ratio": 3.91,
+                    },
+                    "scenario_feature_overrides": {
+                        "engine_size_l": 2.0,
+                        "gear_count": 7,
+                    },
+                    "scenario_feature_missing": ["drive_type"],
+                    "scenario_feature_imputed": ["fuel_type"],
+                    "scenario_feature_confidence_impacts": ["drive_type", "fuel_type"],
+                    "scenario_feature_readiness": {
+                        "status_label": "ML available with imputed features",
+                        "status_detail": "Complete powertrain metadata before running ML.",
+                    },
+                },
+                powertrain_features={
+                    "eta_pt_est": 0.3,
+                    "fuel_type": "Gasoline",
+                    "engine_max_power_kw": 110.0,
+                    "gear_count": 7,
+                    "final_drive_ratio": 3.91,
+                },
+            )
+        )
+        result.request.vehicle_features["powertrain_reference"] = {"source_type": "Same vehicle fuelcons_db line", "source_id": 44}
+        result.request.vehicle_features["baseline_estimate"] = {"method": "Observed / Derived PSE"}
+        result.request.vehicle_features["technology_deltas"] = [{"name": "Manual PSE delta", "quantitative_status": "applied"}]
+        result.request.vehicle_features["proposal_result"] = {"status": "Estimated", "proposal": {"fuel_l_100km": 16.2}}
+        result.request.vehicle_features["scenario_lineage"] = {"baseline_method": "Observed / Derived PSE"}
+
+        staged = build_fuel_scenario_save_payload(result)
+
+        self.assertAlmostEqual(staged.payload["engine_max_power_kw"], 110.0)
+        self.assertEqual(staged.payload["gear_count"], 7)
+        self.assertAlmostEqual(staged.payload["final_drive_ratio"], 3.91)
+        self.assertIn('"scenario_feature_sources":', staged.payload["provenance_json"])
+        self.assertIn('"scenario_feature_overrides":', staged.payload["provenance_json"])
+        self.assertIn('"scenario_feature_readiness":', staged.payload["provenance_json"])
+        self.assertIn('"powertrain_reference":', staged.payload["provenance_json"])
+        self.assertIn('"technology_deltas":', staged.payload["provenance_json"])
+        self.assertIn('"proposal_result":', staged.payload["provenance_json"])
 
     def test_build_fuel_scenario_save_payload_scales_utility_factor_to_percent_field(self):
         result = run_fuel_estimation(

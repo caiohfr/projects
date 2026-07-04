@@ -29,7 +29,7 @@ from src.vde_core.vde_setup_service import (
     build_vde_insert_row,
     build_vde_phase_update,
     compute_vde_preview_from_inputs,
-    resolve_test_mass_kg,
+    resolve_test_mass_state,
     to_float,
 )
 
@@ -162,14 +162,19 @@ def resolve_mass_setup(payload: dict, baseline_row: dict | None = None) -> tuple
     weight_dist = to_float(merged.get("weight_dist_fr_pct"))
     mass_basis = _clean_text(merged.get("mass_basis") or merged.get("tire_load_mass_basis"), "TEST_MASS", upper=True)
     legislation = _clean_text(merged.get("legislation"), "", upper=True) or ""
+    test_mass_state = resolve_test_mass_state(merged)
 
     if weight_dist is None:
         warnings.append("weight_distribution_missing_default_50pct")
         weight_dist = 50.0
 
-    test_mass_kg = resolve_test_mass_kg(merged)
+    test_mass_kg = test_mass_state.get("test_mass_kg")
+    test_mass_basis = test_mass_state.get("test_mass_basis")
+    test_mass_low_kg = test_mass_state.get("test_mass_low_kg")
+    test_mass_high_kg = test_mass_state.get("test_mass_high_kg")
+    warnings.extend(list(test_mass_state.get("warnings") or []))
 
-    resolved_source = "test_mass_kg"
+    resolved_source = test_mass_basis or "test_mass_kg"
     resolved_mass_used_kg = test_mass_kg
     if mass_basis == "TWC":
         if legislation == "EPA" and mass_kg is not None and mass_kg > 0:
@@ -196,6 +201,9 @@ def resolve_mass_setup(payload: dict, baseline_row: dict | None = None) -> tuple
         {
             "mass_kg": mass_kg,
             "test_mass_kg": test_mass_kg,
+            "test_mass_low_kg": test_mass_low_kg,
+            "test_mass_high_kg": test_mass_high_kg,
+            "test_mass_basis": test_mass_basis,
             "inertia_class": inertia_class,
             "twc_kg": twc_kg,
             "etw_kg": etw_kg,
@@ -440,7 +448,13 @@ def build_vde_workflow_payload_from_ctx(ctx: dict) -> dict[str, Any]:
             "C": data.get("C"),
         },
         "mass_kg": mass_kg,
+        "payload_kg": data.get("payload_kg"),
+        "options_kg": data.get("options_kg"),
+        "wltp_category": data.get("wltp_category"),
         "test_mass_kg": data.get("test_mass_kg"),
+        "test_mass_low_kg": data.get("test_mass_low_kg"),
+        "test_mass_high_kg": data.get("test_mass_high_kg"),
+        "test_mass_basis": data.get("test_mass_basis"),
         "inertia_class": data.get("inertia_class"),
         "twc_kg": data.get("twc_kg"),
         "etw_kg": data.get("etw_kg"),
@@ -573,8 +587,14 @@ def _build_row_payload(preview_result: dict) -> dict[str, Any]:
         "notes": request.get("notes"),
         "mass_kg": mass_setup.get("mass_kg"),
         "test_mass_kg": mass_setup.get("test_mass_kg"),
+        "test_mass_low_kg": mass_setup.get("test_mass_low_kg"),
+        "test_mass_high_kg": mass_setup.get("test_mass_high_kg"),
+        "test_mass_basis": mass_setup.get("test_mass_basis"),
         "inertia_class": mass_setup.get("inertia_class"),
         "weight_dist_fr_pct": mass_setup.get("weight_dist_fr_pct"),
+        "payload_kg": request.get("payload_kg"),
+        "options_kg": request.get("options_kg"),
+        "wltp_category": request.get("wltp_category"),
         "coast_A_N": total_abc.get("A"),
         "coast_B_N_per_kph": total_abc.get("B"),
         "coast_C_N_per_kph2": total_abc.get("C"),
@@ -659,8 +679,20 @@ def _build_rich_save_row(preview_result: dict, ctx: dict | None, defaults_df=Non
 
     if request.get("mass_kg") is not None:
         save_ctx["mass_kg"] = request.get("mass_kg")
+    if request.get("payload_kg") is not None:
+        save_ctx["payload_kg"] = request.get("payload_kg")
+    if request.get("options_kg") is not None:
+        save_ctx["options_kg"] = request.get("options_kg")
+    if request.get("wltp_category") is not None:
+        save_ctx["wltp_category"] = request.get("wltp_category")
     if mass_setup.get("test_mass_kg") is not None:
         save_ctx["test_mass_kg"] = mass_setup.get("test_mass_kg")
+    if mass_setup.get("test_mass_low_kg") is not None:
+        save_ctx["test_mass_low_kg"] = mass_setup.get("test_mass_low_kg")
+    if mass_setup.get("test_mass_high_kg") is not None:
+        save_ctx["test_mass_high_kg"] = mass_setup.get("test_mass_high_kg")
+    if mass_setup.get("test_mass_basis") is not None:
+        save_ctx["test_mass_basis"] = mass_setup.get("test_mass_basis")
     if mass_setup.get("inertia_class") is not None:
         save_ctx["inertia_class"] = mass_setup.get("inertia_class")
 
@@ -774,6 +806,9 @@ def _format_mass_setup_value(mass_setup: dict | None) -> str:
     basis = _clean_text(data.get("mass_basis"), None, upper=True)
     if basis:
         parts.append(basis)
+    test_mass_basis = _clean_text(data.get("test_mass_basis"), None, upper=True)
+    if test_mass_basis:
+        parts.append(f"test={test_mass_basis}")
     resolved = to_float(data.get("resolved_mass_used_kg"))
     if resolved is not None:
         parts.append(f"resolved={resolved:.1f} kg")

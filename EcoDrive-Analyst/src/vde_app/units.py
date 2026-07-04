@@ -56,6 +56,14 @@ REGISTRY: dict[str, QuantitySpec] = {
         metric=UnitSpec("MJ/km", 1.0, "%.4f"),
         us=UnitSpec("Wh/mi", 447.04, "%.1f"),
     ),
+    "energy_wh_per_distance": QuantitySpec(
+        metric=UnitSpec("Wh/km", 1.0, "%.1f"),
+        us=UnitSpec("Wh/mi", 1.609344, "%.1f"),
+    ),
+    "co2_per_distance": QuantitySpec(
+        metric=UnitSpec("g/km", 1.0, "%.1f"),
+        us=UnitSpec("g/mi", 1.609344, "%.1f"),
+    ),
     "rrc": QuantitySpec(
         metric=UnitSpec("N/kN", 1.0, "%.3f"),
         us=UnitSpec("lbf/klbf", 1.0, "%.3f"),

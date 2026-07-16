@@ -6,14 +6,16 @@
 #       - fuelcons_db: fuel/energy scenarios tied to one VDE snapshot (via vde_id)
 #     It also exposes small helpers to insert/update/select rows.
 #
-# PT: Utilitários simples de SQLite para o projeto EcoDrive (estilo CS50).
-#     Este módulo cria o banco (se não existir) e define duas tabelas principais:
-#       - vde_db:   setup físico + resultados de um snapshot VDE
-#       - fuelcons_db: cenários de consumo/energia ligados a um VDE (via vde_id)
-#     Também fornece funções para inserir/atualizar/buscar linhas.
+# PT: UtilitÃ¡rios simples de SQLite para o projeto EcoDrive (estilo CS50).
+#     Este mÃ³dulo cria o banco (se nÃ£o existir) e define duas tabelas principais:
+#       - vde_db:   setup fÃ­sico + resultados de um snapshot VDE
+#       - fuelcons_db: cenÃ¡rios de consumo/energia ligados a um VDE (via vde_id)
+#     TambÃ©m fornece funÃ§Ãµes para inserir/atualizar/buscar linhas.
 # -----------------------------------------------------------------------------
 
+import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
 from .services import autoresolve_test_mass
@@ -21,14 +23,48 @@ from .services import autoresolve_test_mass
 # EN: Database file path. We make sure the folder "data/db" exists.
 # PT: Caminho do arquivo do banco. Garantimos que a pasta "data/db" exista.
 # -----------------------------------------------------------------------------
-DB_PATH = Path("data/db/eco_drive.db")
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+DEFAULT_DB_PATH = Path("data/db/eco_drive.db")
+DB_PATH_ENV_VAR = "ECO_DRIVE_DB_PATH"
+
+
+def _normalize_db_path(path_like) -> Path:
+    path = Path(path_like).expanduser() if path_like not in (None, "") else DEFAULT_DB_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _db_path_from_env() -> Path:
+    return _normalize_db_path(os.environ.get(DB_PATH_ENV_VAR) or DEFAULT_DB_PATH)
+
+
+DB_PATH = _db_path_from_env()
+
+
+def configure_db_path(path_like=None) -> Path:
+    """Configure the active SQLite path used by repository helpers."""
+    global DB_PATH
+    DB_PATH = _normalize_db_path(path_like if path_like not in (None, "") else _db_path_from_env())
+    return DB_PATH
+
+
+def current_db_path() -> Path:
+    return Path(DB_PATH)
+
+
+@contextmanager
+def using_db_path(path_like):
+    original = Path(DB_PATH)
+    configure_db_path(path_like)
+    try:
+        yield Path(DB_PATH)
+    finally:
+        configure_db_path(original)
 
 
 def _con():
     """
     EN: Open a SQLite connection and enable foreign key constraints.
-    PT: Abre uma conexão SQLite e habilita foreign keys (ON DELETE CASCADE etc.).
+    PT: Abre uma conexÃ£o SQLite e habilita foreign keys (ON DELETE CASCADE etc.).
     """
     con = sqlite3.connect(DB_PATH)
     # Very important for REFERENCES ... ON DELETE CASCADE to work in SQLite
@@ -39,7 +75,7 @@ def _con():
 # --- Lightweight, idempotent migrations -------------------------------------
 def ensure_columns(table: str, spec: dict[str, str]) -> list[str]:
     """
-    Cria colunas que não existirem em 'table'.
+    Cria colunas que nÃ£o existirem em 'table'.
     spec: {col_name: "SQL_TYPE"}  -> ex.: {"vde_urb_mj_per_km": "REAL"}
     Retorna a lista de colunas adicionadas.
     """
@@ -54,7 +90,7 @@ def ensure_columns(table: str, spec: dict[str, str]) -> list[str]:
     return [c for c, _ in missing]
 
 def ensure_migrations() -> None:
-    """Aplica migrações idempotentes necessárias ao schema atual."""
+    """Aplica migracoes idempotentes necessarias ao schema atual."""
     added = []
     added += ensure_columns("vde_db", {
         "drive_type": "TEXT",
@@ -69,8 +105,8 @@ def ensure_migrations() -> None:
         "parasitic_A_coef_N": "REAL",
         "parasitic_B_coef_Npkph": "REAL",
         "parasitic_C_coef_Npkph2": "REAL",
-        "rrc_N_per_kN": "REAL",   # <- NOVA
-        "crr1_frac_at_120kph": "REAL",  
+        "rrc_N_per_kN": "REAL",
+        "crr1_frac_at_120kph": "REAL",
     })
     added += ensure_columns("fuelcons_db", {
         "energy_basis": "TEXT",
@@ -80,17 +116,13 @@ def ensure_migrations() -> None:
         "assumptions_json": "TEXT",
         "provenance_json": "TEXT",
     })
-    # opcional: log
-        # >>> NOVOS: rastreabilidade mínima (baseline + deltas) <<<
     added += ensure_columns("vde_db", {
         "test_mass_kg": "REAL",
         "vde_id_parent": "INTEGER",
-
         "baseline_A_N": "REAL",
         "baseline_B_N_per_kph": "REAL",
         "baseline_C_N_per_kph2": "REAL",
         "baseline_mass_kg": "REAL",
-
         "delta_rr_N": "REAL",
         "delta_brake_N": "REAL",
         "delta_parasitics_N": "REAL",
@@ -108,6 +140,18 @@ def ensure_migrations() -> None:
         "tire_C_final": "REAL",
         "tire_calc_source": "TEXT",
         "tire_calc_notes": "TEXT",
+    })
+    added += ensure_columns("vde_db", {
+        "gvwr_kg": "REAL",
+        "gcwr_kg": "REAL",
+        "trailer_mass_kg": "REAL",
+        "trailer_code": "TEXT",
+        "trailer_roadload_source": "TEXT",
+        "trailer_A_coef_N": "REAL",
+        "trailer_B_coef_Npkph": "REAL",
+        "trailer_C_coef_Npkph2": "REAL",
+        "mass_rule_status": "TEXT",
+        "mass_rule_notes": "TEXT",
     })
     added += ensure_columns("tire_roadload_db", {
         "calculation_mode": "TEXT",
@@ -128,15 +172,12 @@ def ensure_migrations() -> None:
         "smerf": "REAL",
     })
     if added:
-        print("[db] migrações aplicadas:", added)
-
-    if added:
-        print("[db] migraÃ§Ãµes aplicadas:", added)
+        print("[db] migracoes aplicadas:", added)
 
 def ensure_db():
     """
     EN: Create tables and indexes if they do not exist.
-    PT: Cria tabelas e índices caso não existam.
+    PT: Cria tabelas e Ã­ndices caso nÃ£o existam.
     """
     with _con() as con:
         cur = con.cursor()
@@ -148,7 +189,7 @@ def ensure_db():
         #
         # PT: Tabela principal VDE
         #     Guarda um "snapshot" de teste: entradas (massa, pneus, road-load),
-        #     descrição do powertrain e saídas do VDE (NET/TOTAL, fases WLTP).
+        #     descriÃ§Ã£o do powertrain e saÃ­das do VDE (NET/TOTAL, fases WLTP).
         # ---------------------------------------------------------------------
         cur.execute("""
         CREATE TABLE IF NOT EXISTS vde_db (
@@ -156,7 +197,7 @@ def ensure_db():
             created_at           TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at           TEXT,
 
-            -- meta / classificação
+            -- meta / classificaÃ§Ã£o
             legislation          TEXT NOT NULL,             -- 'EPA' | 'WLTP' | 'BRA'
             category             TEXT NOT NULL,             -- classe oficial (EPA/WLTP)
             make                 TEXT NOT NULL,
@@ -164,7 +205,7 @@ def ensure_db():
             year                 INTEGER,
             notes                TEXT,
 
-            -- powertrain básico (seu padrão)
+            -- powertrain bÃ¡sico (seu padrÃ£o)
             engine_type          TEXT,                      -- 'SI' | 'CI' | 'HEV' | 'BEV'
             engine_model         TEXT,                      -- ex.: 'Firefly 1.3', 'Pentastar V6'
             engine_size_l        REAL,                      -- ex.: 1.3, 2.0
@@ -178,10 +219,20 @@ def ensure_db():
             test_mass_low_kg     REAL,
             test_mass_high_kg    REAL,
             test_mass_basis      TEXT,
-            inertia_class        REAL,                      -- ETW / Inércia WLTP / NBR
+            gvwr_kg              REAL,
+            gcwr_kg              REAL,
+            trailer_mass_kg      REAL,
+            trailer_code         TEXT,
+            trailer_roadload_source TEXT,
+            trailer_A_coef_N     REAL,
+            trailer_B_coef_Npkph REAL,
+            trailer_C_coef_Npkph2 REAL,
+            mass_rule_status     TEXT,
+            mass_rule_notes      TEXT,
+            inertia_class        REAL,                      -- ETW / InÃ©rcia WLTP / NBR
             cda_m2               REAL,                      -- Cd*Af_FE
-            weight_dist_fr_pct   REAL,                      -- distribuição F/R [%]
-            payload_kg           REAL,                      -- carga útil
+            weight_dist_fr_pct   REAL,                      -- distribuiÃ§Ã£o F/R [%]
+            payload_kg           REAL,                      -- carga Ãºtil
 
             -- pneus (snapshot do ensaio)
             tire_size            TEXT,
@@ -195,7 +246,7 @@ def ensure_db():
             coast_B_N_per_kph    REAL,
             coast_C_N_per_kph2   REAL,
 
-            -- coeficientes adicionais (transmissão/freios/aero) - opcionais
+            -- coeficientes adicionais (transmissÃ£o/freios/aero) - opcionais
             trans_A_coef_N       REAL,
             trans_B_coef_Npkph   REAL,
             trans_C_coef_Npkph2  REAL,
@@ -204,7 +255,7 @@ def ensure_db():
             brake_C_coef_Npkph2  REAL,
             aero_C_coef_Npkph2   REAL,
 
-            -- modelo RR avançado (opcional)
+            -- modelo RR avanÃ§ado (opcional)
             rr_alpha_N           REAL,
             rr_beta_Npkph        REAL,
             rr_a_Npkph2          REAL,
@@ -217,11 +268,11 @@ def ensure_db():
             cycle_source         TEXT,                      -- 'standard:EPA','standard:WLTP','custom:upload'
 
             -- resultados agregados
-            vde_urb_mj           REAL,                      -- energia total ciclo urbano (quando aplicável)
-            vde_hw_mj            REAL,                      -- energia total ciclo rodoviário (quando aplicável)
+            vde_urb_mj           REAL,                      -- energia total ciclo urbano (quando aplicÃ¡vel)
+            vde_hw_mj            REAL,                      -- energia total ciclo rodoviÃ¡rio (quando aplicÃ¡vel)
 
             vde_net_mj_per_km    REAL,                      -- NET (comparabilidade normativa)
-            vde_total_mj_per_km  REAL,                      -- TOTAL (NET + perdas transmissão)
+            vde_total_mj_per_km  REAL,                      -- TOTAL (NET + perdas transmissÃ£o)
 
             -- quatro fases WLTP em MJ/km
             vde_low_mj_per_km        REAL,
@@ -232,7 +283,7 @@ def ensure_db():
         """)
 
         # Helpful indexes for faster filtering in dashboards/queries
-        # Índices úteis para acelerar filtros em dashboards/consultas
+        # Ãndices Ãºteis para acelerar filtros em dashboards/consultas
         cur.execute("CREATE INDEX IF NOT EXISTS idx_vde_cat_leg ON vde_db(category, legislation);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_vde_make_model ON vde_db(make, model, year);")
 
@@ -241,44 +292,44 @@ def ensure_db():
         #     We store complementary scenario info, outputs per WLTP/EPA phase,
         #     and labeling/off-cycle fields. We avoid duplicating what's in vde_db.
         #
-        # PT: Cenários de consumo/energia vinculados a um VDE (via vde_id).
-        #     Guardamos informações de cenário complementares, saídas por fase
+        # PT: CenÃ¡rios de consumo/energia vinculados a um VDE (via vde_id).
+        #     Guardamos informaÃ§Ãµes de cenÃ¡rio complementares, saÃ­das por fase
         #     WLTP/EPA e campos de rotulagem/ajustes off-cycle. Evitamos duplicar
-        #     o que já está no vde_db.
+        #     o que jÃ¡ estÃ¡ no vde_db.
         # ---------------------------------------------------------------------
         cur.execute("""
         CREATE TABLE IF NOT EXISTS fuelcons_db (
             id                           INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at                   TEXT DEFAULT CURRENT_TIMESTAMP,
 
-            -- vínculo com VDE
+            -- vÃ­nculo com VDE
             vde_id                       INTEGER NOT NULL REFERENCES vde_db(id) ON DELETE CASCADE,
 
-            -- snapshot complementar (fácil de obter / não duplicar vde_db)
+            -- snapshot complementar (fÃ¡cil de obter / nÃ£o duplicar vde_db)
             electrification              TEXT NOT NULL,        -- 'None','MHEV','HEV','PHEV','BEV'
             fuel_type                    TEXT,                 -- 'Gasoline','Ethanol','Flex','Diesel','Electric'
-            eta_pt_est                   REAL,                 -- rendimento efetivo médio (ICE/HEV/PHEV)
-            bev_eff_drive                REAL,                 -- eficiência BEV
-            utility_factor_pct           REAL,                 -- UF (PHEV), se aplicável
+            eta_pt_est                   REAL,                 -- rendimento efetivo mÃ©dio (ICE/HEV/PHEV)
+            bev_eff_drive                REAL,                 -- eficiÃªncia BEV
+            utility_factor_pct           REAL,                 -- UF (PHEV), se aplicÃ¡vel
 
-            -- performance simples (não existem em vde_db)
+            -- performance simples (nÃ£o existem em vde_db)
             engine_max_power_kw          REAL,
             engine_rpm_max_power         INTEGER,
             engine_max_torque_nm         REAL,
             engine_rpm_max_torque        INTEGER,
 
-            -- transmissão (complementos simples; tipo/modelo já está em vde_db)
+            -- transmissÃ£o (complementos simples; tipo/modelo jÃ¡ estÃ¡ em vde_db)
             gear_count                   INTEGER,
             final_drive_ratio            REAL,
 
-            -- BMS / pack (simples e úteis)
+            -- BMS / pack (simples e Ãºteis)
             battery_capacity_kwh         REAL,
             battery_usable_kwh           REAL,
             bms_discharge_limit_kw       REAL,
             bms_regen_limit_kw           REAL,
             bms_note                     TEXT,
 
-            -- ambiente/uso do cenário (podem diferir do VDE base)
+            -- ambiente/uso do cenÃ¡rio (podem diferir do VDE base)
             ambient_temp_c               REAL,
             ac_on                        INTEGER,              -- 0/1
             tire_front_psi               REAL,
@@ -293,13 +344,13 @@ def ensure_db():
             assumptions_json             TEXT,
             provenance_json              TEXT,
 
-            -- saídas agregadas (cache)
+            -- saÃ­das agregadas (cache)
             energy_Wh_per_km             REAL,
             fuel_km_per_l                REAL,
             fuel_l_per_100km             REAL,
             gco2_per_km                  REAL,
 
-            -- saídas por fase WLTP (normalizadas)
+            -- saÃ­das por fase WLTP (normalizadas)
             energy_low_Wh_per_km         REAL,
             energy_mid_Wh_per_km         REAL,
             energy_high_Wh_per_km        REAL,
@@ -315,7 +366,7 @@ def ensure_db():
             gco2_high_per_km             REAL,
             gco2_xhigh_per_km            REAL,
 
-            -- saídas por ciclo EPA (normalizadas)
+            -- saÃ­das por ciclo EPA (normalizadas)
             energy_ftp75_Wh_per_km       REAL,
             energy_hwfet_Wh_per_km       REAL,
             energy_us06_Wh_per_km        REAL,
@@ -334,7 +385,7 @@ def ensure_db():
             gco2_sc03_per_km             REAL,
             gco2_coldftp_per_km          REAL,
 
-            -- labeling / off-cycle (genéricos e fáceis de preencher)
+            -- labeling / off-cycle (genÃ©ricos e fÃ¡ceis de preencher)
             label_program                TEXT,                 -- 'INMETRO/PBEV','EPA','EU-WLTP',...
             label_version_year           INTEGER,              -- ex.: 2025
             label_vehicle_category       TEXT,                 -- ex.: 'Compacto B','SUV C'
@@ -342,10 +393,10 @@ def ensure_db():
             label_class                  TEXT,                 -- ex.: 'A'..'E' (PBEV) ou 'N/A'
             label_offcycle_method        TEXT,                 -- 'EPA 5-cycle adj','N/A'
             label_offcycle_energy_factor REAL,                 -- fator sobre energia (se houver)
-            label_offcycle_fuel_factor   REAL,                 -- fator sobre combustível (se houver)
+            label_offcycle_fuel_factor   REAL,                 -- fator sobre combustÃ­vel (se houver)
             label_fuel_l_per_100km       REAL,                 -- valor "de etiqueta"
             label_gco2_per_km            REAL,                 -- valor "de etiqueta"
-            label_range_km               REAL                  -- alcance (BEV/PHEV), se aplicável
+            label_range_km               REAL                  -- alcance (BEV/PHEV), se aplicÃ¡vel
         );
         """)
 
@@ -355,9 +406,9 @@ def ensure_db():
         # EN: Technical tire roadload library.
         #     Stores tire identity plus SAE/ISO roadload-relevant metadata.
         #
-        # PT: Biblioteca técnica de pneus para roadload.
-        #     Guarda identificação do pneu e metadados SAE/ISO relevantes
-        #     ao cálculo da contribuição equivalente em A/B/C.
+        # PT: Biblioteca tÃ©cnica de pneus para roadload.
+        #     Guarda identificaÃ§Ã£o do pneu e metadados SAE/ISO relevantes
+        #     ao cÃ¡lculo da contribuiÃ§Ã£o equivalente em A/B/C.
         # ---------------------------------------------------------------------
         cur.execute("""
         CREATE TABLE IF NOT EXISTS tire_roadload_db (
@@ -438,8 +489,8 @@ def insert_vde(row: dict) -> int:
     """
     EN: Insert a row into vde_db. 'row' is a dict with column names.
         You can pass only the columns you have; others will be NULL/default.
-    PT: Insere uma linha em vde_db. 'row' é um dict com nomes de colunas.
-        Você pode passar só as colunas que tiver; o resto vira NULL/default.
+    PT: Insere uma linha em vde_db. 'row' Ã© um dict com nomes de colunas.
+        VocÃª pode passar sÃ³ as colunas que tiver; o resto vira NULL/default.
     """
     ensure_db()
     row = autoresolve_test_mass(row)  # << NEW: autofill mass if needed
@@ -457,10 +508,10 @@ def update_vde(vde_id: int, updates: dict) -> None:
     EN: Update selected columns of vde_db by id.
         Also touches updated_at automatically (UTC ISO string).
     PT: Atualiza colunas selecionadas de vde_db pelo id.
-        Também atualiza updated_at automaticamente (UTC em ISO).
+        TambÃ©m atualiza updated_at automaticamente (UTC em ISO).
     """
     ensure_db()
-    # Add/Atualiza carimbo de atualização
+    # Add/Atualiza carimbo de atualizaÃ§Ã£o
     updates = dict(updates)
     updates["updated_at"] = datetime.utcnow().isoformat()
     updates = autoresolve_test_mass(updates)  # << NEW: autofill mass if needed
@@ -493,7 +544,7 @@ def insert_fuelcons(row: dict) -> int:
 
 
 # -----------------------------------------------------------------------------
-# READ helpers (return dicts, like CS50 Row → dict)
+# READ helpers (return dicts, like CS50 Row â†’ dict)
 # -----------------------------------------------------------------------------
 
 def fetchone(sql: str, params=()):
@@ -511,7 +562,7 @@ def fetchone(sql: str, params=()):
 def fetchall(sql: str, params=()):
     """
     EN: Run a SELECT that returns many rows. Returns a list of dicts.
-    PT: Executa um SELECT que retorna várias linhas. Retorna lista de dicts.
+    PT: Executa um SELECT que retorna vÃ¡rias linhas. Retorna lista de dicts.
     """
     ensure_db()
     with _con() as con:
@@ -523,13 +574,13 @@ def fetchall(sql: str, params=()):
 # -----------------------------------------------------------------------------
 # (Optional) Triggers and views
 # PT/EN: Se quiser automatizar updated_at via trigger ou criar views,
-#        dá para adicionar no ensure_db() depois, com CREATE TRIGGER/VIEW.
+#        dÃ¡ para adicionar no ensure_db() depois, com CREATE TRIGGER/VIEW.
 # -----------------------------------------------------------------------------
-# --- Utils genéricos para consultas dinâmicas (cole no db.py) ---
+# --- Utils genÃ©ricos para consultas dinÃ¢micas (cole no db.py) ---
 import pandas as _pd
 
 def df_query(sql: str, params=()):
-    """SELECT -> DataFrame (útil no Streamlit)."""
+    """SELECT -> DataFrame (Ãºtil no Streamlit)."""
     ensure_db()
     with _con() as con:
         return _pd.read_sql_query(sql, con, params=params)
@@ -550,10 +601,10 @@ def select_where(
     limit: int | None = None,
 ):
     """
-    Consulta genérica com validação de tabela/colunas.
+    Consulta genÃ©rica com validaÃ§Ã£o de tabela/colunas.
     - table: 'vde_db' | 'fuelcons_db'
     - columns: '*' ou lista de colunas
-    - filters: dict {col: (op, value)}; op ∈ {'=','LIKE','>','>=','<','<='}
+    - filters: dict {col: (op, value)}; op âˆˆ {'=','LIKE','>','>=','<','<='}
       Ex.: {'make': ('LIKE','%Fiat%'), 'year': ('=', 2027)}
     - order_by: string (valida coluna)
     - limit: int
@@ -563,7 +614,7 @@ def select_where(
     ensure_db()
     allowed_tables = {"vde_db", "fuelcons_db", "tire_roadload_db"}
     if table not in allowed_tables:
-        raise ValueError("Tabela não permitida.")
+        raise ValueError("Tabela nÃ£o permitida.")
 
     cols = table_columns(table)
 
@@ -571,13 +622,13 @@ def select_where(
     if columns == "*":
         sel = "*"
     else:
-        # validação: mantém só colunas existentes
+        # validaÃ§Ã£o: mantÃ©m sÃ³ colunas existentes
         safe_cols = [c for c in columns if c in cols]
         if not safe_cols:
             safe_cols = ["*"]
         sel = ", ".join(safe_cols)
 
-    # WHERE dinâmico com placeholders
+    # WHERE dinÃ¢mico com placeholders
     where_clauses, params = [], []
     if filters:
         for col, (op, val) in filters.items():
@@ -592,7 +643,7 @@ def select_where(
     # ORDER BY validado
     order_sql = ""
     if order_by:
-        # permite algo como "year DESC" -> separa nome e direção
+        # permite algo como "year DESC" -> separa nome e direÃ§Ã£o
         parts = order_by.split()
         colname = parts[0]
         direction = parts[1].upper() if len(parts) > 1 else ""
@@ -626,7 +677,7 @@ def update_row(table: str, row_id: int, updates: dict) -> None:
     """
     ensure_db()
     if table not in {"vde_db", "fuelcons_db", "tire_roadload_db"}:
-        raise ValueError("Tabela não permitida.")
+        raise ValueError("Tabela nÃ£o permitida.")
     set_clause = ", ".join([f"{k}=?" for k in updates.keys()])
     vals = list(updates.values()) + [row_id]
     with _con() as con:
@@ -643,8 +694,8 @@ PathLike = Union[str, os.PathLike]
 
 def truncate_db(db_path: PathLike) -> None:
     """
-    Apaga TODAS as linhas das tabelas (mantém o arquivo .db), zera AUTOINCREMENT
-    e executa VACUUM. Requer que o schema já exista.
+    Apaga TODAS as linhas das tabelas (mantÃ©m o arquivo .db), zera AUTOINCREMENT
+    e executa VACUUM. Requer que o schema jÃ¡ exista.
     """
     db_path = Path(db_path)
     with sqlite3.connect(str(db_path), timeout=30) as con:
@@ -662,12 +713,12 @@ def truncate_db(db_path: PathLike) -> None:
 
         con.commit()
         cur.execute("VACUUM;")  # compacta arquivo
-    print(f"✔️ DB truncado: {db_path}")
+    print(f"âœ”ï¸ DB truncado: {db_path}")
 
 def delete_db_file(db_path: PathLike) -> None:
     """
     Deleta o arquivo do banco e arquivos auxiliares (-wal/-shm).
-    TODAS as conexões devem estar fechadas.
+    TODAS as conexÃµes devem estar fechadas.
     """
     db_path = Path(db_path)
     for ext in ("", "-wal", "-shm"):
@@ -675,6 +726,6 @@ def delete_db_file(db_path: PathLike) -> None:
         if p.exists():
             try:
                 os.remove(p)
-                print(f"✔️ Removido: {p}")
+                print(f"âœ”ï¸ Removido: {p}")
             except PermissionError:
                 raise RuntimeError(f"Arquivo em uso/bloqueado: {p}. Feche processos e tente novamente.")

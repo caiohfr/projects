@@ -23,13 +23,17 @@ from src.vde_core.repositories import (
     update_vde_by_id,
 )
 from src.vde_core.services import estimate_aux_from_coastdown
-from src.vde_core.test_mass import inertia_class_from_mass
+from src.vde_core.test_mass import inertia_class_from_mass, representative_mass_for_inertia_class
+from src.vde_core.vde_mass_proposal_resolver import curb_mass_for_twc_position
 from src.vde_core.tire_roadload_service import build_tire_component_from_result
 from src.vde_core.vde_setup_service import (
     build_vde_insert_row,
     build_vde_phase_update,
     compute_vde_preview_from_inputs,
     resolve_test_mass_state,
+    resolve_tire_calculation_mass,
+    resolve_tire_load_mass_basis,
+    resolve_vde_calculation_mass_basis,
     to_float,
 )
 
@@ -155,13 +159,22 @@ def resolve_mass_setup(payload: dict, baseline_row: dict | None = None) -> tuple
     merged = dict(baseline_row or {})
     merged.update(dict(payload or {}))
 
+    merged = _align_epa_mass_rule_payload(merged)
     mass_kg = to_float(merged.get("mass_kg"))
+    payload_kg = to_float(merged.get("payload_kg"))
     inertia_class = to_float(merged.get("inertia_class"))
     twc_kg = to_float(merged.get("twc_kg"))
     etw_kg = to_float(merged.get("etw_kg"))
+    gvwr_kg = to_float(merged.get("gvwr_kg"), to_float(merged.get("mass_profile_gvwr_kg")))
+    gcwr_kg = to_float(merged.get("gcwr_kg"), to_float(merged.get("mass_profile_gcwr_kg")))
+    trailer_mass_kg = to_float(merged.get("trailer_mass_kg"), to_float(merged.get("mass_profile_trailer_mass_kg")))
     weight_dist = to_float(merged.get("weight_dist_fr_pct"))
-    mass_basis = _clean_text(merged.get("mass_basis") or merged.get("tire_load_mass_basis"), "TEST_MASS", upper=True)
+    canonical_vde_mass = to_float(merged.get("vde_calculation_mass_kg"))
+    canonical_vde_basis = _clean_text(merged.get("vde_mass_basis"), "", upper=True) or None
+    mass_basis = canonical_vde_basis or resolve_vde_calculation_mass_basis(merged)
+    tire_load_mass_basis = resolve_tire_load_mass_basis(merged)
     legislation = _clean_text(merged.get("legislation"), "", upper=True) or ""
+    mass_intention = _clean_text(merged.get("mass_intention"), "", upper=True) or None
     test_mass_state = resolve_test_mass_state(merged)
 
     if weight_dist is None:
@@ -175,27 +188,36 @@ def resolve_mass_setup(payload: dict, baseline_row: dict | None = None) -> tuple
     warnings.extend(list(test_mass_state.get("warnings") or []))
 
     resolved_source = test_mass_basis or "test_mass_kg"
-    resolved_mass_used_kg = test_mass_kg
-    if mass_basis == "TWC":
-        if legislation == "EPA" and mass_kg is not None and mass_kg > 0:
+    resolved_mass_used_kg = canonical_vde_mass if canonical_vde_mass is not None else test_mass_kg
+    if canonical_vde_mass is not None:
+        resolved_source = "canonical_mass_resolution"
+    explicit_test_mass = to_float(merged.get("test_mass_kg"))
+    if canonical_vde_mass is None and mass_intention and explicit_test_mass is not None:
+        resolved_mass_used_kg = explicit_test_mass
+        resolved_source = "explicit_test_mass"
+    if canonical_vde_mass is None and mass_basis == "TWC":
+        resolved_mass_used_kg = None
+        if inertia_class is not None:
+            resolved_mass_used_kg = inertia_class
+            resolved_source = "inertia_class"
+        elif twc_kg is not None:
+            resolved_mass_used_kg = twc_kg
+            resolved_source = "twc_kg"
+        elif etw_kg is not None:
+            resolved_mass_used_kg = etw_kg
+            resolved_source = "etw_kg"
+        elif legislation == "EPA" and mass_kg is not None and mass_kg > 0:
             resolved_mass_used_kg = inertia_class_from_mass(mass_kg)
             resolved_source = "inertia_class_from_mass"
         else:
-            resolved_mass_used_kg = twc_kg or etw_kg or inertia_class
-            resolved_source = (
-                "twc_kg"
-                if twc_kg is not None
-                else "etw_kg"
-                if etw_kg is not None
-                else "inertia_class"
-                if inertia_class is not None
-                else "missing_twc"
-            )
+            resolved_source = "missing_twc"
         if resolved_mass_used_kg is None:
             warnings.append("twc_selected_but_inertia_class_missing")
     elif resolved_mass_used_kg is None:
         resolved_mass_used_kg = mass_kg
         resolved_source = "mass_kg_fallback"
+
+    tire_mass_resolution = resolve_tire_calculation_mass(merged)
 
     return (
         {
@@ -207,13 +229,45 @@ def resolve_mass_setup(payload: dict, baseline_row: dict | None = None) -> tuple
             "inertia_class": inertia_class,
             "twc_kg": twc_kg,
             "etw_kg": etw_kg,
+            "payload_kg": payload_kg,
+            "gvwr_kg": gvwr_kg,
+            "gcwr_kg": gcwr_kg,
+            "trailer_mass_kg": trailer_mass_kg,
             "weight_dist_fr_pct": weight_dist,
             "mass_basis": mass_basis,
+            "vde_mass_basis": mass_basis,
+            "vde_calculation_mass_kg": resolved_mass_used_kg,
+            "mass_intention": mass_intention,
             "resolved_mass_used_kg": resolved_mass_used_kg,
             "resolved_mass_source": resolved_source,
+            "tire_load_mass_basis": tire_mass_resolution.get("basis") or tire_load_mass_basis,
+            "tire_load_mass_used_kg": tire_mass_resolution.get("mass_kg"),
+            "tire_load_mass_source": tire_mass_resolution.get("source"),
         },
         warnings,
     )
+
+
+def _align_epa_mass_rule_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload or {})
+    legislation = _clean_text(data.get("legislation"), "", upper=True) or ""
+    test_mass_basis = _clean_text(data.get("test_mass_basis"), "", upper=True) or ""
+    mass_intention = _clean_text(data.get("mass_intention"), "", upper=True) or ""
+    if legislation != "EPA":
+        return data
+    if mass_intention not in {"EPA_PLUS_1_TWC"}:
+        return data
+    aligned_mass = curb_mass_for_twc_position(
+        to_float(data.get("inertia_class")),
+        data.get("curb_position"),
+    )
+    if aligned_mass is None:
+        aligned_mass = representative_mass_for_inertia_class(to_float(data.get("inertia_class")))
+    if aligned_mass is None:
+        aligned_mass = to_float(data.get("test_mass_kg"))
+    if aligned_mass is not None:
+        data["mass_kg"] = aligned_mass
+    return data
 
 
 def _normalize_component(name: str, payload: Any) -> dict[str, Any]:
@@ -518,6 +572,7 @@ def build_vde_setup_preview_from_ctx(ctx: dict) -> dict[str, Any]:
 def _resolve_transmission_losses(payload: dict, baseline_row: dict) -> dict[str, Any]:
     raw = dict(payload.get("transmission_losses") or {})
     source = _clean_text(raw.get("source"), None, upper=True)
+    nested_abc = dict(raw.get("abc") or {})
 
     if source == "BASELINE":
         abc = {
@@ -527,9 +582,9 @@ def _resolve_transmission_losses(payload: dict, baseline_row: dict) -> dict[str,
         }
     else:
         abc = {
-            "A": float(to_float(raw.get("A_TRANS"), to_float(raw.get("A"), 0.0)) or 0.0),
-            "B": float(to_float(raw.get("B_TRANS"), to_float(raw.get("B"), 0.0)) or 0.0),
-            "C": float(to_float(raw.get("C_TRANS"), to_float(raw.get("C"), 0.0)) or 0.0),
+            "A": float(to_float(raw.get("A_TRANS"), to_float(raw.get("A"), to_float(nested_abc.get("A"), 0.0))) or 0.0),
+            "B": float(to_float(raw.get("B_TRANS"), to_float(raw.get("B"), to_float(nested_abc.get("B"), 0.0))) or 0.0),
+            "C": float(to_float(raw.get("C_TRANS"), to_float(raw.get("C"), to_float(nested_abc.get("C"), 0.0))) or 0.0),
         }
 
     has_any = any(abs(value) > 0.0 for value in abc.values())
@@ -560,6 +615,7 @@ def _compute_vde_energy_preview(payload: dict, abc: dict[str, float], mass_kg: f
         B=abc["B"],
         C=abc["C"],
         mass_kg=mass_kg,
+        epa_mass_is_resolved_twc=(legislation == "EPA"),
     )
     if not result.get("ok"):
         raise ValueError(result.get("error", "Could not compute VDE preview from inputs."))
@@ -685,6 +741,30 @@ def _build_rich_save_row(preview_result: dict, ctx: dict | None, defaults_df=Non
         save_ctx["options_kg"] = request.get("options_kg")
     if request.get("wltp_category") is not None:
         save_ctx["wltp_category"] = request.get("wltp_category")
+    save_ctx["gvwr_kg"] = to_float(
+        request.get("gvwr_kg"),
+        to_float(save_ctx.get("gvwr_kg"), to_float(save_ctx.get("mass_profile_gvwr_kg"))),
+    )
+    save_ctx["gcwr_kg"] = to_float(
+        request.get("gcwr_kg"),
+        to_float(save_ctx.get("gcwr_kg"), to_float(save_ctx.get("mass_profile_gcwr_kg"))),
+    )
+    save_ctx["trailer_mass_kg"] = to_float(
+        request.get("trailer_mass_kg"),
+        to_float(save_ctx.get("trailer_mass_kg"), to_float(save_ctx.get("mass_profile_trailer_mass_kg"))),
+    )
+    if request.get("trailer_code") is not None or save_ctx.get("trailer_code") not in (None, ""):
+        save_ctx["trailer_code"] = request.get("trailer_code") or save_ctx.get("trailer_code")
+    if request.get("trailer_roadload_source") is not None or save_ctx.get("trailer_roadload_source") not in (None, ""):
+        save_ctx["trailer_roadload_source"] = request.get("trailer_roadload_source") or save_ctx.get("trailer_roadload_source")
+    for request_key, save_key in {
+        "trailer_A": "trailer_A_coef_N",
+        "trailer_B": "trailer_B_coef_Npkph",
+        "trailer_C": "trailer_C_coef_Npkph2",
+    }.items():
+        resolved_value = to_float(request.get(request_key), to_float(save_ctx.get(save_key), to_float(save_ctx.get(request_key))))
+        if resolved_value is not None:
+            save_ctx[save_key] = resolved_value
     if mass_setup.get("test_mass_kg") is not None:
         save_ctx["test_mass_kg"] = mass_setup.get("test_mass_kg")
     if mass_setup.get("test_mass_low_kg") is not None:
@@ -695,6 +775,10 @@ def _build_rich_save_row(preview_result: dict, ctx: dict | None, defaults_df=Non
         save_ctx["test_mass_basis"] = mass_setup.get("test_mass_basis")
     if mass_setup.get("inertia_class") is not None:
         save_ctx["inertia_class"] = mass_setup.get("inertia_class")
+    if mass_setup.get("mass_rule_status") is not None:
+        save_ctx["mass_rule_status"] = mass_setup.get("mass_rule_status")
+    if mass_setup.get("mass_rule_notes") is not None:
+        save_ctx["mass_rule_notes"] = mass_setup.get("mass_rule_notes")
 
     row = build_vde_insert_row(
         save_ctx,
@@ -746,6 +830,7 @@ def _build_phase_updates_for_save(preview_result: dict) -> dict[str, Any]:
         B=float(to_float(abc_active.get("B"), 0.0) or 0.0),
         C=float(to_float(abc_active.get("C"), 0.0) or 0.0),
         mass_kg=float(to_float(resolved_mass, 0.0) or 0.0),
+        epa_mass_is_resolved_twc=(str(request.get("legislation") or "").strip().upper() == "EPA"),
     )
     if preview.get("vde_net") is None:
         phase_updates.pop("vde_net_mj_per_km", None)

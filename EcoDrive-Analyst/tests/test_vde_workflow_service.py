@@ -78,6 +78,25 @@ class VdeWorkflowServiceTests(unittest.TestCase):
         self.assertIsNotNone(preview["vde_net"])
         self.assertGreater(preview["vde_total"]["mj_per_km"], preview["vde_net"]["mj_per_km"])
 
+    def test_build_vde_setup_preview_accepts_nested_resolved_transmission_shape(self):
+        payload = self._base_payload()
+        payload["transmission_losses"] = {
+            "source": "INHERITED",
+            "status": "available",
+            "abc": {
+                "A": 10.0,
+                "B": 0.005,
+                "C": 0.001,
+            },
+        }
+
+        preview = build_vde_setup_preview(payload)
+
+        self.assertEqual(preview["transmission_losses"]["status"], "available")
+        self.assertAlmostEqual(preview["abc_net"]["A"], 110.0)
+        self.assertAlmostEqual(preview["abc_net"]["B"], 0.015)
+        self.assertAlmostEqual(preview["abc_net"]["C"], 0.01)
+
     def test_build_vde_setup_preview_warns_when_weight_distribution_missing(self):
         payload = self._base_payload()
         preview = build_vde_setup_preview(payload)
@@ -95,6 +114,17 @@ class VdeWorkflowServiceTests(unittest.TestCase):
 
         self.assertIsNone(preview["mass_setup"]["resolved_mass_used_kg"])
         self.assertIn("twc_selected_but_inertia_class_missing", preview["warnings"])
+
+    def test_build_vde_setup_preview_keeps_epa_vde_mass_on_twc_even_when_test_mass_differs(self):
+        payload = self._base_payload()
+        payload["inertia_class"] = 1750.0
+        payload["test_mass_kg"] = 2400.0
+
+        preview = build_vde_setup_preview(payload)
+
+        self.assertEqual(preview["mass_setup"]["vde_mass_basis"], "TWC")
+        self.assertEqual(preview["mass_setup"]["resolved_mass_used_kg"], 1750.0)
+        self.assertEqual(preview["mass_setup"]["test_mass_kg"], 2400.0)
 
     def test_build_vde_setup_preview_reuses_baseline_total_source(self):
         payload = self._base_payload()
@@ -320,6 +350,20 @@ class VdeWorkflowServiceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Test mass cannot be lower than curb weight"):
             build_vde_setup_preview(payload)
+
+    def test_build_vde_setup_preview_aligns_epa_inertia_mass_before_validation(self):
+        payload = self._base_payload()
+        payload["mass_kg"] = 2416.0
+        payload["test_mass_kg"] = 2268.0
+        payload["test_mass_basis"] = "EPA_INERTIA_CLASS"
+        payload["inertia_class"] = 2268.0
+        payload["mass_intention"] = "EPA_PLUS_1_TWC"
+
+        preview = build_vde_setup_preview(payload)
+
+        self.assertTrue(preview["ok"])
+        self.assertEqual(preview["mass_setup"]["mass_kg"], 2189.0)
+        self.assertEqual(preview["mass_setup"]["test_mass_kg"], 2268.0)
 
     @patch("src.vde_core.vde_workflow_service.insert_vde_row")
     def test_save_vde_setup_result_inserts_new_row(self, mock_insert):

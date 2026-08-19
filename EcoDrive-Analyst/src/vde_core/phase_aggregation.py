@@ -27,6 +27,8 @@ def epa_city_hwy_from_phase(
     B: float,
     C: float,
     mass: float,
+    *,
+    mass_is_resolved_twc: bool = False,
 ) -> Dict[str, Optional[float]]:
     groups_raw = split_by_phase(df_or_groups) if isinstance(df_or_groups, pd.DataFrame) else dict(df_or_groups)
 
@@ -49,7 +51,7 @@ def epa_city_hwy_from_phase(
                     return groups[group_key]
         return None
 
-    etw_kg = inertia_class_from_mass(mass)
+    etw_kg = float(mass) if mass_is_resolved_twc else inertia_class_from_mass(mass)
 
     urb_E_J = 0.0
     urb_S_m = 0.0

@@ -20,6 +20,8 @@ SYNTHETIC_QA_WARNING = (
     "All values are synthetic engineering QA fixtures and must not be treated as production or manufacturer data."
 )
 FIXED_TIMESTAMP = "2026-07-16T00:00:00Z"
+QA_KPA_PER_PSI = 6.89475729
+QA_N_PER_KG = 9.80665
 
 GOLDEN_QA_SCENARIO = {
     "baseline_id": 900001,
@@ -36,22 +38,153 @@ GOLDEN_QA_SCENARIO = {
 
 QA_COMPONENT_FIXTURES = {
     "transmission": [
-        {"component_id": "TRANS-MOCK-001", "purpose": "Nominal transmission ABC fixture"},
-        {"component_id": "TRANS-MOCK-002", "purpose": "Alternative transmission ABC fixture"},
+        {"component_id": "TRANS-MOCK-001", "purpose": "Nominal transmission ABC fixture", "component_type": "TRANSMISSION", "net_bridge_eligible": "TRUE"},
+        {"component_id": "TRANS-MOCK-002", "purpose": "Alternative transmission ABC fixture", "component_type": "TRANSMISSION", "net_bridge_eligible": "UNKNOWN"},
     ],
     "brake": [
-        {"component_id": "BRAKE-MOCK-001", "purpose": "Nominal brake ABC fixture"},
-        {"component_id": "BRAKE-MOCK-002", "purpose": "Alternative brake ABC fixture"},
+        {"component_id": "BRAKE-MOCK-001", "purpose": "Nominal brake ABC fixture", "component_type": "BRAKE_STANDARD", "test_condition_type": "STANDARD"},
+        {"component_id": "BRAKE-MOCK-002", "purpose": "Alternative brake ABC fixture", "component_type": "BRAKE_BASELINE_AS_RECEIVED", "test_condition_type": "AS_RECEIVED"},
     ],
     "axle_hubs": [
-        {"component_id": "AXLE-MOCK-001", "purpose": "Nominal axle & hubs ABC fixture"},
-        {"component_id": "AXLE-MOCK-002", "purpose": "Alternative axle & hubs ABC fixture"},
+        {"component_id": "AXLE-MOCK-001", "purpose": "Nominal axle & hubs ABC fixture", "component_type": "AXLE", "component_position": "FRONT"},
+        {"component_id": "AXLE-MOCK-002", "purpose": "Alternative axle & hubs ABC fixture", "component_type": "AXLE_HUB_COMBINED", "component_position": "COMBINED"},
     ],
     "parasitic": [
-        {"component_id": "PARA-MOCK-001", "purpose": "Nominal parasitic ABC fixture"},
-        {"component_id": "PARA-MOCK-002", "purpose": "Alternative parasitic ABC fixture"},
+        {"component_id": "PARA-MOCK-001", "purpose": "Nominal parasitic ABC fixture", "component_type": "OTHER_RESIDUAL_COMPONENT_LOSSES"},
+        {"component_id": "PARA-MOCK-002", "purpose": "Alternative parasitic ABC fixture", "component_type": "OTHER_RESIDUAL_COMPONENT_LOSSES"},
     ],
 }
+
+COMPLETE_SAE_QA_TIRE_SPECS = (
+    {
+        "row_id": 920101,
+        "qa_id": "QA-BASE",
+        "model_name": "TIRE-MOCK-001",
+        "rr_n_per_kn": 8.0,
+        "pressure_psi": 38.0,
+        "load_kg": 610.0,
+        "test_mileage_km": 1000.0,
+        "test_speed_value": 80.0,
+        "sae_alpha": -0.30,
+        "sae_beta": 1.00,
+        "sae_a": 0.0405987767,
+        "sae_b": 0.00002000,
+        "sae_c": 0.0000000500,
+        "notes": "QA MOCK | TIRE-MOCK-001 | Synthetic QA data | Primary synthetic SAE baseline/reference tire.",
+    },
+    {
+        "row_id": 920102,
+        "qa_id": "QA-ECO",
+        "model_name": "TIRE-MOCK-002",
+        "rr_n_per_kn": 7.0,
+        "pressure_psi": 35.0,
+        "load_kg": 610.0,
+        "test_mileage_km": 1000.0,
+        "test_speed_value": 80.0,
+        "sae_alpha": -0.32,
+        "sae_beta": 1.00,
+        "sae_a": 0.0388106091,
+        "sae_b": 0.00001800,
+        "sae_c": 0.0000000400,
+        "notes": "QA MOCK | TIRE-MOCK-002 | Synthetic QA data | Lower-RRC synthetic SAE tire.",
+    },
+    {
+        "row_id": 920103,
+        "qa_id": "QA-HIGH-RRC",
+        "model_name": "TIRE-MOCK-003",
+        "rr_n_per_kn": 10.0,
+        "pressure_psi": 32.0,
+        "load_kg": 610.0,
+        "test_mileage_km": 1000.0,
+        "test_speed_value": 80.0,
+        "sae_alpha": -0.25,
+        "sae_beta": 1.02,
+        "sae_a": 0.0299397091,
+        "sae_b": 0.00002500,
+        "sae_c": 0.0000000700,
+        "notes": "QA MOCK | TIRE-MOCK-003 | Synthetic QA data | Higher-RRC synthetic SAE tire.",
+    },
+    {
+        "row_id": 920104,
+        "qa_id": "QA-LOAD",
+        "model_name": "TIRE-MOCK-004",
+        "rr_n_per_kn": 8.8,
+        "pressure_psi": 30.0,
+        "load_kg": 650.0,
+        "test_mileage_km": 1000.0,
+        "test_speed_value": 80.0,
+        "sae_alpha": -0.28,
+        "sae_beta": 1.05,
+        "sae_a": 0.0231280363,
+        "sae_b": 0.00002200,
+        "sae_c": 0.0000000600,
+        "notes": "QA MOCK | TIRE-MOCK-004 | Synthetic QA data | Load-sensitivity SAE tire for mass/inherit QA.",
+    },
+    {
+        "row_id": 920105,
+        "qa_id": "QA-NEUTRAL",
+        "model_name": "TIRE-MOCK-005",
+        "rr_n_per_kn": 8.0,
+        "pressure_psi": 38.0,
+        "load_kg": 610.0,
+        "test_mileage_km": 1000.0,
+        "test_speed_value": 80.0,
+        "sae_alpha": -0.30,
+        "sae_beta": 1.00,
+        "sae_a": 0.0405987767,
+        "sae_b": 0.00002000,
+        "sae_c": 0.0000000500,
+        "notes": "QA MOCK | TIRE-MOCK-005 | Synthetic QA data | Different identity with QA-BASE-equivalent engineering behavior.",
+    },
+    {
+        "row_id": 920109,
+        "qa_id": "QA-SAME-RRC-DIFF-SAE",
+        "model_name": "TIRE-MOCK-SAME-RRC-DIFF-SAE",
+        "rr_n_per_kn": 8.0,
+        "pressure_psi": 38.0,
+        "load_kg": 610.0,
+        "test_mileage_km": 1000.0,
+        "test_speed_value": 80.0,
+        "sae_alpha": -0.24,
+        "sae_beta": 1.03,
+        "sae_a": 0.0220038491,
+        "sae_b": 0.00001050,
+        "sae_c": 0.0000000950,
+        "notes": "QA MOCK | TIRE-MOCK-SAME-RRC-DIFF-SAE | Synthetic QA data | Same reference RRC as QA-BASE with deliberately different SAE speed curve.",
+    },
+    {
+        "row_id": 920107,
+        "qa_id": "QA-LOW-PRESSURE",
+        "model_name": "TIRE-MOCK-006",
+        "rr_n_per_kn": 9.2,
+        "pressure_psi": 28.0,
+        "load_kg": 610.0,
+        "test_mileage_km": 1000.0,
+        "test_speed_value": 80.0,
+        "sae_alpha": -0.35,
+        "sae_beta": 1.00,
+        "sae_a": 0.0558223321,
+        "sae_b": 0.00002300,
+        "sae_c": 0.0000000600,
+        "notes": "QA MOCK | TIRE-MOCK-006 | Synthetic QA data | Pressure-sensitivity low-pressure SAE tire.",
+    },
+    {
+        "row_id": 920108,
+        "qa_id": "QA-HIGH-PRESSURE",
+        "model_name": "TIRE-MOCK-007",
+        "rr_n_per_kn": 7.6,
+        "pressure_psi": 42.0,
+        "load_kg": 610.0,
+        "test_mileage_km": 1000.0,
+        "test_speed_value": 80.0,
+        "sae_alpha": -0.27,
+        "sae_beta": 0.99,
+        "sae_a": 0.0364973585,
+        "sae_b": 0.00001900,
+        "sae_c": 0.0000000450,
+        "notes": "QA MOCK | TIRE-MOCK-007 | Synthetic QA data | Pressure-sensitivity high-pressure SAE tire.",
+    },
+)
 
 
 def load_inertia_table() -> list[dict[str, float | None]]:
@@ -139,9 +272,12 @@ def build_vde_seed_rows() -> list[dict[str, Any]]:
             vde_total=1.240,
             vde_net=1.180,
             notes="QA MOCK | VDE-QA-001 | Nominal EPA baseline for deterministic request QA.",
-            front_tire_id=920010,
-            rear_tire_id=920010,
-            tire_code="TIRE-QA-010",
+            front_tire_id=920101,
+            rear_tire_id=920101,
+            tire_code="QA-BASE",
+            tire_a_final=None,
+            tire_b_final=None,
+            tire_c_final=None,
         ),
         _base_vde_row(
             900002,
@@ -347,6 +483,21 @@ def build_vde_seed_rows() -> list[dict[str, Any]]:
 
 def build_tire_seed_rows() -> list[dict[str, Any]]:
     return [
+        *[_complete_sae_qa_tire_row(spec) for spec in COMPLETE_SAE_QA_TIRE_SPECS],
+        _base_tire_row(
+            920106,
+            "QA-INCOMPLETE",
+            "TIRE-MOCK-INCOMPLETE",
+            rr_n_per_kn=9.0,
+            standard_family="CUSTOM",
+            pressure_psi=None,
+            load_kg=610.0,
+            include_reference_fields=False,
+            test_mass_kg=610.0,
+            test_mileage_km=1000.0,
+            rr_quality="incomplete_reference_inputs",
+            notes="QA MOCK | TIRE-MOCK-INCOMPLETE | Deterministic incomplete lookup reference for negative QA.",
+        ),
         _base_tire_row(
             920001,
             "TIRE-QA-001",
@@ -465,7 +616,7 @@ def build_tire_seed_rows() -> list[dict[str, Any]]:
 
 def build_seed_manifest() -> dict[str, Any]:
     return {
-        "version": "QA-0",
+        "version": "QA-1",
         "warning": SYNTHETIC_QA_WARNING,
         "database_path_env_var": db_module.DB_PATH_ENV_VAR,
         "default_demo_db_path": str(DEFAULT_QA_DB_PATH),
@@ -536,6 +687,87 @@ def build_seed_manifest() -> dict[str, Any]:
             },
         ],
         "tires": [
+            {
+                "qa_id": "QA-BASE",
+                "tire_id": 920101,
+                "purpose": "Synthetic SAE baseline/reference lookup",
+                "expected_behavior": "Visible immediately in Tire Database browse and suitable for full SAE QA.",
+                "canonical_inputs": {"rr_n_per_kn": 8.0, "test_pressure_value": 38.0, "test_load_value": 610.0, "test_speed_value": 80.0},
+                "expected_missing_fields": [],
+                "notes": "Synthetic QA data.",
+            },
+            {
+                "qa_id": "QA-ECO",
+                "tire_id": 920102,
+                "purpose": "Synthetic low-RRC SAE lookup",
+                "expected_behavior": "Should improve roadload relative to QA-BASE.",
+                "canonical_inputs": {"rr_n_per_kn": 7.0, "test_pressure_value": 35.0, "test_load_value": 610.0, "test_speed_value": 80.0},
+                "expected_missing_fields": [],
+                "notes": "Synthetic QA data.",
+            },
+            {
+                "qa_id": "QA-HIGH-RRC",
+                "tire_id": 920103,
+                "purpose": "Synthetic high-RRC SAE lookup",
+                "expected_behavior": "Should worsen roadload relative to QA-BASE.",
+                "canonical_inputs": {"rr_n_per_kn": 10.0, "test_pressure_value": 32.0, "test_load_value": 610.0, "test_speed_value": 80.0},
+                "expected_missing_fields": [],
+                "notes": "Synthetic QA data.",
+            },
+            {
+                "qa_id": "QA-LOAD",
+                "tire_id": 920104,
+                "purpose": "Synthetic load-sensitive SAE lookup",
+                "expected_behavior": "Exercises load-sensitive tire calculations.",
+                "canonical_inputs": {"rr_n_per_kn": 8.8, "test_pressure_value": 30.0, "test_load_value": 650.0, "test_speed_value": 80.0},
+                "expected_missing_fields": [],
+                "notes": "Synthetic QA data.",
+            },
+            {
+                "qa_id": "QA-NEUTRAL",
+                "tire_id": 920105,
+                "purpose": "Synthetic neutral-equivalent SAE lookup",
+                "expected_behavior": "Provides a distinct lookup identity with neutral nominal values.",
+                "canonical_inputs": {"rr_n_per_kn": 8.0, "test_pressure_value": 38.0, "test_load_value": 610.0, "test_speed_value": 80.0},
+                "expected_missing_fields": [],
+                "notes": "Synthetic QA data.",
+            },
+            {
+                "qa_id": "QA-SAME-RRC-DIFF-SAE",
+                "tire_id": 920109,
+                "purpose": "Synthetic same-RRC but different-SAE lookup",
+                "expected_behavior": "Matches QA-BASE at the reference point but differs across the SAE speed curve.",
+                "canonical_inputs": {"rr_n_per_kn": 8.0, "test_pressure_value": 38.0, "test_load_value": 610.0, "test_speed_value": 80.0},
+                "expected_missing_fields": [],
+                "notes": "Synthetic QA data.",
+            },
+            {
+                "qa_id": "QA-LOW-PRESSURE",
+                "tire_id": 920107,
+                "purpose": "Synthetic low-pressure SAE lookup",
+                "expected_behavior": "Supports pressure sensitivity checks at lower reference pressure.",
+                "canonical_inputs": {"rr_n_per_kn": 9.2, "test_pressure_value": 28.0, "test_load_value": 610.0, "test_speed_value": 80.0},
+                "expected_missing_fields": [],
+                "notes": "Synthetic QA data.",
+            },
+            {
+                "qa_id": "QA-HIGH-PRESSURE",
+                "tire_id": 920108,
+                "purpose": "Synthetic high-pressure SAE lookup",
+                "expected_behavior": "Supports pressure sensitivity checks at higher reference pressure.",
+                "canonical_inputs": {"rr_n_per_kn": 7.6, "test_pressure_value": 42.0, "test_load_value": 610.0, "test_speed_value": 80.0},
+                "expected_missing_fields": [],
+                "notes": "Synthetic QA data.",
+            },
+            {
+                "qa_id": "QA-INCOMPLETE",
+                "tire_id": 920106,
+                "purpose": "Deterministic incomplete lookup",
+                "expected_behavior": "Must remain selectable and surface current validation behavior.",
+                "canonical_inputs": {"rr_n_per_kn": 9.0, "test_load_value": 610.0},
+                "expected_missing_fields": ["test_pressure_value", "sae_reference_pressure_kpa"],
+                "notes": "",
+            },
             {
                 "qa_id": "TIRE-QA-001",
                 "tire_id": 920001,
@@ -734,6 +966,9 @@ def _base_vde_row(
     front_tire_id: int,
     rear_tire_id: int,
     tire_code: str,
+    tire_a_final: float | None = 5.0,
+    tire_b_final: float | None = 0.0008,
+    tire_c_final: float | None = 0.0002,
     include_optional_fields: bool = True,
 ) -> dict[str, Any]:
     row = {
@@ -784,9 +1019,9 @@ def _base_vde_row(
         "tire_improvement_pct": None,
         "tire_load_mass_basis": "TEST_MASS",
         "tire_load_mass_used_kg": float(test_mass_kg),
-        "tire_A_final": 5.0,
-        "tire_B_final": 0.0008,
-        "tire_C_final": 0.0002,
+        "tire_A_final": tire_a_final,
+        "tire_B_final": tire_b_final,
+        "tire_C_final": tire_c_final,
         "tire_calc_source": f"qa_mock_seed:{qa_id}",
         "tire_calc_notes": f"Synthetic QA seed linked to {tire_code}",
         "parasitic_A_coef_N": parasitic_a,
@@ -831,6 +1066,12 @@ def _base_tire_row(
     test_mass_kg: float | None = None,
     test_mileage_km: float | None = 1200.0,
     break_in_distance_km: float | None = 100.0,
+    test_speed_value: float | None = None,
+    sae_a: float | None = None,
+    sae_b: float | None = None,
+    sae_c: float | None = None,
+    sae_alpha: float | None = None,
+    sae_beta: float | None = None,
 ) -> dict[str, Any]:
     calculation_mode = {
         "ISO": "ISO_28580",
@@ -878,18 +1119,20 @@ def _base_tire_row(
         "conditioning_notes": qa_id,
         "smerf": smerf,
     }
+    if test_speed_value is not None:
+        row["test_speed_value"] = float(test_speed_value)
     if include_reference_fields and pressure_psi is not None:
         row.update(
             {
                 "test_pressure_value": float(pressure_psi),
-                "sae_reference_pressure_kpa": round(float(pressure_psi) * 6.89476, 4),
+                "sae_reference_pressure_kpa": round(float(pressure_psi) * QA_KPA_PER_PSI, 4),
             }
         )
     if include_reference_fields and load_kg is not None:
         row.update(
             {
                 "test_load_value": float(load_kg),
-                "sae_reference_load_n": round(float(load_kg) * 9.80665, 4),
+                "sae_reference_load_n": round(float(load_kg) * QA_N_PER_KG, 4),
             }
         )
     if str(standard_family).upper() == "ISO":
@@ -906,18 +1149,41 @@ def _base_tire_row(
     if include_sae_coefficients:
         row.update(
             {
-                "sae_a": 0.0420,
-                "sae_b": 0.00015,
-                "sae_c": -0.0000002,
-                "sae_alpha": -0.4000,
-                "sae_beta": 1.0100,
+                "sae_a": 0.0420 if sae_a is None else float(sae_a),
+                "sae_b": 0.00015 if sae_b is None else float(sae_b),
+                "sae_c": -0.0000002 if sae_c is None else float(sae_c),
+                "sae_alpha": -0.4000 if sae_alpha is None else float(sae_alpha),
+                "sae_beta": 1.0100 if sae_beta is None else float(sae_beta),
             }
         )
     if test_mass_kg is not None:
         row["test_load_value"] = float(test_mass_kg)
         row["load_unit"] = "kg"
-        row["sae_reference_load_n"] = round(float(test_mass_kg) * 9.80665, 4)
+        row["sae_reference_load_n"] = round(float(test_mass_kg) * QA_N_PER_KG, 4)
     return row
+
+
+def _complete_sae_qa_tire_row(spec: dict[str, Any]) -> dict[str, Any]:
+    return _base_tire_row(
+        int(spec["row_id"]),
+        str(spec["qa_id"]),
+        str(spec["model_name"]),
+        rr_n_per_kn=float(spec["rr_n_per_kn"]),
+        standard_family="SAE",
+        pressure_psi=float(spec["pressure_psi"]),
+        load_kg=float(spec["load_kg"]),
+        test_mass_kg=float(spec["load_kg"]),
+        test_mileage_km=float(spec["test_mileage_km"]),
+        test_speed_value=float(spec["test_speed_value"]),
+        include_sae_coefficients=True,
+        sae_alpha=float(spec["sae_alpha"]),
+        sae_beta=float(spec["sae_beta"]),
+        sae_a=float(spec["sae_a"]),
+        sae_b=float(spec["sae_b"]),
+        sae_c=float(spec["sae_c"]),
+        rr_quality="reference_rr_input",
+        notes=str(spec["notes"]),
+    )
 
 
 def _required_inertia_class_for_mass(mass_kg: float) -> float:
@@ -944,6 +1210,7 @@ def _required_float(value: Any) -> float:
 
 
 __all__ = [
+    "COMPLETE_SAE_QA_TIRE_SPECS",
     "DEFAULT_QA_DB_PATH",
     "GOLDEN_QA_SCENARIO",
     "INERTIA_TABLE_PATH",

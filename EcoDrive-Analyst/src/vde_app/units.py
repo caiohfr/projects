@@ -8,6 +8,12 @@ import streamlit as st
 UNIT_SYSTEM_METRIC = "Metric"
 UNIT_SYSTEM_US = "US customary"
 UNIT_SYSTEM_OPTIONS = [UNIT_SYSTEM_METRIC, UNIT_SYSTEM_US]
+PRESSURE_UNIT_KPA = "kPa"
+PRESSURE_UNIT_BAR = "bar"
+PRESSURE_UNIT_PSI = "psi"
+PRESSURE_UNIT_OPTIONS = (PRESSURE_UNIT_KPA, PRESSURE_UNIT_BAR, PRESSURE_UNIT_PSI)
+KPA_PER_PSI = 6.894757293168
+BAR_PER_PSI = KPA_PER_PSI / 100.0
 
 
 @dataclass(frozen=True)
@@ -82,6 +88,66 @@ REGISTRY: dict[str, QuantitySpec] = {
 def normalize_unit_system(unit_system: str | None) -> str:
     value = str(unit_system or st.session_state.get("unit_system") or UNIT_SYSTEM_METRIC).strip()
     return value if value in UNIT_SYSTEM_OPTIONS else UNIT_SYSTEM_METRIC
+
+
+def normalize_pressure_unit(pressure_unit: str | None, default: str | None = None) -> str:
+    fallback = str(default or PRESSURE_UNIT_KPA).strip() or PRESSURE_UNIT_KPA
+    if fallback not in PRESSURE_UNIT_OPTIONS:
+        fallback = PRESSURE_UNIT_KPA
+    value = str(pressure_unit or "").strip()
+    normalized = {
+        "kpa": PRESSURE_UNIT_KPA,
+        "bar": PRESSURE_UNIT_BAR,
+        "psi": PRESSURE_UNIT_PSI,
+    }.get(value.lower())
+    return normalized or fallback
+
+
+def pressure_unit_label(pressure_unit: str | None) -> str:
+    return normalize_pressure_unit(pressure_unit)
+
+
+def pressure_factor_from_canonical(pressure_unit: str | None) -> float:
+    unit = normalize_pressure_unit(pressure_unit)
+    return {
+        PRESSURE_UNIT_KPA: KPA_PER_PSI,
+        PRESSURE_UNIT_BAR: BAR_PER_PSI,
+        PRESSURE_UNIT_PSI: 1.0,
+    }[unit]
+
+
+def pressure_to_display(canonical_value, pressure_unit: str | None):
+    if canonical_value is None:
+        return None
+    return float(canonical_value) * pressure_factor_from_canonical(pressure_unit)
+
+
+def pressure_to_canonical(display_value, pressure_unit: str | None):
+    if display_value is None:
+        return None
+    return float(display_value) / pressure_factor_from_canonical(pressure_unit)
+
+
+def pressure_display_precision(pressure_unit: str | None) -> int:
+    unit = normalize_pressure_unit(pressure_unit)
+    return {
+        PRESSURE_UNIT_KPA: 0,
+        PRESSURE_UNIT_BAR: 2,
+        PRESSURE_UNIT_PSI: 1,
+    }[unit]
+
+
+def pressure_display_step(pressure_unit: str | None) -> float:
+    unit = normalize_pressure_unit(pressure_unit)
+    return {
+        PRESSURE_UNIT_KPA: 1.0,
+        PRESSURE_UNIT_BAR: 0.05,
+        PRESSURE_UNIT_PSI: 0.5,
+    }[unit]
+
+
+def pressure_display_format(pressure_unit: str | None) -> str:
+    return f"%.{pressure_display_precision(pressure_unit)}f"
 
 
 def _spec_for(quantity: str, unit_system: str | None = None) -> UnitSpec:

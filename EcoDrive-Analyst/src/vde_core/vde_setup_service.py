@@ -51,6 +51,16 @@ _VDE_EXTRA_CTX_FIELDS = [
     "mro_kg",
     "options_kg",
     "wltp_category",
+    "gvwr_kg",
+    "gcwr_kg",
+    "trailer_mass_kg",
+    "trailer_code",
+    "trailer_roadload_source",
+    "trailer_A_coef_N",
+    "trailer_B_coef_Npkph",
+    "trailer_C_coef_Npkph2",
+    "mass_rule_status",
+    "mass_rule_notes",
     "tire_size",
     "tire_rr_note",
     "smerf",
@@ -109,6 +119,9 @@ def resolve_test_mass_state(ctx: dict) -> dict:
     payload_kg = to_float(data.get("payload_kg"))
     options_kg = to_float(data.get("options_kg"), 0.0)
     inertia_class = to_float(data.get("inertia_class"))
+    gvwr_kg = to_float(data.get("gvwr_kg"), to_float(data.get("mass_profile_gvwr_kg")))
+    gcwr_kg = to_float(data.get("gcwr_kg"), to_float(data.get("mass_profile_gcwr_kg")))
+    trailer_mass_kg = to_float(data.get("trailer_mass_kg"), to_float(data.get("mass_profile_trailer_mass_kg")))
     legislation = str(data.get("legislation") or "").strip().upper()
     existing_basis = str(data.get("test_mass_basis") or "").strip().upper() or None
     existing_test_mass = to_float(data.get("test_mass_kg"))
@@ -125,12 +138,10 @@ def resolve_test_mass_state(ctx: dict) -> dict:
 
     if basis is None:
         if existing_test_mass is not None:
-            basis = "CUSTOM"
+            basis = "PHYSICAL_TEST_MASS"
             manual_test_mass = existing_test_mass
         elif legislation == "WLTP" and wltp_result.test_mass_high_kg is not None:
             basis = "WLTP_TMH"
-        elif legislation == "EPA" and resolve_tire_load_mass_basis(data) == "TWC" and inertia_class is not None:
-            basis = "EPA_INERTIA_CLASS"
         elif legislation == "EPA" and base_mass is not None and base_mass > 0:
             basis = "PHYSICAL_TEST_MASS"
             manual_test_mass = base_mass + EPA_TEST_MASS_DEFAULT_DELTA_KG
@@ -145,10 +156,17 @@ def resolve_test_mass_state(ctx: dict) -> dict:
         test_mass_high_kg=wltp_result.test_mass_high_kg,
         inertia_class=inertia_class,
         manual_test_mass_kg=manual_test_mass,
+        gvwr_kg=gvwr_kg,
+        gcwr_kg=gcwr_kg,
+        trailer_mass_kg=trailer_mass_kg,
     )
 
     if resolved_mass is not None and base_mass is not None and base_mass > 0 and resolved_mass < base_mass:
         raise ValueError("Test mass cannot be lower than curb weight.")
+
+    wltp_warnings = list(wltp_result.warnings)
+    if legislation != "WLTP" and not str(resolved_basis or "").startswith("WLTP"):
+        wltp_warnings = []
 
     return {
         "test_mass_kg": resolved_mass,
@@ -161,7 +179,7 @@ def resolve_test_mass_state(ctx: dict) -> dict:
         "reference_mass_kg": wltp_result.reference_mass_kg,
         "light_duty_scope_warning": wltp_result.light_duty_scope_warning,
         "wltp_category": wltp_result.wltp_category,
-        "warnings": list(wltp_result.warnings) + list(warnings),
+        "warnings": wltp_warnings + list(warnings),
     }
 
 
@@ -195,30 +213,59 @@ def resolve_tire_load_mass_basis(ctx: dict) -> str:
     return "TEST_MASS"
 
 
+def resolve_vde_calculation_mass_basis(ctx: dict) -> str:
+    legislation = str((ctx or {}).get("legislation") or "").strip().upper()
+    explicit = str((ctx or {}).get("mass_basis") or "").strip().upper()
+    if legislation == "EPA":
+        return "TWC"
+    if explicit in {"TEST_MASS", "TWC"}:
+        return explicit
+    return "TEST_MASS"
+
+
 def resolve_tire_calculation_mass(ctx: dict) -> dict:
     data = dict(ctx or {})
+    canonical_mass = to_float(data.get("tire_load_mass_used_kg"))
+    canonical_basis = str(data.get("tire_load_mass_basis") or "").strip().upper()
+    if canonical_mass is not None and canonical_basis:
+        return {
+            "basis": canonical_basis,
+            "mass_kg": canonical_mass,
+            "source": "canonical_mass_resolution",
+        }
     legislation = str(data.get("legislation") or "").strip().upper()
     basis = resolve_tire_load_mass_basis(data)
-    test_mass_state = resolve_test_mass_state(data)
 
     if basis == "TWC":
-        base_mass = to_float(data.get("mass_kg"))
-        if legislation == "EPA" and base_mass is not None and base_mass > 0:
-            twc_kg = inertia_class_from_mass(base_mass)
-            source = "inertia_class_from_mass"
-        else:
+        twc_kg = to_float(data.get("inertia_class"))
+        source = "inertia_class"
+        if twc_kg is None:
             twc_kg = to_float(data.get("twc_kg"))
-            if twc_kg is None:
-                twc_kg = to_float(data.get("etw_kg"))
-            if twc_kg is None:
-                twc_kg = to_float(data.get("inertia_class"))
-            source = "twc_kg" if to_float(data.get("twc_kg")) is not None else (
-                "etw_kg" if to_float(data.get("etw_kg")) is not None else "inertia_class"
-            )
+            source = "twc_kg"
+        if twc_kg is None:
+            twc_kg = to_float(data.get("etw_kg"))
+            source = "etw_kg"
+        if twc_kg is None:
+            base_mass = to_float(data.get("mass_kg"))
+            if legislation == "EPA" and base_mass is not None and base_mass > 0:
+                twc_kg = inertia_class_from_mass(base_mass)
+                source = "inertia_class_from_mass"
+            else:
+                source = "missing_twc"
         return {
             "basis": basis,
             "mass_kg": twc_kg,
             "source": source,
+        }
+
+    try:
+        test_mass_state = resolve_test_mass_state(data)
+    except ValueError as exc:
+        return {
+            "basis": basis,
+            "mass_kg": None,
+            "source": "invalid_test_mass_state",
+            "issue": str(exc),
         }
 
     return {
@@ -373,6 +420,7 @@ def apply_baseline_filters(df: pd.DataFrame, *, legislation: str, make: str, cat
 
 def build_baseline_state_payload(base: dict, selected_id: int) -> dict:
     return {
+        "baseline_id": int(selected_id),
         "vde_id_parent": int(selected_id),
         "baseline_dict": {
             "A": base.get("A", base.get("coast_A_N")),
@@ -382,6 +430,12 @@ def build_baseline_state_payload(base: dict, selected_id: int) -> dict:
             "test_mass_kg": base.get("test_mass_kg"),
             "legislation": base.get("legislation"),
             "category": base.get("category"),
+            "make": base.get("make"),
+            "model": base.get("model", base.get("desc")),
+            "year": base.get("year"),
+            "notes": base.get("notes"),
+            "drive_type": base.get("drive_type"),
+            "fuel_type": base.get("fuel_type"),
             "tire_size": base.get("tire_size"),
             "rrc_N_per_kN": base.get("rrc_N_per_kN"),
             "crr1_frac_at_120kph": base.get("crr1_frac_at_120kph"),
@@ -398,7 +452,7 @@ def build_baseline_state_payload(base: dict, selected_id: int) -> dict:
             "trans_A_coef_N": base.get("trans_A_coef_N"),
             "trans_B_coef_Npkph": base.get("trans_B_coef_Npkph", base.get("trans_B_Npkph")),
             "trans_C_coef_Npkph2": base.get("trans_C_coef_Npkph2"),
-            "electrification": base.get("electrification"),
+            "electrification": base.get("electrification", base.get("engine_type")),
             "transmission_type": base.get("transmission_type"),
             "cda_m2": base.get("cda_m2"),
         },
@@ -740,13 +794,29 @@ def save_vde_from_ctx(ctx: dict, *, defaults_df=None) -> dict:
     }
 
 
-def build_vde_phase_update(df_cycle, leg: str, *, A: float, B: float, C: float, mass_kg: float) -> dict:
+def build_vde_phase_update(
+    df_cycle,
+    leg: str,
+    *,
+    A: float,
+    B: float,
+    C: float,
+    mass_kg: float,
+    epa_mass_is_resolved_twc: bool = False,
+) -> dict:
     if not (isinstance(df_cycle, pd.DataFrame) and "phase" in df_cycle.columns):
         return {}
 
     upd = {}
     if str(leg).upper() == "EPA":
-        res = epa_city_hwy_from_phase(df_cycle, A, B, C, mass_kg) or {}
+        res = epa_city_hwy_from_phase(
+            df_cycle,
+            A,
+            B,
+            C,
+            mass_kg,
+            mass_is_resolved_twc=epa_mass_is_resolved_twc,
+        ) or {}
         if res.get("urb_MJ") is not None:
             upd["vde_urb_mj"] = float(res["urb_MJ"])
         if res.get("hw_MJ") is not None:
@@ -838,7 +908,16 @@ def build_decomp_update_for_edit(decomp: Optional[dict]) -> dict:
     }
 
 
-def compute_vde_preview_from_inputs(df_cycle, leg: str, *, A: float, B: float, C: float, mass_kg: float) -> dict:
+def compute_vde_preview_from_inputs(
+    df_cycle,
+    leg: str,
+    *,
+    A: float,
+    B: float,
+    C: float,
+    mass_kg: float,
+    epa_mass_is_resolved_twc: bool = False,
+) -> dict:
     if not (isinstance(df_cycle, pd.DataFrame) and not df_cycle.empty):
         return {"ok": False, "error": "Cycle not available.", "total_mj_km": None, "by_phase": {}}
 
@@ -846,7 +925,14 @@ def compute_vde_preview_from_inputs(df_cycle, leg: str, *, A: float, B: float, C
     by_phase = {}
     if "phase" in df_cycle.columns:
         if str(leg).upper() == "EPA":
-            res = epa_city_hwy_from_phase(df_cycle, A, B, C, mass_kg) or {}
+            res = epa_city_hwy_from_phase(
+                df_cycle,
+                A,
+                B,
+                C,
+                mass_kg,
+                mass_is_resolved_twc=epa_mass_is_resolved_twc,
+            ) or {}
             city = res.get("city_MJ_km") or res.get("urb_MJ_km") or res.get("city_MJ_per_km")
             hwy = res.get("hwy_MJ_km") or res.get("hw_MJ_km") or res.get("hwy_MJ_per_km")
             if city is not None:

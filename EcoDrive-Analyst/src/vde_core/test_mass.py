@@ -15,6 +15,19 @@ WLTP_LOAD_FACTORS = {
     "N2": 0.28,
 }
 
+INERTIA_CLASS_STEPS = [
+    (None, 346, 454), (346, 402, 510), (402, 459, 567), (459, 516, 624),
+    (516, 573, 680), (573, 629, 737), (629, 686, 794), (686, 743, 850),
+    (743, 799, 907), (799, 856, 964), (856, 913, 1021), (913, 969, 1077),
+    (969, 1026, 1134), (1026, 1083, 1191), (1083, 1140, 1247), (1140, 1196, 1304),
+    (1196, 1253, 1361), (1253, 1310, 1417), (1310, 1366, 1474), (1366, 1423, 1531),
+    (1423, 1480, 1588), (1480, 1536, 1644), (1536, 1593, 1701), (1593, 1650, 1758),
+    (1650, 1735, 1814), (1735, 1848, 1928), (1848, 1962, 2041), (1962, 2075, 2155),
+    (2075, 2189, 2268), (2189, 2302, 2381), (2302, 2416, 2495), (2416, 2643, 2722),
+    (2643, 2869, 2948), (2869, 3096, 3175), (3096, 3323, 3402), (3323, 3777, 3856),
+    (3777, None, 4082),
+]
+
 
 def to_float_or_none(value: object) -> float | None:
     try:
@@ -199,6 +212,9 @@ def resolve_test_mass_kg(
     test_mass_high_kg: float | None = None,
     inertia_class: float | None = None,
     manual_test_mass_kg: float | None = None,
+    gvwr_kg: float | None = None,
+    gcwr_kg: float | None = None,
+    trailer_mass_kg: float | None = None,
 ) -> tuple[float | None, str | None, list[str]]:
     warnings: list[str] = []
     normalized_basis = str(basis).strip().upper() if basis else None
@@ -210,6 +226,9 @@ def resolve_test_mass_kg(
     test_mass_high = to_float_or_none(test_mass_high_kg)
     inertia = to_float_or_none(inertia_class)
     manual = to_float_or_none(manual_test_mass_kg)
+    gvwr = to_float_or_none(gvwr_kg)
+    gcwr = to_float_or_none(gcwr_kg)
+    trailer_mass = to_float_or_none(trailer_mass_kg)
 
     if normalized_basis == "WLTP_TML":
         if test_mass_low is None:
@@ -240,6 +259,20 @@ def resolve_test_mass_kg(
             warnings.append("EPA_INERTIA_CLASS was selected, but inertia_class is unavailable.")
             return None, "EPA_INERTIA_CLASS", warnings
         return float(inertia), "EPA_INERTIA_CLASS", warnings
+
+    if normalized_basis == "GVWR":
+        if gvwr is None:
+            warnings.append("GVWR was selected, but gvwr_kg is unavailable.")
+            return None, "GVWR", warnings
+        return float(gvwr), "GVWR", warnings
+
+    if normalized_basis == "GCWR_TRAILER":
+        if gcwr is None:
+            warnings.append("GCWR_TRAILER was selected, but gcwr_kg is unavailable.")
+            return None, "GCWR_TRAILER", warnings
+        if trailer_mass is None:
+            warnings.append("GCWR_TRAILER was selected, but trailer_mass_kg is unavailable.")
+        return float(gcwr), "GCWR_TRAILER", warnings
 
     if normalized_basis in {"PHYSICAL_TEST_MASS", "CUSTOM"}:
         if manual is None:
@@ -293,19 +326,7 @@ def compute_mro_from_stda(stda_kg, *, includes_driver=False, driver_mass_kg=DEFA
 def inertia_class_from_mass(mass_kg: float) -> float | None:
     if mass_kg is None:
         return None
-    steps = [
-        (None, 346, 454), (346, 402, 510), (402, 459, 567), (459, 516, 624),
-        (516, 573, 680), (573, 629, 737), (629, 686, 794), (686, 743, 850),
-        (743, 799, 907), (799, 856, 964), (856, 913, 1021), (913, 969, 1077),
-        (969, 1026, 1134), (1026, 1083, 1191), (1083, 1140, 1247), (1140, 1196, 1304),
-        (1196, 1253, 1361), (1253, 1310, 1417), (1310, 1366, 1474), (1366, 1423, 1531),
-        (1423, 1480, 1588), (1480, 1536, 1644), (1536, 1593, 1701), (1593, 1650, 1758),
-        (1650, 1735, 1814), (1735, 1848, 1928), (1848, 1962, 2041), (1962, 2075, 2155),
-        (2075, 2189, 2268), (2189, 2302, 2381), (2302, 2416, 2495), (2416, 2643, 2722),
-        (2643, 2869, 2948), (2869, 3096, 3175), (3096, 3323, 3402), (3323, 3777, 3856),
-        (3777, None, 4082),
-    ]
-    for lo, hi, cls in steps:
+    for lo, hi, cls in INERTIA_CLASS_STEPS:
         if lo is None and mass_kg <= hi:
             return float(cls)
         if hi is None and mass_kg > lo:
@@ -313,6 +334,78 @@ def inertia_class_from_mass(mass_kg: float) -> float | None:
         if lo is not None and hi is not None and (mass_kg > lo) and (mass_kg <= hi):
             return float(cls)
     return None
+
+
+def inertia_step_for_mass(mass_kg: float | None) -> dict | None:
+    mass = _to_float(mass_kg)
+    if mass is None:
+        return None
+    for lower_bound_exclusive, upper_bound_inclusive, inertia_class_kg in INERTIA_CLASS_STEPS:
+        if lower_bound_exclusive is None and upper_bound_inclusive is not None and mass <= upper_bound_inclusive:
+            return {
+                "lower_bound_exclusive": None,
+                "upper_bound_inclusive": float(upper_bound_inclusive),
+                "inertia_class_kg": float(inertia_class_kg),
+            }
+        if upper_bound_inclusive is None and lower_bound_exclusive is not None and mass > lower_bound_exclusive:
+            return {
+                "lower_bound_exclusive": float(lower_bound_exclusive),
+                "upper_bound_inclusive": None,
+                "inertia_class_kg": float(inertia_class_kg),
+            }
+        if (
+            lower_bound_exclusive is not None
+            and upper_bound_inclusive is not None
+            and mass > lower_bound_exclusive
+            and mass <= upper_bound_inclusive
+        ):
+            return {
+                "lower_bound_exclusive": float(lower_bound_exclusive),
+                "upper_bound_inclusive": float(upper_bound_inclusive),
+                "inertia_class_kg": float(inertia_class_kg),
+            }
+    return None
+
+
+def inertia_step_for_class(inertia_class_kg: float | None) -> dict | None:
+    inertia = _to_float(inertia_class_kg)
+    if inertia is None:
+        return None
+    for lower_bound_exclusive, upper_bound_inclusive, inertia_class_value in INERTIA_CLASS_STEPS:
+        if float(inertia_class_value) != float(inertia):
+            continue
+        return {
+            "lower_bound_exclusive": None if lower_bound_exclusive is None else float(lower_bound_exclusive),
+            "upper_bound_inclusive": None if upper_bound_inclusive is None else float(upper_bound_inclusive),
+            "inertia_class_kg": float(inertia_class_value),
+        }
+    return None
+
+
+def representative_mass_for_inertia_class(inertia_class_kg: float | None) -> float | None:
+    step = inertia_step_for_class(inertia_class_kg)
+    if not step:
+        return None
+    if step.get("upper_bound_inclusive") is not None:
+        return float(step["upper_bound_inclusive"])
+    return _to_float(inertia_class_kg)
+
+
+def format_inertia_step_interval(step: dict | None) -> str | None:
+    data = dict(step or {})
+    upper = data.get("upper_bound_inclusive")
+    lower = data.get("lower_bound_exclusive")
+    if upper is None and lower is None:
+        return None
+    lower_text = _fmt_optional_interval_number(lower)
+    upper_text = _fmt_optional_interval_number(upper)
+    return f"({lower_text}, {upper_text}] kg"
+
+
+def _fmt_optional_interval_number(value: float | None) -> str:
+    if value is None:
+        return "-inf"
+    return f"{float(value):.1f}".rstrip("0").rstrip(".")
 
 
 def autoresolve_test_mass(row_like: dict) -> dict:
@@ -371,7 +464,11 @@ __all__ = [
     "derive_laden_mass_kg",
     "get_wltp_light_duty_scope_warning",
     "inertia_class_from_mass",
+    "inertia_step_for_class",
+    "inertia_step_for_mass",
+    "format_inertia_step_interval",
     "normalize_wltp_category",
+    "representative_mass_for_inertia_class",
     "resolve_test_mass_kg",
     "to_float_or_none",
 ]

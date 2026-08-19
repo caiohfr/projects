@@ -8,6 +8,7 @@ from src.vde_core.vde_setup_service import (
     build_delta_mode_ctx_updates,
     build_compute_vde_from_ctx,
     build_edit_core_update,
+    resolve_test_mass_state,
     resolve_tire_calculation_mass,
     build_vde_phase_update,
     build_vde_insert_row,
@@ -49,6 +50,20 @@ class VdeSetupServiceTests(unittest.TestCase):
             1705.0,
         )
 
+    def test_resolve_test_mass_state_filters_wltp_warning_for_epa_preview(self):
+        result = resolve_test_mass_state(
+            {
+                "legislation": "EPA",
+                "mass_kg": 1600.0,
+                "payload_kg": 200.0,
+                "options_kg": 10.0,
+                "wltp_category": "UNKNOWN",
+            }
+        )
+
+        self.assertEqual(result["warnings"], [])
+        self.assertEqual(result["light_duty_scope_warning"], "Unknown WLTP category.")
+
     def test_resolve_test_mass_kg_rejects_manual_value_below_curb_weight(self):
         with self.assertRaisesRegex(ValueError, "Test mass cannot be lower than curb weight"):
             resolve_test_mass_kg({"legislation": "EPA", "mass_kg": 1550.0, "test_mass_kg": 1500.0})
@@ -59,7 +74,7 @@ class VdeSetupServiceTests(unittest.TestCase):
             "default Curb +300 pounds / 136 kg",
         )
 
-    def test_resolve_tire_calculation_mass_for_epa_twc_uses_current_curb_weight(self):
+    def test_resolve_tire_calculation_mass_for_epa_twc_prefers_explicit_inertia_class(self):
         resolved = resolve_tire_calculation_mass(
             {
                 "legislation": "EPA",
@@ -70,8 +85,24 @@ class VdeSetupServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(resolved["basis"], "TWC")
-        self.assertEqual(resolved["mass_kg"], 1701.0)
-        self.assertEqual(resolved["source"], "inertia_class_from_mass")
+        self.assertEqual(resolved["mass_kg"], 1644.0)
+        self.assertEqual(resolved["source"], "inertia_class")
+
+    def test_resolve_tire_calculation_mass_returns_issue_for_invalid_test_mass_state(self):
+        resolved = resolve_tire_calculation_mass(
+            {
+                "legislation": "EPA",
+                "mass_kg": 2516.0,
+                "test_mass_kg": 2100.0,
+                "test_mass_basis": "CUSTOM",
+                "tire_load_mass_basis": "TEST_MASS",
+            }
+        )
+
+        self.assertEqual(resolved["basis"], "TEST_MASS")
+        self.assertIsNone(resolved["mass_kg"])
+        self.assertEqual(resolved["source"], "invalid_test_mass_state")
+        self.assertIn("Test mass cannot be lower than curb weight", resolved["issue"])
 
     def test_build_delta_mode_ctx_updates_prefers_baseline_values(self):
         base = {

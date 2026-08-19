@@ -155,6 +155,28 @@ class TestMassTests(unittest.TestCase):
         self.assertEqual(basis, "CURB_PLUS_DRIVER")
         self.assertFalse(warnings)
 
+    def test_resolve_gvwr(self):
+        resolved, basis, warnings = resolve_test_mass_kg(
+            basis="GVWR",
+            mass_kg=2666,
+            gvwr_kg=3100,
+        )
+
+        self.assertAlmostEqual(resolved, 3100.0)
+        self.assertEqual(basis, "GVWR")
+        self.assertFalse(warnings)
+
+    def test_resolve_gcwr_trailer_warns_when_trailer_mass_missing(self):
+        resolved, basis, warnings = resolve_test_mass_kg(
+            basis="GCWR_TRAILER",
+            mass_kg=2666,
+            gcwr_kg=5200,
+        )
+
+        self.assertAlmostEqual(resolved, 5200.0)
+        self.assertEqual(basis, "GCWR_TRAILER")
+        self.assertIn("trailer_mass_kg is unavailable", warnings[0])
+
     def test_db_migration_is_idempotent_and_adds_new_columns(self):
         original_db_path = db_module.DB_PATH
         temp_db_path = None
@@ -179,6 +201,16 @@ class TestMassTests(unittest.TestCase):
             self.assertIn("test_mass_low_kg", cols)
             self.assertIn("test_mass_high_kg", cols)
             self.assertIn("test_mass_basis", cols)
+            self.assertIn("gvwr_kg", cols)
+            self.assertIn("gcwr_kg", cols)
+            self.assertIn("trailer_mass_kg", cols)
+            self.assertIn("trailer_code", cols)
+            self.assertIn("trailer_roadload_source", cols)
+            self.assertIn("trailer_A_coef_N", cols)
+            self.assertIn("trailer_B_coef_Npkph", cols)
+            self.assertIn("trailer_C_coef_Npkph2", cols)
+            self.assertIn("mass_rule_status", cols)
+            self.assertIn("mass_rule_notes", cols)
         finally:
             db_module.DB_PATH = original_db_path
             if temp_db_path and temp_db_path.exists():

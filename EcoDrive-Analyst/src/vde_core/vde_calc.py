@@ -27,14 +27,17 @@ def compute_vde_net(
     t = df["t"].to_numpy(float)
     v = df["v"].to_numpy(float)
 
-    mask = np.isfinite(t) & np.isfinite(v)
-    t, v = t[mask], v[mask]
+    if not (np.isfinite(t).all() and np.isfinite(v).all()):
+        raise ValueError("cycle contains non-finite time or speed values")
+
     if t.size < 2:
         raise ValueError("cycle has too few points")
 
-    if np.any(np.diff(t) <= 0):
-        order = np.argsort(t)
-        t, v = t[order], v[order]
+    dt = np.diff(t)
+    if np.any(dt == 0):
+        raise ValueError("cycle contains duplicate timestamps")
+    if np.any(dt < 0):
+        raise ValueError("cycle time must be strictly increasing")
 
     v_kph = v * 3.6
     F_road = A_N + B_N_per_kph * v_kph + C_N_per_kph2 * (v_kph**2)
@@ -45,6 +48,8 @@ def compute_vde_net(
 
     E_J = np.trapezoid(P_pos, t)
     s_m = np.trapezoid(v, t)
+    if s_m <= 0:
+        raise ValueError("cycle distance must be positive")
 
     km = s_m / 1000.0
     MJ_total = E_J / 1e6

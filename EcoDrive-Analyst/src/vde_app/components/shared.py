@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
 import difflib
+import html
+import mimetypes
 import re
 import unicodedata
 from pathlib import Path
@@ -165,3 +168,40 @@ def get_legislation_icon(ctx: dict, base_dir: str = "data/icons") -> str | None:
 
     path = Path(base_dir) / fname
     return str(path) if path.exists() else None
+
+
+@st.cache_data(show_spinner=False)
+def _inline_image_data_uri(path: str) -> str | None:
+    image_path = Path(path)
+    if not image_path.exists() or not image_path.is_file():
+        return None
+    mime_type, _ = mimetypes.guess_type(image_path.name)
+    if not mime_type:
+        mime_type = "application/octet-stream"
+    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def render_inline_image(path: str | Path | None, *, width: int | None = None, caption: str | None = None) -> bool:
+    image_path = Path(path) if path else None
+    if not image_path or not image_path.exists():
+        return False
+    data_uri = _inline_image_data_uri(str(image_path))
+    if not data_uri:
+        return False
+    width_style = f"width:{int(width)}px;max-width:100%;height:auto;" if width else "max-width:100%;height:auto;"
+    caption_html = (
+        f'<div style="margin-top:0.35rem;font-size:0.8rem;color:#667085;">{html.escape(str(caption))}</div>'
+        if caption
+        else ""
+    )
+    st.markdown(
+        (
+            '<div style="display:flex;flex-direction:column;align-items:center;gap:0;">'
+            f'<img src="{data_uri}" style="{width_style}" />'
+            f"{caption_html}"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    return True

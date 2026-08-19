@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from src.vde_core.db import delete_row, fetchall, fetchone, insert_vde, update_vde
+from pathlib import Path
+
+from src.vde_core.db import current_db_path, delete_row, fetchall, fetchone, insert_vde, update_vde
 
 
 def fetch_vde_by_id(vde_id: int) -> dict:
@@ -22,6 +24,20 @@ def fetch_vde_by_ids(vde_ids) -> list[dict]:
 
 def fetch_vde_all_rows() -> list[dict]:
     return fetchall("SELECT * FROM vde_db ORDER BY COALESCE(updated_at, created_at) DESC;")
+
+
+def fetch_vde_browser_runtime_snapshot() -> dict:
+    row = fetchone("SELECT COUNT(*) AS n FROM vde_db;") or {}
+    sample_rows = fetchall("SELECT id FROM vde_db ORDER BY id LIMIT 10;")
+    try:
+        row_count = int(row.get("n", 0) or 0)
+    except Exception:
+        row_count = 0
+    return {
+        "path": str(Path(current_db_path()).resolve()),
+        "row_count": row_count,
+        "sample_ids": [int(item.get("id")) for item in sample_rows if item.get("id") is not None],
+    }
 
 
 def fetch_vde_edit_rows(limit: int = 100) -> list[dict]:

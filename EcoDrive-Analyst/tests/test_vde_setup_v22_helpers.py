@@ -31,8 +31,8 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT_PATH = ROOT / "src" / "vde_app" / "components" / "vde_request_compact.py"
 STYLE_PATH = ROOT / "src" / "vde_app" / "components" / "vde_request_compact_style.py"
 VIEWMODEL_PATH = ROOT / "src" / "vde_app" / "components" / "vde_request_compact_viewmodels.py"
-PAGE_PATH = ROOT / "pages" / "VDE_Setup_v2_2.py"
-V21_PAGE_PATH = ROOT / "pages" / "VDE_Setup_v2_1.py"
+PAGE_PATH = ROOT / "pages" / "VDE_Setup.py"
+V21_PAGE_PATH = ROOT / "docs" / "archive" / "pages" / "VDE_Setup_v2_1_legacy.py"
 
 
 def _baseline_row() -> dict:
@@ -366,10 +366,9 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
 
     def test_v22_page_static_guard_only_uses_v22_session_root(self):
         text = PAGE_PATH.read_text(encoding="utf-8")
-        self.assertIn("VDE Request Builder", text)
-        self.assertIn("Compact baseline, request and scenario workflow.", text)
-        self.assertIn("VDE Setup v2.2", text)
-        self.assertIn("Experimental compact request flow", text)
+        self.assertIn('page_title="EcoDrive - VDE Setup"', text)
+        self.assertIn('st.header("VDE Setup")', text)
+        self.assertIn("Baseline, request, scenario, and engineering review workflow.", text)
         self.assertNotIn("vde_setup_workbook_v21", text)
         self.assertNotIn("render_vde_setup_workbook_v21", text)
 
@@ -449,7 +448,7 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
 
         self.assertFalse(app.exception)
         sidebar_labels = [item.label for item in app.sidebar.button if getattr(item, "label", None)]
-        self.assertIn("Reset v2.2 request", sidebar_labels)
+        self.assertIn("Reset VDE Setup request", sidebar_labels)
         self.assertTrue(any("Baseline & Corrections" in label for label in sidebar_labels))
         self.assertTrue(any("Request Inputs" in label for label in sidebar_labels))
         markdown_values = [item.value for item in app.markdown]

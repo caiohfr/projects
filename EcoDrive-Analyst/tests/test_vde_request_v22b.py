@@ -1140,6 +1140,66 @@ class VdeRequestV22BTests(unittest.TestCase):
         _, applied_contexts = vde_request_compact._domain_contexts("tire", applied, applied["baseline"]["effective"])
         self.assertNotEqual(applied_contexts["requested_1"]["resolved_display"]["rrc_N_per_kN"], context["resolved_display"]["rrc_N_per_kN"])
 
+    def test_homologative_mass_rows_expose_tire_basis_selector_only_for_twc_proposals(self):
+        twc_rows = vde_request_compact._mass_simple_sheet_rows(
+            [{"proposal_type": "MASS_TWC_SHIFT"}]
+        )
+        curb_to_twc_rows = vde_request_compact._mass_simple_sheet_rows(
+            [{"proposal_type": "EPA_CURB_TO_TWC"}]
+        )
+        gvwr_rows = vde_request_compact._mass_simple_sheet_rows(
+            [{"proposal_type": "GVWR"}]
+        )
+        gcwr_rows = vde_request_compact._mass_simple_sheet_rows(
+            [{"proposal_type": "GCWR"}]
+        )
+
+        self.assertIn("tire_load_mass_basis", twc_rows)
+        self.assertIn("tire_load_mass_basis", curb_to_twc_rows)
+        self.assertNotIn("tire_load_mass_basis", gvwr_rows)
+        self.assertNotIn("tire_load_mass_basis", gcwr_rows)
+
+    def test_tire_display_uses_same_proposal_homologative_mass_basis(self):
+        state = apply_v22_baseline(create_v22_state(), _baseline_row())
+        state = apply_v22_proposal_matrix(
+            state,
+            [{"proposal_id": "requested_1", "walk_from": "baseline", "mass": "Curb mass -> EPA TWC"}],
+        )
+
+        applied_test_mass = apply_v22_domain_inputs(
+            state,
+            "mass",
+            {"requested_1": {"mass_kg": 1500.0, "tire_load_mass_basis": "TEST_MASS"}},
+        )
+        _, test_mass_contexts = vde_request_compact._domain_contexts(
+            "mass", applied_test_mass, applied_test_mass["baseline"]["effective"]
+        )
+        _, tire_test_mass_contexts = vde_request_compact._domain_contexts(
+            "tire", applied_test_mass, applied_test_mass["baseline"]["effective"]
+        )
+
+        self.assertEqual(test_mass_contexts["requested_1"]["resolved_display"]["tire_load_mass_basis"], "TEST_MASS")
+        self.assertEqual(tire_test_mass_contexts["requested_1"]["resolved_display"]["tire_load_mass_basis"], "TEST_MASS")
+        self.assertEqual(
+            tire_test_mass_contexts["requested_1"]["resolved_display"]["tire_load_mass_used_kg"],
+            test_mass_contexts["requested_1"]["resolved_display"]["tire_load_mass_used_kg"],
+        )
+
+        applied_twc = apply_v22_domain_inputs(
+            applied_test_mass,
+            "mass",
+            {"requested_1": {"mass_kg": 1500.0, "tire_load_mass_basis": "TWC"}},
+        )
+        _, tire_twc_contexts = vde_request_compact._domain_contexts(
+            "tire", applied_twc, applied_twc["baseline"]["effective"]
+        )
+
+        self.assertEqual(tire_twc_contexts["requested_1"]["resolved_display"]["tire_load_mass_basis"], "TWC")
+        self.assertNotEqual(
+            tire_twc_contexts["requested_1"]["resolved_display"]["tire_load_mass_used_kg"],
+            tire_test_mass_contexts["requested_1"]["resolved_display"]["tire_load_mass_used_kg"],
+        )
+
     def test_tire_front_fraction_defaulted_is_ready_not_incomplete(self):
         status = proposal_application_status(
             "tire",

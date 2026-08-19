@@ -2306,6 +2306,8 @@ def _mass_simple_sheet_rows(proposal_specs: list[dict]) -> list[str]:
         rows.append("test_mass_kg")
     if active_types & {"EPA_CURB_TO_TWC", "MASS_TWC_SHIFT", "CUSTOM_MASS"}:
         rows.append("test_mass_basis")
+    if active_types & {"EPA_CURB_TO_TWC", "MASS_TWC_SHIFT"}:
+        rows.append("tire_load_mass_basis")
     if "MASS_TWC_SHIFT" in active_types:
         rows.extend(["shift_steps", "target_mass_kg", "curb_position"])
     if "PERFORMANCE_CURB_MASS" in active_types:
@@ -4097,6 +4099,9 @@ def _lookup_result_label(rows: list[dict], lookup_id: str) -> str:
 
 def _domain_contexts(domain: str, state: dict, baseline: dict) -> tuple[dict, dict[str, dict]]:
     baseline_display = _baseline_domain_display(domain, baseline)
+    mass_contexts = {}
+    if domain == "tire":
+        _, mass_contexts = _domain_contexts("mass", state, baseline)
     resolved_by_id = {}
     contexts = {}
     for proposal in list(state.get("proposals") or []):
@@ -4115,6 +4120,11 @@ def _domain_contexts(domain: str, state: dict, baseline: dict) -> tuple[dict, di
                 "inputs": {domain: inputs},
             },
         )
+        if domain == "tire":
+            mass_display = dict(dict(mass_contexts.get(proposal_id) or {}).get("resolved_display") or {})
+            for field_key in ("tire_load_mass_used_kg", "tire_load_mass_basis"):
+                if mass_display.get(field_key) is not None:
+                    resolved_display[field_key] = mass_display[field_key]
         resolved_by_id[proposal_id] = deepcopy(resolved_display)
         contexts[proposal_id] = {
             "proposal_type": proposal_type,

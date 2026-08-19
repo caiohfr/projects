@@ -5,6 +5,7 @@ import sys
 
 import streamlit as st
 import pages.home_page as home
+from src.vde_core.db import configure_db_path
 
 APP_NAME, APP_ICON, APP_VER = "EcoDrive Analyzer", "⚡", "0.7.2"
 DB_DEFAULT = "data/db/eco_drive.db"
@@ -49,7 +50,7 @@ def _sidebar(ctx):
     st.sidebar.subheader("Navigation")
 
     st.page_link("app.py", label="Home", icon="🏠")
-    st.page_link("pages/VDE_Setup.py", label="Vehicle Setup", icon="📥")
+    st.page_link("pages/VDE_Setup.py", label="VDE Setup", icon="📥")
     st.page_link("pages/Powertrain_Scenario.py", label="Powertrain Scenario", icon="⚙️")
     st.page_link("pages/Comparison_Report.py", label="Powertrain Comparison", icon="📊")
 
@@ -63,6 +64,7 @@ def _sidebar(ctx):
 def main():
     ctx = _bootstrap_ctx()
     _sidebar(ctx)
+    ctx["db_path"] = str(configure_db_path(ctx.get("db_path") or DB_DEFAULT))
 
     st.title(f"{APP_ICON} EcoDrive Analyzer")
     st.caption("Transparent, physics-based, and reproducible benchmarking")
@@ -72,7 +74,7 @@ def main():
     st.markdown(
         """
 > **Start here:**  
-> 1) **📥 Vehicle Setup** - load cycle and parameters.  
+> 1) **📥 VDE Setup** - resolve a baseline, requested scenarios, and roadload demand.
 > 2) **⚙️ Powertrain Scenario** - estimate fuel / energy / CO2 from resolved VDE.  
 > 3) **📊 Powertrain Comparison** - compare saved scenarios, methods, and peer outlook.
         """

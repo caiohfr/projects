@@ -1,6 +1,8 @@
 # QA Mock Data
 
-This package creates deterministic QA seed data for VDE Setup v2.2 without touching production calculations.
+This package creates deterministic QA seed data for VDE Setup without touching
+production calculations. VDE Setup v2.2 remains the historical implementation
+checkpoint for this workflow.
 
 All values are synthetic engineering QA fixtures and must not be treated as production or manufacturer data.
 
@@ -40,7 +42,7 @@ PowerShell example:
 
 ```powershell
 $env:ECO_DRIVE_DB_PATH = "data/qa/eco_drive_qa.db"
-streamlit run pages/VDE_Setup_v2_2.py
+streamlit run pages/VDE_Setup.py
 ```
 
 The same environment variable also works for other pages that use `src.vde_core.db`.

@@ -1,218 +1,82 @@
 # VDE Setup Guide
 
-## What VDE Setup Is
+## Purpose
 
-`VDE Setup` is the physical workflow used to build, review, preview, and persist a roadload scenario.
+VDE Setup creates traceable vehicle-demand scenarios from a canonical baseline.
+It is the current stable engineering product in EcoDrive. It resolves the
+scenario before presentation, comparison, and persistence; those later views do
+not maintain separate physics calculations.
 
-It is not only a coefficient editor. It is the place where the project resolves:
+## Workflow
 
-- scenario origin
-- vehicle parameters
-- roadload basis
-- component effects
-- transmission bridge
-- cycle preview
-- staged save payload
+1. **Baseline & Corrections**: select a canonical baseline and apply optional
+   corrections to establish the effective baseline.
+2. **Proposal Matrix**: define requested scenarios, their domain changes, and
+   Walk From source.
+3. **Request Inputs**: select data sources and apply Mass, Tire, Aero,
+   Transmission, Brake, Axle & Hubs, and Parasitics inputs.
+4. **Preview & Save**: validate the resolved scenarios, compare roadload and
+   cycle outputs, inspect audits, prepare the DB payload, save, and reload.
 
-## Current Workflow
+## Effective Baseline And Walk From
 
-The page is organized as:
+The page distinguishes three layers:
 
-1. `Scenario Setup`
-2. `Vehicle Parameters`
-3. `Roadload Build-up`
-4. `Cycle & Preview`
-5. `Results`
-6. `Save / Edit`
+- **Printed**: the source values as stored in the selected baseline.
+- **Correction**: an explicit baseline adjustment.
+- **Effective**: the baseline state consumed by proposals.
 
-## Scenario Setup
+Every requested proposal resolves from its declared Walk From snapshot. A
+proposal walking from Requested #1 inherits the effective technical data and
+metadata resolved by Requested #1, including applied overrides.
 
-This section defines:
+## Mass
 
-- vehicle metadata
-- scenario origin
-- baseline selection when applicable
-- inherited snapshot context
+Mass owns both the VDE mass and the tire calculation mass contract.
 
-The key question here is:
+- EPA/TWC resolves a regulatory inertia class.
+- GVWR uses curb plus payload as loaded vehicle mass.
+- GCWR separates total combination mass from the vehicle load carried by tires.
+- Trailer ABC belongs to roadload once; it is not folded into tire mass.
 
-> Where did this scenario come from?
+The mass audit exposes VDE mass, tire calculation mass, their bases, status, and
+notes for each requested proposal.
 
-Typical origins:
+## Tire
 
-- from baseline
-- new manual / test scenario
+Tire inputs support inherited values, Tire DB lookup, direct target final RRC,
+improvement, and Not Used where valid. Tire DB test load describes the tire
+test condition; it is not the vehicle mass used for tire ABC calculation.
 
-This is different from the physical source of `ABC_TOTAL`.
+The tire resolver uses the canonical mass state published by Mass. Full SAE
+lookup therefore changes the tire contribution relative to a compatible source
+tire contribution, never by treating a missing source contribution as zero.
 
-## Vehicle Parameters
+## Transmission And Roadload
 
-This section resolves vehicle-level physical context, including:
+`ABC_TOTAL` represents total vehicle roadload and `ABC_NET` is the resolved
+total less the transmission contribution. Transmission can either retain
+measured TOTAL and recompute NET, or apply an explicitly selected vehicle
+change to TOTAL.
 
-- curb mass
-- test mass
-- inertia / TWC context
-- front weight distribution
-- resolved calculation mass
-- aerodynamic reference / change handling
+For transmission coastdown share, the requested share is applied to Walk From
+`ABC_TOTAL` coefficient-by-coefficient. TOTAL remains fixed and NET is
+recalculated from the estimated transmission contribution.
 
-Mass setup is shared across other calculations so tires, preview, and transmission can reuse a consistent vehicle state.
+## Preview, Save, And Reload
 
-## Roadload Build-up
+Preview exposes validation, engineering comparison, roadload curves, cycle
+power analysis, and technical audit. A scenario is saveable only when its
+selected proposal is ready. Save is append-only and records the resolved
+snapshot, lineage, metadata, provenance, and audit context needed for
+historical reload.
 
-This is the technical workspace of the page.
+## QA And Deferred Work
 
-### Roadload Basis
+Use the synthetic QA database under `data/qa/` for deterministic validation;
+do not regenerate the local production database as part of QA. The full stable
+contract is documented in [VDE Setup v2.2 Final Stable Contract](VDE_SETUP_V22_FINAL_CHECKPOINT.md).
 
-The first decision is the physical basis for `ABC_TOTAL`.
-
-Typical basis choices:
-
-- inherit baseline `ABC_TOTAL`
-- use measured / test coastdown `ABC_TOTAL`
-- build / synthesize `ABC_TOTAL` from components
-
-This choice changes how downstream component inputs should be interpreted.
-
-### Components
-
-The component workspace handles the main technical contributors:
-
-- Tires
-- Aerodynamics
-- Brakes
-- Parasitics / hubs / axle
-- Trailer placeholder
-- Transmission, handled separately but still part of the roadload bridge
-
-### Current / Change / Applied
-
-The component pattern should be read as:
-
-- `Current`
-  - the inherited or current reference state
-- `Change`
-  - the explicit engineering change, candidate, delta, or replacement being staged
-- `Applied`
-  - the resolved effect actually going into the scenario
-
-This is important because not every candidate entry should immediately be interpreted as a physical applied value.
-
-## Tires
-
-The tire workflow is broader than a simple delta field.
-
-The current page supports the following ideas:
-
-- `Current Tire`
-- tire change
-- manual RR delta
-- `Tire Improvement %`
-- current vs walked tire comparison
-- quick add tire
-- Tire DB integration
-- engineering-oriented entry paths such as `Custom`, `ISO`, and `SAE` where applicable
-
-The tire area may combine:
-
-- DB-backed reference selection
-- scenario-only manual reference
-- direct delta behavior
-- target / walked comparison behavior
-
-The point is to preserve traceability between:
-
-- what the reference tire is
-- what the changed tire is
-- what effect is actually applied to the scenario
-
-## VDE_TOTAL vs VDE_NET
-
-This distinction is central.
-
-### VDE_TOTAL
-
-`VDE_TOTAL` is derived from `ABC_TOTAL`.
-
-It represents the full resolved demand on the roadload basis.
-
-### VDE_NET
-
-`VDE_NET` exists only when transmission losses / neutral drag are resolved.
-
-It is based on:
-
-```text
-ABC_NET = ABC_TOTAL - ABC_TRANS
-```
-
-So the logic is:
-
-- transmission does not invalidate `VDE_TOTAL`
-- missing transmission only prevents a valid `VDE_NET`
-
-## Transmission As TOTAL -> NET Bridge
-
-Transmission is intentionally separate from the ordinary component sections because it plays a special role:
-
-- it does not just modify `ABC_TOTAL`
-- it creates the bridge from `TOTAL -> NET`
-
-This is why the workflow treats it as component-like, but still distinct.
-
-## Cycle & Preview
-
-This section is for immediate technical feedback.
-
-It is used to:
-
-- preview cycle-resolved demand behavior
-- inspect phase outputs when available
-- check whether the current scenario state is physically coherent before persistence
-
-Important rule:
-
-- preview does not save
-
-## Results
-
-`Results` should be read as a pre-save review layer, not a dashboard-only surface.
-
-Typical content includes:
-
-- performance summary
-- warnings
-- working scenario summary
-- reference vs working comparison
-- staged save payload
-- technical details in expanders
-
-Important rule:
-
-- `Results` explains the preview and payload already resolved by the workflow
-- it should not create a second independent physical model
-
-## Save / Edit
-
-This is the administrative persistence space of the page.
-
-It contains:
-
-- save as new
-- update existing
-- delete / deactivate behavior where applicable
-- legacy maintenance that still exists for compatibility
-
-The intent is to keep persistence explicit and separated from preview.
-
-## Known Limitations
-
-- some component sections are still hybrid between modern workflow structure and legacy persistence detail
-- component provenance is not yet fully normalized for every future component family
-- final DB smoke validation is still important before treating every path as hardened
-
-## Related Docs
-
-- [Sprint 5 Closure](SPRINT_5_CLOSURE.md)
-- [Powertrain Scenario Guide](POWERTRAIN_SCENARIO_GUIDE.md)
-- [ML / SHAP / Nearest Peers](ML_SHAP_NEAREST_PEERS.md)
+Temperature and ambient-pressure condition scenarios are deferred to
+Comparison Report. They should be temporary derived scenarios by default rather
+than permanent VDE Setup database rows.

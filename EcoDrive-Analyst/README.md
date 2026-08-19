@@ -8,7 +8,9 @@ The current product is organized around three main blocks:
 2. `Powertrain Scenario`
 3. `Comparison Report`
 
-This repository is now in a stronger Sprint 6 closure state: `VDE Setup` behaves as a spreadsheet-first technical roadload workflow, `Powertrain Scenario` behaves as a guided estimation block, and `Comparison Report` remains separated as an early benchmark/report space instead of being mixed into the estimator flow.
+`VDE Setup` is the stable, feature-frozen engineering workflow. `Comparison
+Report` and database management are the next development focus; `Powertrain
+Scenario` remains a future workstream.
 
 ## Current Product Blocks
 
@@ -16,14 +18,13 @@ This repository is now in a stronger Sprint 6 closure state: `VDE Setup` behaves
 
 `VDE Setup` is the physical and traceable workflow for:
 
-- scenario setup and metadata
-- vehicle parameters and mass setup
-- roadload basis selection
-- component build-up
-- transmission losses / TOTAL -> NET bridge
-- cycle preview
-- results as pre-save review
-- save / edit
+- canonical baseline and effective-baseline corrections
+- scenario proposals and Walk From lineage
+- Mass, Tire, Aero, Transmission, Brake, Axle & Hubs, and Parasitics
+- roadload TOTAL / NET and cycle analysis
+- metadata, provenance, engineering comparison, and audit
+- append-only Save and historical Reload
+- deterministic synthetic QA data
 
 Core idea:
 
@@ -77,6 +78,17 @@ Practical reading:
 
 It is intentionally still an MVP surface. It should be read as the first step toward a future report / benchmark studio, not as a finished BI layer.
 
+## Stable Product Status
+
+```text
+EcoDrive
+|
+|-- VDE Setup             stable / feature frozen
+|-- Comparison Report     next development focus
+|-- Database Management   next development focus
+`-- Powertrain Scenario   future
+```
+
 ## Documentation Index
 
 Sprint 5 documentation:
@@ -84,6 +96,7 @@ Sprint 5 documentation:
 - [Sprint 5 Closure](docs/SPRINT_5_CLOSURE.md)
 - [Sprint 6 Plan](docs/sprints/SPRINT_6_VALIDATION_SCENARIO_BENCH_RELEASE_2026-06-28.md)
 - [VDE Setup Guide](docs/VDE_SETUP_GUIDE.md)
+- [VDE Setup v2.2 Final Stable Contract](docs/VDE_SETUP_V22_FINAL_CHECKPOINT.md)
 - [Powertrain Scenario Guide](docs/POWERTRAIN_SCENARIO_GUIDE.md)
 - [ML / SHAP / Nearest Peers](docs/ML_SHAP_NEAREST_PEERS.md)
 
@@ -199,6 +212,8 @@ See [ML / SHAP / Nearest Peers](docs/ML_SHAP_NEAREST_PEERS.md) for the detailed 
 - Comparison / benchmark reporting is still in an MVP stage.
 - Hidden component priors are future backlog, not a delivered causal inference capability.
 - current `PSE` is cycle-effective system efficiency, not pure engine efficiency.
+- temperature and ambient-pressure roadload conditions are deferred to derived
+  scenarios in Comparison Report; they are not persisted by VDE Setup.
 
 ## Sprint 5 Status
 

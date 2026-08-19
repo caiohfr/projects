@@ -11,7 +11,7 @@ from src.vde_app.units import UNIT_SYSTEM_OPTIONS, normalize_unit_system
 from src.vde_core.db import configure_db_path, current_db_path, ensure_db
 
 
-st.set_page_config(page_title="EcoDrive - VDE Setup", layout="wide")
+st.set_page_config(page_title="EcoDrive - VDE Setup v2.2", layout="wide")
 
 
 def _sync_runtime_db_path() -> str:
@@ -31,8 +31,8 @@ def main() -> None:
     inject_v22_styles()
     state = ensure_v22_session_state(st.session_state)
     with st.sidebar:
-        st.header("VDE Setup")
-        st.caption("Baseline, request, scenario, and engineering review workflow.")
+        st.header("VDE Setup v2.2")
+        st.caption("Experimental compact request flow")
         ctx = st.session_state.get("ctx")
         current_db = None
         if isinstance(ctx, dict):
@@ -47,7 +47,7 @@ def main() -> None:
         active_db_path = _sync_runtime_db_path()
         ensure_db()
         st.caption(f"Runtime DB: {active_db_path}")
-        if st.button("Reset VDE Setup request", key="reset_vde_setup_v22"):
+        if st.button("Reset v2.2 request", key="reset_vde_setup_v22"):
             st.session_state.pop(V22_SESSION_KEY, None)
             st.rerun()
         st.divider()
@@ -59,8 +59,8 @@ def main() -> None:
             key="unit_system",
         )
 
-    st.title("VDE Setup")
-    st.caption("Baseline, request, scenario, and engineering review workflow.")
+    st.title("VDE Request Builder")
+    st.caption("Compact baseline, request and scenario workflow.")
     render_vde_request_compact()
 
 

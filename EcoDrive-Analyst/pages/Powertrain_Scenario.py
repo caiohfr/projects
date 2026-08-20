@@ -19,19 +19,19 @@ from src.vde_app.components.pwt_fuel_energy import (
 )
 
 
-st.set_page_config(page_title="EcoDrive - Powertrain Scenario", layout="wide")
+st.set_page_config(page_title="EcoDrive - Powertrain Calculation Sheet", layout="wide")
 ensure_db()
 
 
 def main():
     ensure_pwt_sidebar_defaults(st.session_state)
     inject_powertrain_scenario_style()
-    st.title("Powertrain Scenario")
+    st.title("Powertrain Calculation Sheet")
     input_mode = render_powertrain_sidebar_controls()
     st.caption(
-        "Guided workflow: Scenario Pairing -> Baseline Estimate -> Technology Delta -> Result & Save"
+        "Baseline PSE, fuel/CO2 estimate, technology delta and proposal."
         if input_mode == "Guided"
-        else "Spreadsheet Assist: Scenario Pairing and baseline confirmation stay visible in one compact workspace."
+        else "Used by analysts to estimate baseline and proposal fuel/CO2 from active VDE. Program-facing comparison lives in Comparison Report."
     )
 
     vde_id, vde_row = render_active_vde_source_bar()

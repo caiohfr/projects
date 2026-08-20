@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import streamlit as st
 
-from src.vde_core.component_repositories import load_mock_component_repository
+from src.vde_core.component_repositories import component_repository_signature, load_component_repository
 from src.vde_core.db import current_db_path
 from src.vde_core.repositories import fetch_vde_all_rows, fetch_vde_by_id
 from src.vde_core.tire_roadload_service import get_tire_by_code, get_tire_by_id, search_tire_roadload
@@ -23,6 +23,14 @@ LOOKUP_SOURCE_LABELS = {
     "tire": {"component": "Tire Database", "vde": "Existing VDE"},
 }
 TIRE_LOOKUP_BROWSE_LIMIT = 25
+
+
+def _first_present(item: dict, *keys: str):
+    for key in keys:
+        value = item.get(key)
+        if not is_blank(value):
+            return value
+    return None
 
 
 def active_domain_has_lookup_requests(state: dict, domain: str) -> bool:
@@ -53,7 +61,15 @@ def is_vde_lookup_source(domain: str, source_kind: str) -> bool:
 
 
 def component_lookup_rows(domain: str, query: str = "", limit: int | None = None) -> list[dict]:
-    return _component_lookup_rows_cached(domain, query=query, limit=limit, db_path_signature=str(current_db_path()))
+    domain_key = str(domain or "").strip()
+    revision = "" if domain_key == "tire" else component_repository_signature(domain_key)
+    return _component_lookup_rows_cached(
+        domain_key,
+        query=query,
+        limit=limit,
+        db_path_signature=str(current_db_path()),
+        repository_signature=revision,
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -62,8 +78,9 @@ def _component_lookup_rows_cached(
     query: str = "",
     limit: int | None = None,
     db_path_signature: str = "",
+    repository_signature: str = "",
 ) -> list[dict]:
-    del db_path_signature
+    del db_path_signature, repository_signature
     domain_key = str(domain or "").strip()
     if domain_key == "tire":
         needle = str(query or "").strip().lower()
@@ -116,7 +133,7 @@ def _component_lookup_rows_cached(
             return results[: int(limit)]
         return results
 
-    repo = load_mock_component_repository(domain_key)
+    repo = load_component_repository(domain_key)
     rows = repo.search(query)
     results = []
     for row in rows:
@@ -126,9 +143,9 @@ def _component_lookup_rows_cached(
                 "lookup_id": item.get("component_id"),
                 "ID": item.get("component_id"),
                 "Code / Name": item.get("component_name"),
-                "A": item.get("trans_A") or item.get("brake_A") or item.get("axle_hubs_A") or item.get("parasitic_A"),
-                "B": item.get("trans_B") or item.get("brake_B") or item.get("axle_hubs_B") or item.get("parasitic_B"),
-                "C": item.get("trans_C") or item.get("brake_C") or item.get("axle_hubs_C") or item.get("parasitic_C"),
+                "A": _first_present(item, "trans_A", "brake_A", "axle_hubs_A", "parasitic_A"),
+                "B": _first_present(item, "trans_B", "brake_B", "axle_hubs_B", "parasitic_B"),
+                "C": _first_present(item, "trans_C", "brake_C", "axle_hubs_C", "parasitic_C"),
                 "Status": item.get("status"),
                 "Source": item.get("source"),
                 "Component type": item.get("component_type"),

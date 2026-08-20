@@ -5,7 +5,7 @@ import json
 import math
 from typing import Any
 
-from src.vde_core.component_repositories import COMPONENT_PROVENANCE_FIELDS, load_mock_component_repository, lookup_component
+from src.vde_core.component_repositories import COMPONENT_PROVENANCE_FIELDS, load_component_repository, lookup_component
 from src.vde_core.vde_component_modes import canonical_component_mode
 from src.vde_core.cycles import use_standard_cycle
 from src.vde_core.vde_not_used_modes import is_not_used_proposal
@@ -756,9 +756,30 @@ def _resolve_component_delta_or_absolute(
             component = dict(result["component"] or {})
             result_issues = result["issues"]
             new_triplet = {
-                "A": _to_float(component.get("trans_A") or component.get("brake_A") or component.get("axle_hubs_A") or component.get("parasitic_A")),
-                "B": _to_float(component.get("trans_B") or component.get("brake_B") or component.get("axle_hubs_B") or component.get("parasitic_B")),
-                "C": _to_float(component.get("trans_C") or component.get("brake_C") or component.get("axle_hubs_C") or component.get("parasitic_C")),
+                "A": _to_float(
+                    _first_nonblank(
+                        component.get("trans_A"),
+                        component.get("brake_A"),
+                        component.get("axle_hubs_A"),
+                        component.get("parasitic_A"),
+                    )
+                ),
+                "B": _to_float(
+                    _first_nonblank(
+                        component.get("trans_B"),
+                        component.get("brake_B"),
+                        component.get("axle_hubs_B"),
+                        component.get("parasitic_B"),
+                    )
+                ),
+                "C": _to_float(
+                    _first_nonblank(
+                        component.get("trans_C"),
+                        component.get("brake_C"),
+                        component.get("axle_hubs_C"),
+                        component.get("parasitic_C"),
+                    )
+                ),
             }
         current = _current_component_triplet(source_snapshot, domain_key)
         if not _abc_complete(current) and not (domain_key == "transmission" and transmission_mode == TRANSMISSION_APPLICATION_MODE_KEEP_TOTAL_FIXED):
@@ -1217,7 +1238,7 @@ def resolve_vde_request(workbook_state, baseline_context=None, component_reposit
     baseline_snapshot, baseline_payload = _build_baseline_snapshot(workbook, baseline_context)
     repositories = dict(component_repositories or {})
     for domain_key in ("transmission", "brake", "axle_hubs", "parasitic"):
-        repositories.setdefault(domain_key, load_mock_component_repository(domain_key))
+        repositories.setdefault(domain_key, load_component_repository(domain_key))
 
     try:
         baseline_preview = _build_preview_from_snapshot(baseline_snapshot)

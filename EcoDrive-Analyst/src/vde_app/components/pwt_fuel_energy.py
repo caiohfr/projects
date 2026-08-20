@@ -108,7 +108,7 @@ POWERTRAIN_REFERENCE_SOURCE_LABELS = {
     "Same vehicle fuelcons_db line": "Use observed data from same vehicle",
     "Another fuelcons_db line": "Use observed data from another vehicle",
     "Saved powertrain scenario": "Reuse saved powertrain scenario",
-    "Manual definition": "Create new scenario",
+    "Manual definition": "Enter manual baseline",
 }
 
 POWERTRAIN_REFERENCE_SOURCE_HELP = {
@@ -1385,6 +1385,10 @@ def _build_manual_baseline_editor_df() -> pd.DataFrame:
                 "co2_g_km": to_float(st.session_state.get("pwt_manual_gco2_km")),
                 "source": str(st.session_state.get("pwt_manual_source") or "user_input"),
                 "confidence": str(st.session_state.get("pwt_manual_confidence") or "unknown"),
+                "status": "OK" if any(
+                    (to_float(st.session_state.get(key)) or 0.0) > 0.0
+                    for key in ("pwt_manual_fuel_l100", "pwt_manual_energy_whkm", "pwt_manual_gco2_km")
+                ) else "Pending",
                 "notes": str(st.session_state.get("pwt_manual_notes") or ""),
             }
         ]
@@ -1422,7 +1426,9 @@ def _build_delta_editor_df() -> pd.DataFrame:
                 "delta_basis": _compact_delta_basis_label(st.session_state.get("pwt_delta_effect_basis")),
                 "delta_value": to_float(st.session_state.get("pwt_delta_value")),
                 "apply_quantitatively": bool(st.session_state.get("pwt_delta_apply_toggle", True)),
+                "source_method": str(st.session_state.get("pwt_delta_source_type") or "manual"),
                 "confidence": str(st.session_state.get("pwt_delta_confidence") or "unknown"),
+                "status": "Draft" if bool(st.session_state.get("pwt_delta_apply_toggle", True)) else "Registered only",
                 "notes": str(st.session_state.get("pwt_delta_notes") or ""),
             }
         ]
@@ -1512,16 +1518,20 @@ def _render_reference_rebase_explanation(
         {
             "item": "Reference observed",
             "fuel_l_100km": to_float(reference_summary.get("observed_fuel")),
-            "pse": to_float(reference_summary.get("observed_pse")),
+            "energy_Wh_km": to_float(reference_summary.get("observed_energy_Wh_km")),
             "co2_g_km": to_float(reference_summary.get("observed_co2")),
-            "note": "source vehicle",
+            "pse": to_float(reference_summary.get("observed_pse")),
+            "source/method": "fuelcons_db reference",
+            "status": "OK" if to_float(reference_summary.get("observed_pse")) is not None else "Review",
         },
         {
             "item": "Rebased baseline",
             "fuel_l_100km": baseline_fuel,
-            "pse": baseline_pse,
+            "energy_Wh_km": None,
             "co2_g_km": None,
-            "note": f"active {str(ctx.get('energy_basis') or '-')}",
+            "pse": baseline_pse,
+            "source/method": f"active {str(ctx.get('energy_basis') or '-')} + reference PSE",
+            "status": "OK" if baseline_fuel is not None and baseline_pse is not None else "Pending",
         },
     ]
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
@@ -1635,8 +1645,8 @@ def render_powertrain_technical_footer(vde_id: int, vde_row: dict) -> None:
     assumptions = dict((result.assumptions if result else {}) or {})
     proposal_summary = dict(draft.get("proposal_result") or {})
 
-    st.markdown("#### Technical details")
-    with st.expander("Vehicle demand details", expanded=show_technical):
+    st.markdown("#### Technical Audit")
+    with st.expander("Demand audit", expanded=show_technical):
         revision_text = resolve_vde_source_revision(vde_row) or "-"
         d1, d2, d3, d4 = st.columns(4)
         d1.metric("VDE_TOTAL", _format_metric_value(energy_values.get("vde_total_mj_per_km"), format_str="%.4f", suffix=" MJ/km"))
@@ -1649,13 +1659,16 @@ def render_powertrain_technical_footer(vde_id: int, vde_row: dict) -> None:
         d7.metric("ABC C", _format_metric_value(vde_row.get("coast_C_N_per_kph2"), format_str="%.5f"))
         st.caption("Source state: " + ("NET available" if energy_values.get("vde_net_mj_per_km") is not None else "TOTAL only"))
 
-    with st.expander("Powertrain metadata", expanded=False):
+    with st.expander("Baseline source audit", expanded=False):
+        st.write(reference_summary)
+
+    with st.expander("Metadata audit", expanded=False):
         _render_powertrain_metadata_review(vde_id, vde_row, ctx, readiness, expanded=False, editable=False)
 
     with st.expander("Feature readiness", expanded=False):
         st.dataframe(pd.DataFrame(readiness.get("rows") or []), use_container_width=True, hide_index=True)
 
-    with st.expander("Model diagnostics", expanded=show_technical):
+    with st.expander("ML diagnostics / regression / peers / SHAP", expanded=show_technical):
         m1, m2, m3 = st.columns(3)
         ml_state = _ml_method_option_state(vde_id, vde_row, ctx, regression_vde)
         reg_state = _regression_method_option_state(vde_id, vde_row, ctx, regression_vde)
@@ -1690,7 +1703,7 @@ def render_powertrain_technical_footer(vde_id: int, vde_row: dict) -> None:
             }
         )
 
-    with st.expander("Scenario provenance", expanded=False):
+    with st.expander("Scenario/save provenance", expanded=False):
         st.write(
             {
                 "powertrain_reference": draft.get("powertrain_reference"),
@@ -2476,11 +2489,41 @@ def inject_powertrain_scenario_style() -> None:
         .pwt-summary-status.is-ok { color: #166534; }
         .pwt-summary-status.is-pending { color: #b45309; }
         .pwt-summary-status.is-warn { color: #b42318; }
+        .pwt-summary-status.is-neutral { color: #475467; }
         .pwt-summary-detail {
             margin-top: 0.28rem;
             font-size: 0.76rem;
             color: #667085;
             line-height: 1.3;
+        }
+        .pwt-context-strip {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+            gap: 0.5rem;
+            margin: 0.35rem 0 0.75rem 0;
+        }
+        .pwt-context-item {
+            border: 1px solid #d0d7de;
+            border-radius: 8px;
+            padding: 0.45rem 0.6rem;
+            background: #fbfdff;
+            min-height: 4.2rem;
+        }
+        .pwt-context-label {
+            color: #667085;
+            font-size: 0.72rem;
+            font-weight: 600;
+            margin-bottom: 0.15rem;
+        }
+        .pwt-context-value {
+            color: #101828;
+            font-size: 0.9rem;
+            font-weight: 600;
+            overflow-wrap: anywhere;
+        }
+        .pwt-summary-chip.is-neutral {
+            border-color: #d0d7de;
+            background: #f8fafc;
         }
         </style>
         """,
@@ -2746,15 +2789,34 @@ def _render_scenario_bench_visual(vde_row: dict, snapshot: dict[str, Any], statu
 
 def _summary_card_status_class(status: str) -> str:
     normalized = str(status or "").strip().lower()
-    if normalized in {"ok", "available", "current", "pre-check ok", "guidance available", "recommended", "ready", "optional"}:
+    if normalized in {"ok", "available", "current", "pre-check ok", "guidance available", "recommended", "ready", "optional", "confirmed", "derived"}:
         return "is-ok"
-    if normalized in {"missing", "warn", "warning", "low confidence", "artifact issue"}:
+    if normalized in {"missing", "warn", "warning", "low confidence", "artifact issue", "not ready"}:
         return "is-warn"
+    if normalized in {"locked", "not used", "registered only"}:
+        return "is-neutral"
     return "is-pending"
 
 
+def _status_text_for_display(status: str) -> str:
+    normalized = str(status or "pending").strip().lower()
+    mapping = {
+        "ok": "OK",
+        "ready": "Ready",
+        "confirmed": "Confirmed",
+        "derived": "Derived",
+        "missing": "Missing",
+        "pending": "Pending",
+        "locked": "Locked",
+        "draft": "Draft",
+        "registered only": "Registered only",
+        "not ready": "Not ready",
+    }
+    return mapping.get(normalized, str(status or "Pending"))
+
+
 def _summary_card_markup(*, title: str, value: str, status: str, detail: str) -> str:
-    status_text = html.escape(str(status or "Pending"))
+    status_text = html.escape(_status_text_for_display(status))
     status_class = _summary_card_status_class(status)
     return (
         f"<div class='pwt-summary-chip {status_class}'>"
@@ -2942,6 +3004,7 @@ def render_powertrain_scenario_bench(vde_id: int, vde_row: dict) -> None:
     tech_deltas = list(draft.get("technology_deltas") or [])
     lead_delta = tech_deltas[0] if tech_deltas else None
     regression_state = _regression_method_option_state(vde_id, vde_row, ctx, ctx.get("energy_value_mj_per_km"))
+    confirmed_method = _confirmed_pwt_setup_method()
 
     if proposal_metrics.get("fuel_l_100km") is not None:
         final_result_value = _format_fuel_value(proposal_metrics["fuel_l_100km"], unavailable="Proposal pending")
@@ -2953,10 +3016,13 @@ def render_powertrain_scenario_bench(vde_id: int, vde_row: dict) -> None:
         final_result_value = "Proposal pending"
 
     demand_status = "OK" if ctx.get("energy_value_mj_per_km") is not None else "Missing"
-    baseline_status = "Estimate available" if pse_summary.get("value") is not None else "Baseline pending"
+    source_status = "OK" if str(reference_summary.get("source_label") or "").strip() and str(reference_summary.get("source_label") or "") != "No reference row available" else "Missing"
+    baseline_status = "Confirmed" if confirmed_method is not None else ("Ready" if baseline_summary.get("fuel_l_100km") is not None else "Pending")
+    pse_status = "Derived" if pse_summary.get("value") is not None or baseline_summary.get("pse") is not None else "Pending"
     delta_counts = dict(proposal_summary.get("delta_counts") or {})
-    delta_status = "No quantitative delta" if delta_counts.get("applied", 0) == 0 and len(draft.get("technology_deltas") or []) > 0 else ("Estimated" if delta_counts.get("applied", 0) > 0 else "Pending")
-    final_status = "Estimated" if final_result_value != "Proposal pending" else "Pending"
+    delta_status = "Registered only" if delta_counts.get("applied", 0) == 0 and len(draft.get("technology_deltas") or []) > 0 else ("Draft" if delta_counts.get("applied", 0) > 0 else "Locked" if confirmed_method is None else "Pending")
+    final_status = "Ready" if final_result_value != "Proposal pending" else "Pending"
+    save_status = "Ready" if final_result_value != "Proposal pending" else "Not ready"
     peer_quality = dict(assumptions.get("peer_group_quality") or {})
     confidence_value = str(proposal_summary.get("confidence") or _confidence_preview_label(result, confidence_summary, assumptions)).replace("_", " ").title()
     confidence_status = "OK" if confidence_value in {"Pre-check OK", "Guidance available"} else confidence_value
@@ -2993,8 +3059,28 @@ def render_powertrain_scenario_bench(vde_id: int, vde_row: dict) -> None:
         regression_state=regression_state,
     )
 
-    st.markdown("#### Executive Summary")
-    cols = st.columns(5)
+    context_items = [
+        ("Demand", f"{str(ctx.get('energy_basis') or '-')} {demand_value}"),
+        ("Baseline source", str(reference_summary.get("source_label") or "Reference pending")),
+        ("Baseline method", _pwt_method_label(method_label)),
+        ("Delta", delta_value_text),
+        ("Proposal", proposal_value),
+        ("Confidence", confidence_value),
+        ("Save", save_status),
+    ]
+    context_body = "".join(
+        (
+            "<div class='pwt-context-item'>"
+            f"<div class='pwt-context-label'>{html.escape(label)}</div>"
+            f"<div class='pwt-context-value'>{html.escape(str(value or '-'))}</div>"
+            "</div>"
+        )
+        for label, value in context_items
+    )
+    st.markdown(f"<div class='pwt-context-strip'>{context_body}</div>", unsafe_allow_html=True)
+
+    st.markdown("#### Powertrain Status Bar")
+    cols = st.columns(7)
     cards = [
         _summary_card_markup(
             title="Demand",
@@ -3003,13 +3089,25 @@ def render_powertrain_scenario_bench(vde_id: int, vde_row: dict) -> None:
             detail=str(vde_row.get("cycle_name") or "-"),
         ),
         _summary_card_markup(
+            title="Source",
+            value=_reference_type_display_label(reference_summary.get("source_type") or "-"),
+            status=source_status,
+            detail=str(reference_summary.get("source_label") or "Reference pending"),
+        ),
+        _summary_card_markup(
             title="Baseline",
             value=_format_fuel_value(baseline_summary.get("fuel_l_100km"), unavailable="Baseline pending") if baseline_summary.get("fuel_l_100km") is not None else "Baseline pending",
             status=baseline_status,
             detail=baseline_detail,
         ),
         _summary_card_markup(
-            title="Tech Delta",
+            title="PSE",
+            value=_format_metric_value(pse_summary.get("value") if pse_summary.get("value") is not None else baseline_summary.get("pse"), format_str="%.3f"),
+            status=pse_status,
+            detail="Powertrain System Efficiency",
+        ),
+        _summary_card_markup(
+            title="Delta",
             value=delta_value_text,
             status=delta_status,
             detail=delta_detail,
@@ -3021,9 +3119,9 @@ def render_powertrain_scenario_bench(vde_id: int, vde_row: dict) -> None:
             detail=proposal_detail,
         ),
         _summary_card_markup(
-            title="Confidence",
-            value=confidence_value,
-            status=confidence_status,
+            title="Save",
+            value=save_status,
+            status=save_status,
             detail=confidence_detail,
         ),
     ]
@@ -3893,12 +3991,15 @@ def render_technology_proposal_workspace(vde_id: int, vde_row: dict) -> None:
         key="pwt_delta_editor",
         hide_index=True,
         use_container_width=True,
+        disabled=["source_method", "status"],
         column_config={
             "delta_label": st.column_config.TextColumn("delta_label"),
-            "delta_basis": st.column_config.SelectboxColumn("delta_basis", options=basis_options),
-            "delta_value": st.column_config.NumberColumn("delta_value", format="%.3f"),
-            "apply_quantitatively": st.column_config.CheckboxColumn("apply_quantitatively"),
+            "delta_basis": st.column_config.SelectboxColumn("basis", options=basis_options),
+            "delta_value": st.column_config.NumberColumn("value", format="%.3f"),
+            "apply_quantitatively": st.column_config.CheckboxColumn("apply"),
+            "source_method": st.column_config.TextColumn("source/method"),
             "confidence": st.column_config.SelectboxColumn("confidence", options=DELTA_CONFIDENCE_OPTIONS),
+            "status": st.column_config.TextColumn("status"),
             "notes": st.column_config.TextColumn("notes"),
         },
     )
@@ -4153,12 +4254,14 @@ def render_manual_imported_inputs() -> None:
         key="pwt_manual_baseline_editor",
         hide_index=True,
         use_container_width=True,
+        disabled=["status"],
         column_config={
             "fuel_l_100km": st.column_config.NumberColumn("fuel_l_100km", min_value=0.0, format="%.2f"),
             "energy_Wh_km": st.column_config.NumberColumn("energy_Wh_km", min_value=0.0, format="%.1f"),
             "co2_g_km": st.column_config.NumberColumn("co2_g_km", min_value=0.0, format="%.1f"),
-            "source": st.column_config.TextColumn("source"),
+            "source": st.column_config.TextColumn("source/method"),
             "confidence": st.column_config.SelectboxColumn("confidence", options=DELTA_CONFIDENCE_OPTIONS),
+            "status": st.column_config.TextColumn("status"),
             "notes": st.column_config.TextColumn("notes"),
         },
     )

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import csv
+import gc
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
+from src.vde_core import db as db_module
 from src.vde_core.component_repositories import (
     COMPONENT_PROVENANCE_FIELDS,
     ComponentRepository,
@@ -38,7 +40,11 @@ class ComponentRepositoriesTests(unittest.TestCase):
                 self.assertTrue(ids.issubset(component_ids))
 
     def test_lookup_component_found(self):
-        result = lookup_component("brake", "BRAKE-MOCK-001")
+        result = lookup_component(
+            "brake",
+            "BRAKE-MOCK-001",
+            {"brake": load_mock_component_repository("brake")},
+        )
 
         self.assertTrue(result["found"])
         self.assertEqual(result["component"]["component_id"], "BRAKE-MOCK-001")
@@ -106,7 +112,11 @@ class ComponentRepositoriesTests(unittest.TestCase):
         ]
         for domain, component_id, component_type, position, net_bridge in cases:
             with self.subTest(domain=domain):
-                result = lookup_component(domain, component_id)
+                result = lookup_component(
+                    domain,
+                    component_id,
+                    {domain: load_mock_component_repository(domain)},
+                )
                 component = result["component"]
 
                 self.assertTrue(result["found"])
@@ -173,30 +183,17 @@ class ComponentRepositoriesTests(unittest.TestCase):
         self.assertEqual(result["source"], "tire_service")
         mock_get_tire_by_code.assert_called_once_with("MOCK-TIRE")
 
-    def test_create_component_writes_csv_atomically(self):
+    def test_create_component_writes_sqlite_without_mutating_fixture(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            target = root / "transmission_components_mock.csv"
-            with target.open("w", encoding="utf-8", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=["component_id", "component_name", "status", "source", "notes", "trans_A", "trans_B", "trans_C", "loss_pct"])
-                writer.writeheader()
-                writer.writerow(
-                    {
-                        "component_id": "TRANS-MOCK-BASE",
-                        "component_name": "Base",
-                        "status": "mock",
-                        "source": "seed",
-                        "notes": "-",
-                        "trans_A": 1.0,
-                        "trans_B": 0.1,
-                        "trans_C": 0.01,
-                        "loss_pct": 2.0,
-                    }
-                )
-            with patch("src.vde_core.component_repositories._DATA_DIR", root):
+            db_path = root / "components.db"
+            fixture_path = Path("data/components/transmission_components_mock.csv")
+            fixture_before = fixture_path.read_bytes()
+            with db_module.using_db_path(db_path):
                 created = create_component(
                     "transmission",
                     {
+                        "component_id": "TRANS-DB-CREATED",
                         "component_name": "Created",
                         "trans_A": 3.0,
                         "trans_B": 0.3,
@@ -204,33 +201,29 @@ class ComponentRepositoriesTests(unittest.TestCase):
                         "loss_pct": 4.0,
                     },
                 )
+                row = db_module.fetchone(
+                    "SELECT component_code FROM component_db WHERE id=?",
+                    (created["id"],),
+                )
+            gc.collect()
 
-                with target.open("r", encoding="utf-8", newline="") as handle:
-                    rows = list(csv.DictReader(handle))
-
-            self.assertEqual(len(rows), 2)
-            self.assertEqual(rows[-1]["component_id"], created["component_id"])
+            self.assertEqual(row["component_code"], "TRANS-DB-CREATED")
+            self.assertEqual(fixture_path.read_bytes(), fixture_before)
 
     def test_create_component_blocks_duplicate_ids(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            target = root / "parasitic_components_mock.csv"
-            with target.open("w", encoding="utf-8", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=["component_id", "component_name", "status", "source", "notes", "parasitic_A", "parasitic_B", "parasitic_C"])
-                writer.writeheader()
-                writer.writerow(
+            db_path = Path(tmpdir) / "components.db"
+            with db_module.using_db_path(db_path):
+                create_component(
+                    "parasitic",
                     {
                         "component_id": "PARA-USER-DUP",
                         "component_name": "Base",
-                        "status": "mock",
-                        "source": "seed",
-                        "notes": "-",
                         "parasitic_A": 1.0,
                         "parasitic_B": 0.1,
                         "parasitic_C": 0.01,
-                    }
+                    },
                 )
-            with patch("src.vde_core.component_repositories._DATA_DIR", root):
                 with self.assertRaises(ValueError):
                     create_component(
                         "parasitic",
@@ -242,6 +235,7 @@ class ComponentRepositoriesTests(unittest.TestCase):
                             "parasitic_C": 0.03,
                         },
                     )
+            gc.collect()
 
 
 if __name__ == "__main__":

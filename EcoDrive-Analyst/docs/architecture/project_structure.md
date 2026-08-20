@@ -41,6 +41,7 @@ Current examples:
 - `components/shared.py`
 - `components/vde_setup.py`
 - `components/pwt_fuel_energy.py`
+- `components/database_management.py`
 - `plots.py`
 - `state.py`
 
@@ -68,6 +69,9 @@ Should avoid:
 Support modules now include:
 - `cycles.py` for cycle-facing entry points;
 - `repositories/` for thin VDE and fuel-consumption persistence wrappers;
+- `database_management_service.py`, `database_management_impact_service.py`, and
+  `database_management_spreadsheet.py` for controlled catalog changes,
+  dependency review, and spreadsheet staging;
 - `comparison_report_service.py` for report-facing data loading outside the page;
 - `tire_roadload_service.py` for tire-roadload CRUD, preview, and VDE application flow;
 - `experimental/` for preserved non-canonical heuristics and CSV experiments;
@@ -115,8 +119,14 @@ Tests live in `tests/` and focus on pure logic first:
 - decomposition helpers;
 - tire roadload helpers and tire model behavior.
 
+Database Management tests cover its contract, staged CRUD path, dependency
+impact workflow, controlled spreadsheet imports, and page-level rendering.
+
 ## Archive and Notebook Policy
 
 - active notebooks belong in `notebooks/`;
 - notebook notes belong in `docs/notebooks/`;
 - archived pages and backups belong in `docs/archive/`.
+- the direct Tire Database editor is preserved at
+  `docs/archive/pages/Tire_Database_legacy.py`; Database Management is the
+  active catalog-administration page.

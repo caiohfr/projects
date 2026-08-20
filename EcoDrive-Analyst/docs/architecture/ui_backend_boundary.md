@@ -79,17 +79,23 @@ pages/PWT_Fuel_Energy.py
     -> regression / db helpers
 ```
 
-### Tire Database
+### Database Management
 
 Page flow:
 
 ```text
-pages/Tire_Database.py
-    -> streamlit form rendering
-    -> tire_roadload_service.py
-    -> repositories/tire_roadload_repository.py
-    -> roadload/tire_model.py
+pages/Database_Management.py
+    -> components/database_management.py
+    -> database_management_service.py
+    -> database_management_impact_service.py
+    -> database_management_spreadsheet.py
+    -> SQLite catalog tables + append-only data_change_log
 ```
+
+The direct Tire Database editor is historical code under
+`docs/archive/pages/Tire_Database_legacy.py`; it is not an active navigation
+path. Tire lookup in VDE Setup remains a read-only consumer of the shared
+catalog.
 
 VDE Setup tire flow:
 

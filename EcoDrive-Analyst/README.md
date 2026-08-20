@@ -2,17 +2,36 @@
 
 EcoDrive Analyzer is a Streamlit application for roadload engineering, VDE workflow management, powertrain consumption estimation, and early comparison reporting.
 
-The current product is organized around three main blocks:
+The current product is organized around four main blocks:
 
-1. `VDE Setup`
-2. `Powertrain Scenario`
-3. `Comparison Report`
+1. `Database Management`
+2. `VDE Setup`
+3. `Powertrain Scenario`
+4. `Comparison Report`
 
-`VDE Setup` is the stable, feature-frozen engineering workflow. `Comparison
-Report` and database management are the next development focus; `Powertrain
-Scenario` remains a future workstream.
+`Database Management` is the official controlled catalog-administration
+workflow. `VDE Setup` is the stable, feature-frozen engineering workflow.
+`Comparison Report` remains the next reporting focus; `Powertrain Scenario`
+remains a future workstream.
 
 ## Current Product Blocks
+
+### Database Management
+
+`Database Management` is the official operational surface for controlled
+catalog records:
+
+- VDE baselines and saved VDE records
+- fuel-consumption records and their VDE references
+- tire records
+- transmission, brake, axle & hubs, and parasitic components
+- staged create, update, archive, restore, and duplicate changes
+- impact review, dependency resolution, and append-only change receipts
+- controlled spreadsheet templates with review-before-commit imports
+
+The former direct Tire Database page is preserved under `docs/archive/pages/`
+as historical reference code. It is not part of the ordinary application
+navigation.
 
 ### VDE Setup
 
@@ -83,18 +102,19 @@ It is intentionally still an MVP surface. It should be read as the first step to
 ```text
 EcoDrive
 |
+|-- Database Management   stable / official catalog administration
 |-- VDE Setup             stable / feature frozen
 |-- Comparison Report     next development focus
-|-- Database Management   next development focus
 `-- Powertrain Scenario   future
 ```
 
 ## Documentation Index
 
-Sprint 5 documentation:
+Sprint documentation:
 
 - [Sprint 5 Closure](docs/SPRINT_5_CLOSURE.md)
 - [Sprint 6 Plan](docs/sprints/SPRINT_6_VALIDATION_SCENARIO_BENCH_RELEASE_2026-06-28.md)
+- [Sprint 7 Database Management Checkpoint](docs/sprints/SPRINT_7_DATABASE_MANAGEMENT.md)
 - [VDE Setup Guide](docs/VDE_SETUP_GUIDE.md)
 - [VDE Setup v2.2 Final Stable Contract](docs/VDE_SETUP_V22_FINAL_CHECKPOINT.md)
 - [Powertrain Scenario Guide](docs/POWERTRAIN_SCENARIO_GUIDE.md)
@@ -132,7 +152,7 @@ Important runtime pages:
 - `pages/VDE_Setup.py`
 - `pages/Powertrain_Scenario.py`
 - `pages/Comparison_Report.py`
-- `pages/Tire_Database.py`
+- `pages/Database_Management.py`
 
 ## How To Run
 

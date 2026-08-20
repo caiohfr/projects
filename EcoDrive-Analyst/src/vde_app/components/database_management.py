@@ -23,9 +23,15 @@ from src.vde_core.database_management_service import (
     preview_change,
     simple_dependencies,
 )
+from src.vde_core.database_management_spreadsheet import (
+    generate_controlled_template,
+    preview_spreadsheet_import,
+    stage_commands_from_import,
+)
 
 
 STAGE_KEY = "database_management_staged_commands"
+IMPORT_REPORT_KEY = "database_management_last_import_report"
 
 _ENTITY_LABELS = {
     EntityType.VDE: "VDE",
@@ -79,6 +85,7 @@ def render_database_management() -> None:
     st.title("Database Management")
     st.caption("Browse, stage, validate, review, and confirm changes. Nothing is saved automatically.")
     _ensure_stage()
+    _render_last_import_report()
     tabs = st.tabs([_ENTITY_LABELS[entity] for entity in EntityType])
     for tab, entity in zip(tabs, EntityType):
         with tab:
@@ -89,6 +96,7 @@ def render_database_management() -> None:
 
 def _render_entity_tab(entity: EntityType) -> None:
     state_prefix = f"database_management_{entity.value.lower()}"
+    _render_spreadsheet_tools(entity)
     filter_cols = st.columns((3, 1, 1))
     with filter_cols[0]:
         query = st.text_input("Search", key=f"{state_prefix}_query", placeholder="Search visible identity and source fields")
@@ -109,6 +117,72 @@ def _render_entity_tab(entity: EntityType) -> None:
     _render_grid(entity, rows, component_domain=component_domain)
     _render_add_form(entity, component_domain=component_domain)
     _render_selected_record(entity, rows, component_domain=component_domain)
+
+
+def _render_spreadsheet_tools(entity: EntityType) -> None:
+    with st.expander("Spreadsheet import"):
+        st.caption("Download the controlled template, upload completed rows, review the diff, then commit explicitly below.")
+        filename, content = generate_controlled_template(entity)
+        action_cols = st.columns((1, 2))
+        action_cols[0].download_button(
+            "Download template",
+            data=content,
+            file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"database_management_template_{entity.value.lower()}",
+        )
+        uploaded = action_cols[1].file_uploader(
+            "Upload completed template",
+            type=("xlsx",),
+            key=f"database_management_upload_{entity.value.lower()}",
+        )
+        if uploaded is None:
+            return
+        preview = preview_spreadsheet_import(uploaded.getvalue(), entity, filename=uploaded.name)
+        counts = preview.counts
+        metrics = st.columns(4)
+        metrics[0].metric("To insert", counts["inserted"])
+        metrics[1].metric("To update", counts["updated"])
+        metrics[2].metric("Skipped", counts["skipped"])
+        metrics[3].metric("Invalid", counts["invalid"])
+        for issue in preview.issues:
+            renderer = st.error if issue.severity == "ERROR" else st.warning
+            renderer(issue.message)
+        confirm_unknown = False
+        if preview.unknown_columns:
+            st.warning("Unknown columns will be ignored: " + ", ".join(preview.unknown_columns))
+            confirm_unknown = st.checkbox(
+                "I reviewed and accept ignoring these unknown columns",
+                key=f"database_management_unknown_{entity.value.lower()}_{preview.batch_id}",
+            )
+        review_rows = []
+        for row in preview.rows:
+            review_rows.append(
+                {
+                    "Sheet": row.sheet,
+                    "Row": row.row_number,
+                    "Action": row.action,
+                    "Match": row.match_method,
+                    "Record": row.record_id or "new",
+                    "Status": row.status,
+                    "Fields changed": ", ".join(item["field"] for item in row.field_diff) or "-",
+                    "Issues": "; ".join(issue.message for issue in row.issues) or "-",
+                }
+            )
+        if review_rows:
+            st.dataframe(pd.DataFrame(review_rows), hide_index=True, width="stretch")
+        else:
+            st.info("No data rows were found. Existing database rows are unchanged.")
+        disabled = not preview.can_stage or bool(preview.unknown_columns and not confirm_unknown)
+        if st.button(
+            "Stage valid import rows",
+            key=f"database_management_stage_import_{entity.value.lower()}_{preview.batch_id}",
+            disabled=disabled,
+        ):
+            commands = stage_commands_from_import(preview, confirm_unknown_columns=confirm_unknown)
+            for command in commands:
+                _stage_command(command)
+            st.success(f"{len(commands)} import row(s) staged. Review and commit them in Review Changes.")
 
 
 def _render_grid(entity: EntityType, rows: list[dict], *, component_domain: str | None) -> None:
@@ -374,6 +448,25 @@ def _render_review_changes() -> None:
         if failures:
             st.error("No further staged changes were committed: " + failures[0])
         else:
+            import_reports: dict[str, dict] = {}
+            for command in staged:
+                batch_id = command.get("import_batch_id")
+                if not batch_id:
+                    continue
+                report = import_reports.setdefault(
+                    str(batch_id),
+                    {
+                        "Batch": batch_id,
+                        "File": command.get("import_filename"),
+                        **dict(command.get("import_counts") or {}),
+                    },
+                )
+                report.setdefault("inserted", 0)
+                report.setdefault("updated", 0)
+                report.setdefault("skipped", 0)
+                report.setdefault("invalid", 0)
+            if import_reports:
+                st.session_state[IMPORT_REPORT_KEY] = list(import_reports.values())
             st.session_state[STAGE_KEY] = []
             st.success("All reviewed changes were committed and logged.")
             st.rerun()
@@ -675,9 +768,9 @@ def _first_defined(*values):
 
 def _stage_command(command: dict) -> None:
     staged = list(st.session_state.get(STAGE_KEY) or [])
-    identity = (command.get("entity_type"), command.get("action"), command.get("record_id"))
+    identity = _stage_identity(command)
     for index, existing in enumerate(staged):
-        if (existing.get("entity_type"), existing.get("action"), existing.get("record_id")) == identity:
+        if _stage_identity(existing) == identity:
             merged = dict(existing)
             merged.update({key: deepcopy(value) for key, value in command.items() if key != "payload"})
             merged["payload"] = {**dict(existing.get("payload") or {}), **dict(command.get("payload") or {})}
@@ -686,6 +779,17 @@ def _stage_command(command: dict) -> None:
             return
     staged.append(deepcopy(command))
     st.session_state[STAGE_KEY] = staged
+
+
+def _stage_identity(command: dict) -> tuple:
+    if command.get("import_batch_id"):
+        return (
+            "IMPORT",
+            command.get("import_batch_id"),
+            command.get("import_sheet"),
+            command.get("import_row"),
+        )
+    return (command.get("entity_type"), command.get("action"), command.get("record_id"))
 
 
 def _grid_editable_columns(entity: EntityType, rows: list[dict], fields: tuple[str, ...]) -> set[str]:
@@ -719,3 +823,25 @@ def _same_value(first: Any, second: Any) -> bool:
 def _ensure_stage() -> None:
     if not isinstance(st.session_state.get(STAGE_KEY), list):
         st.session_state[STAGE_KEY] = []
+
+
+def _render_last_import_report() -> None:
+    rows = list(st.session_state.get(IMPORT_REPORT_KEY) or [])
+    if not rows:
+        return
+    with st.expander("Last spreadsheet import report", expanded=True):
+        display = []
+        for row in rows:
+            display.append(
+                {
+                    "File": row.get("File"),
+                    "Inserted": row.get("inserted", 0),
+                    "Updated": row.get("updated", 0),
+                    "Skipped": row.get("skipped", 0),
+                    "Invalid": row.get("invalid", 0),
+                }
+            )
+        st.dataframe(pd.DataFrame(display), hide_index=True, width="stretch")
+        if st.button("Dismiss import report", key="database_management_dismiss_import_report"):
+            st.session_state.pop(IMPORT_REPORT_KEY, None)
+            st.rerun()

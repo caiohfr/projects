@@ -35,6 +35,7 @@ class DatabaseManagementUi7CTests(unittest.TestCase):
         self.assertTrue(any("Database Management" in heading.value for heading in app.title))
         self.assertGreaterEqual(len(app.tabs), 4)
         self.assertGreaterEqual(len(app.dataframe), 1)
+        self.assertEqual(len(app.get("file_uploader")), 4)
 
 
 if __name__ == "__main__":

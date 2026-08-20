@@ -267,8 +267,10 @@ def _db_row_to_component(row: dict) -> dict:
         "record_status": payload.get("record_status"),
         "source_record_id": payload.get("source_record_id"),
         "domain": domain_key,
+        "component_code": payload.get("component_code"),
         "component_id": payload.get("component_code"),
         "component_name": payload.get("component_name"),
+        "source_name": payload.get("source_name"),
         "status": payload.get("record_status"),
         "source": payload.get("source_name"),
         "notes": payload.get("notes") or "",
@@ -279,7 +281,9 @@ def _db_row_to_component(row: dict) -> dict:
         else:
             component[field_name] = payload.get(field_name) or ""
     for adapter_field, storage_field in _technical_storage_fields(domain_key).items():
-        component[adapter_field] = payload.get(storage_field)
+        value = payload.get(storage_field)
+        component[adapter_field] = value
+        component[storage_field] = value
     return component
 
 
@@ -314,7 +318,8 @@ def _component_to_storage(domain: str, component: dict, *, default_origin: str) 
         "notes": _clean_text(payload.get("notes")),
     }
     for adapter_field, storage_field in _technical_storage_fields(domain_key).items():
-        storage[storage_field] = _to_float(payload.get(storage_field, payload.get(adapter_field)))
+        value = payload.get(storage_field) if storage_field in payload else payload.get(adapter_field)
+        storage[storage_field] = _to_float(value)
     return storage
 
 
@@ -539,6 +544,11 @@ def update_component(domain: str, component_id: str | int, updates: dict) -> dic
     merged = {**current, **dict(updates or {})}
     if "component_code" in updates:
         merged["component_id"] = updates["component_code"]
+    for adapter_field, storage_field in _technical_storage_fields(domain_key).items():
+        if adapter_field in updates:
+            merged[storage_field] = updates[adapter_field]
+        elif storage_field in updates:
+            merged[adapter_field] = updates[storage_field]
     storage = _component_to_storage(domain_key, merged, default_origin=current.get("record_origin") or "LEGACY")
     component = _db_row_to_component(storage)
     issues = _validate_component(domain_key, component)
@@ -598,6 +608,7 @@ def duplicate_component(
     for field in ("id", "created_at", "updated_at"):
         payload.pop(field, None)
     payload["component_id"] = component_code or _next_duplicate_code(domain_key, current["component_id"])
+    payload["component_code"] = payload["component_id"]
     payload["record_status"] = "ACTIVE"
     payload.update(dict(overrides or {}))
     return create_component(domain_key, payload)

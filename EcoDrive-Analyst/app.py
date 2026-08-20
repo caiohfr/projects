@@ -54,6 +54,7 @@ def _sidebar(ctx):
     st.page_link("pages/Powertrain_Scenario.py", label="Powertrain Scenario", icon="⚙️")
     st.page_link("pages/Comparison_Report.py", label="Powertrain Comparison", icon="📊")
 
+    st.page_link("pages/Database_Management.py", label="Database Management")
     st.sidebar.divider()
     ctx["db_path"] = st.sidebar.text_input("DB path", value=ctx.get("db_path", DB_DEFAULT))
     st.sidebar.caption("Tip: keep a stable path under /data/db for reproducibility.")

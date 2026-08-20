@@ -89,6 +89,57 @@ def ensure_columns(table: str, spec: dict[str, str]) -> list[str]:
         con.commit()
     return [c for c, _ in missing]
 
+
+def ensure_data_change_log_table() -> None:
+    """Create the small append-only receipt table used by Database Management."""
+    with _con() as con:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS data_change_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                operation_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                actor_role TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                record_id TEXT,
+                action TEXT NOT NULL,
+                reason TEXT,
+                before_json TEXT,
+                after_json TEXT,
+                impact_json TEXT
+            )
+            """
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_change_log_operation ON data_change_log(operation_id)"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_change_log_entity_record ON data_change_log(entity_type, record_id)"
+        )
+
+
+def _backfill_database_management_defaults() -> None:
+    """Classify pre-Sprint-7 rows conservatively without changing their physics."""
+    with _con() as con:
+        defaults = (
+            ("vde_db", "record_origin", "LEGACY"),
+            ("vde_db", "record_status", "ACTIVE"),
+            ("fuelcons_db", "record_origin", "LEGACY"),
+            ("fuelcons_db", "record_status", "ACTIVE"),
+            ("fuelcons_db", "review_status", "CURRENT"),
+            ("tire_roadload_db", "record_origin", "LEGACY"),
+        )
+        for table, column, default in defaults:
+            missing = con.execute(
+                f"SELECT 1 FROM {table} WHERE {column} IS NULL OR TRIM({column})='' LIMIT 1"
+            ).fetchone()
+            if missing:
+                con.execute(
+                    f"UPDATE {table} SET {column}=? WHERE {column} IS NULL OR TRIM({column})=''",
+                    (default,),
+                )
+
 def ensure_migrations() -> None:
     """Aplica migracoes idempotentes necessarias ao schema atual."""
     added = []
@@ -115,6 +166,27 @@ def ensure_migrations() -> None:
         "source_vde_revision": "TEXT",
         "assumptions_json": "TEXT",
         "provenance_json": "TEXT",
+    })
+    added += ensure_columns("vde_db", {
+        "record_origin": "TEXT DEFAULT 'LEGACY'",
+        "record_status": "TEXT DEFAULT 'ACTIVE'",
+        "source_name": "TEXT",
+        "source_record_id": "TEXT",
+    })
+    added += ensure_columns("fuelcons_db", {
+        "updated_at": "TEXT",
+        "record_origin": "TEXT DEFAULT 'LEGACY'",
+        "record_status": "TEXT DEFAULT 'ACTIVE'",
+        "source_name": "TEXT",
+        "source_record_id": "TEXT",
+        "review_status": "TEXT DEFAULT 'CURRENT'",
+    })
+    # Tires keep ``is_active`` as the only status source. Database Management
+    # projects it to ACTIVE/ARCHIVED instead of adding an independent column.
+    added += ensure_columns("tire_roadload_db", {
+        "record_origin": "TEXT DEFAULT 'LEGACY'",
+        "source_name": "TEXT",
+        "source_record_id": "TEXT",
     })
     added += ensure_columns("vde_db", {
         "test_mass_kg": "REAL",
@@ -171,6 +243,8 @@ def ensure_migrations() -> None:
         "test_speed_value": "REAL",
         "smerf": "REAL",
     })
+    ensure_data_change_log_table()
+    _backfill_database_management_defaults()
     if added:
         print("[db] migracoes aplicadas:", added)
 

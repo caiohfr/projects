@@ -119,6 +119,64 @@ def ensure_data_change_log_table() -> None:
         )
 
 
+def ensure_component_table() -> None:
+    """Create the canonical SQLite repository for roadload components."""
+    with _con() as con:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS component_db (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT,
+                record_origin TEXT NOT NULL DEFAULT 'LEGACY',
+                record_status TEXT NOT NULL DEFAULT 'ACTIVE',
+
+                domain TEXT NOT NULL,
+                component_code TEXT NOT NULL UNIQUE,
+                component_name TEXT NOT NULL,
+
+                source_name TEXT,
+                source_record_id TEXT,
+                source_reference TEXT,
+                hardware_reference TEXT,
+
+                component_type TEXT,
+                component_position TEXT,
+                driveline_architecture TEXT,
+                physical_boundary TEXT,
+                configuration_from TEXT,
+                configuration_to TEXT,
+                test_condition_type TEXT,
+                test_method TEXT,
+                net_bridge_eligible INTEGER,
+
+                equivalent_A_N REAL,
+                equivalent_B_N_per_kph REAL,
+                equivalent_C_N_per_kph2 REAL,
+                loss_pct REAL,
+
+                residual_torque_front_nm REAL,
+                residual_torque_rear_nm REAL,
+                wheel_radius_m REAL,
+
+                notes TEXT,
+                CHECK (domain IN ('transmission', 'brake', 'axle_hubs', 'parasitic')),
+                CHECK (record_status IN ('ACTIVE', 'ARCHIVED')),
+                CHECK (record_origin IN ('IMPORTED', 'MANUAL', 'QA', 'LEGACY')),
+                CHECK (net_bridge_eligible IN (0, 1) OR net_bridge_eligible IS NULL)
+            )
+            """
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_component_domain_status "
+            "ON component_db(domain, record_status)"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_component_source_identity "
+            "ON component_db(domain, source_name, source_record_id)"
+        )
+
+
 def _backfill_database_management_defaults() -> None:
     """Classify pre-Sprint-7 rows conservatively without changing their physics."""
     with _con() as con:
@@ -243,6 +301,7 @@ def ensure_migrations() -> None:
         "test_speed_value": "REAL",
         "smerf": "REAL",
     })
+    ensure_component_table()
     ensure_data_change_log_table()
     _backfill_database_management_defaults()
     if added:

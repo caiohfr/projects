@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from src.vde_core import db as db_module
+from src.vde_core.component_repositories import build_mock_component_seed_rows
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -890,7 +891,7 @@ def is_safe_qa_db_path(path: str | Path) -> bool:
 
 
 def seeded_database_digest(db_path: str | Path) -> str:
-    table_names = ("vde_db", "tire_roadload_db")
+    table_names = ("vde_db", "tire_roadload_db", "component_db")
     payload: dict[str, list[dict[str, Any]]] = {}
     with sqlite3.connect(str(db_path)) as con:
         con.row_factory = sqlite3.Row
@@ -919,7 +920,12 @@ def _replace_seed_rows(db_path: Path) -> None:
         con.execute("DELETE FROM fuelcons_db")
         con.execute("DELETE FROM vde_db")
         con.execute("DELETE FROM tire_roadload_db")
-        con.execute("DELETE FROM sqlite_sequence WHERE name IN ('vde_db', 'fuelcons_db', 'tire_roadload_db')")
+        con.execute("DELETE FROM component_db")
+        con.execute(
+            "DELETE FROM sqlite_sequence "
+            "WHERE name IN ('vde_db', 'fuelcons_db', 'tire_roadload_db', 'component_db')"
+        )
+        _insert_rows(con, "component_db", build_mock_component_seed_rows())
         _insert_rows(con, "tire_roadload_db", build_tire_seed_rows())
         _insert_rows(con, "vde_db", build_vde_seed_rows())
         con.commit()

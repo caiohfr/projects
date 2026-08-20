@@ -1,6 +1,8 @@
 import streamlit as st
 from pathlib import Path
 
+from src.vde_app.components.shared import render_inline_image
+
 def page_home():
     st.title("🏠 EcoDrive Analyzer – Scientific Home Page")
     st.markdown("---")
@@ -33,8 +35,8 @@ def page_home():
     st.header("🧠 Scientific Methodology")
     # use absolute path provided by the project owner (simple and direct)
     ABS_DIR = Path(__file__).resolve().parent          # pasta do arquivo atual
-    abs_path = ABS_DIR.parent / 'data' / 'images' / 'vehicle-longitudinal-dynamics.png'    
-    st.image(abs_path, width=1000)
+    abs_path = ABS_DIR.parent / 'data' / 'images' / 'vehicle-longitudinal-dynamics.png'
+    render_inline_image(abs_path, width=1000)
 
     st.subheader("1. Core Concept")
 

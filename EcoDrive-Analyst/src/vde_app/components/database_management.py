@@ -7,6 +7,13 @@ import pandas as pd
 import streamlit as st
 
 from src.vde_core.database_management_contract import ChangeCommand, EntityType, ORIGINS_BY_ENTITY
+from src.vde_core.database_management_impact_service import (
+    apply_change_with_impact,
+    apply_vde_dependency_resolution,
+    discover_catalog_usage,
+    discover_vde_dependencies,
+    preview_dependency_impact,
+)
 from src.vde_core.database_management_policy import FieldAccess, field_access_for
 from src.vde_core.database_management_service import (
     apply_change,
@@ -273,11 +280,32 @@ def _render_record_actions(entity: EntityType, record: dict, *, component_domain
         _stage_command(_command_payload(entity, action, record, component_domain=component_domain))
         st.success(f"{action.title().lower()} staged for review.")
     dependencies = simple_dependencies(entity, record["id"])
+    catalog_usage = None
+    vde_dependencies = None
+    if entity in {EntityType.TIRE, EntityType.COMPONENT}:
+        catalog_usage = discover_catalog_usage(entity, record["id"], component_domain=component_domain)
+        dependencies = (
+            tuple(dependencies)
+            + tuple(catalog_usage.get("usages") or ())
+            + tuple(catalog_usage.get("historical_usages") or ())
+            + tuple(catalog_usage.get("review_required") or ())
+        )
+    elif entity is EntityType.VDE:
+        vde_dependencies = discover_vde_dependencies(record["id"])
+        dependencies = (
+            tuple(dependencies)
+            + tuple(vde_dependencies.get("saved_proposals") or ())
+            + tuple(vde_dependencies.get("baseline_requests") or ())
+        )
     if action_cols[2].button("Delete permanently", key=f"database_management_delete_{entity.value.lower()}_{record['id']}", disabled=bool(dependencies)):
         _stage_command(_command_payload(entity, "DELETE", record, component_domain=component_domain))
         st.success("Delete staged for review.")
     if dependencies:
         action_cols[3].warning(f"Delete blocked: {len(dependencies)} direct dependency(ies).")
+    if catalog_usage and dependencies:
+        _render_dependency_resolution(entity, record, catalog_usage, component_domain=component_domain)
+    if vde_dependencies and dependencies:
+        _render_vde_dependency_resolution(record, vde_dependencies)
 
 
 def _render_review_changes() -> None:
@@ -288,29 +316,58 @@ def _render_review_changes() -> None:
         return
     reason = st.text_area("Reason for staged corrections and lifecycle actions", key="database_management_review_reason")
     previews = [_preview_for_stage(command, reason) for command in staged]
+    impact_previews = {}
     review_rows = []
-    for preview in previews:
+    for index, (command, preview) in enumerate(zip(staged, previews)):
+        impact = _render_impact_preview(index, command, preview)
+        if impact is not None:
+            impact_previews[index] = impact
         review_rows.append(
             {
                 "Action": preview.action,
                 "Entity": preview.entity_type,
                 "Record": preview.record_id or "new",
                 "Fields changed": ", ".join(diff.field for diff in preview.field_diff) or "-",
-                "Ready": preview.can_commit,
-                "Issues": "; ".join(issue.message for issue in preview.validation_issues) or "-",
+                "Ready": impact.can_commit if impact is not None else preview.can_commit,
+                "Issues": "; ".join(
+                    issue.message
+                    for issue in [*preview.validation_issues, *(impact.validation_issues if impact is not None else ())]
+                ) or "-",
             }
         )
     st.dataframe(pd.DataFrame(review_rows), hide_index=True, width="stretch")
-    can_commit = all(preview.can_commit for preview in previews)
+    can_commit = all(
+        preview.can_commit and (index not in impact_previews or impact_previews[index].can_commit)
+        for index, preview in enumerate(previews)
+    )
     action_cols = st.columns((1, 1, 3))
     if action_cols[0].button("Clear staged changes", key="database_management_clear_stage"):
         st.session_state[STAGE_KEY] = []
         st.rerun()
     if action_cols[1].button("Commit reviewed changes", key="database_management_commit_stage", disabled=not can_commit):
         failures: list[str] = []
-        for preview in previews:
+        for index, preview in enumerate(previews):
             try:
-                apply_change(preview, reason=reason)
+                impact = impact_previews.get(index)
+                command = staged[index]
+                if command.get("resolution_action"):
+                    apply_vde_dependency_resolution(
+                        preview,
+                        resolution_action=command["resolution_action"],
+                        fuel_row_ids=tuple(command.get("fuel_row_ids") or ()),
+                        replacement_vde_id=command.get("replacement_vde_id"),
+                        reason=reason,
+                    )
+                elif impact is None:
+                    apply_change(preview, reason=reason)
+                else:
+                    apply_change_with_impact(
+                        preview,
+                        impact,
+                        reason=reason,
+                        replacement_record_id=command.get("replacement_record_id"),
+                        component_domain=command.get("component_domain"),
+                    )
             except ValueError as exc:
                 failures.append(str(exc))
                 break
@@ -334,6 +391,7 @@ def _preview_for_stage(command: dict, reason: str):
             current_record=deepcopy(command.get("current_record") or {}),
             payload=deepcopy(command.get("payload") or {}),
             reason=reason,
+            physics_action=command.get("physics_action"),
         )
     )
 
@@ -350,12 +408,278 @@ def _command_payload(entity: EntityType, action: str, record: dict, *, payload: 
     }
 
 
+def _render_dependency_resolution(
+    entity: EntityType,
+    record: dict,
+    usage: dict,
+    *,
+    component_domain: str | None,
+) -> None:
+    usage_count = len(usage.get("usages") or ())
+    historical_count = len(usage.get("historical_usages") or ())
+    vde_count = len(usage.get("affected_vde_ids") or ())
+    review_count = len(usage.get("review_required") or ())
+    with st.expander("Dependency resolution"):
+        st.caption(
+            f"{usage_count} active request usage(s), {historical_count} historical snapshot(s), "
+            f"{vde_count} tracked VDE(s), "
+            f"{review_count} VDE(s) requiring manual review."
+        )
+        cols = st.columns((1, 2))
+        if cols[0].button(
+            "Archive instead",
+            key=f"database_management_dependency_archive_{entity.value.lower()}_{record['id']}",
+        ):
+            _stage_command(_command_payload(entity, "ARCHIVE", record, component_domain=component_domain))
+            st.success("Archive staged for review.")
+
+        candidates = [
+            item
+            for item in browse_records(entity, include_archived=False, component_domain=component_domain)
+            if str(item.get("id")) != str(record.get("id"))
+        ]
+        if candidates:
+            labels = {str(item["id"]): _record_label(entity, item) for item in candidates}
+            replacement_id = cols[1].selectbox(
+                "Compatible replacement",
+                tuple(labels),
+                format_func=lambda item: labels[item],
+                key=f"database_management_dependency_replacement_{entity.value.lower()}_{record['id']}",
+            )
+            if st.button(
+                "Stage reassignment",
+                key=f"database_management_dependency_reassign_{entity.value.lower()}_{record['id']}",
+            ):
+                command = _command_payload(entity, "REASSIGN_RELATIONSHIP", record, component_domain=component_domain)
+                command["replacement_record_id"] = replacement_id
+                command["physics_action"] = "RECALCULATE_UPDATE"
+                _stage_command(command)
+                st.success("Reassignment staged for impact review.")
+        else:
+            cols[1].caption("No compatible active replacement is available.")
+
+        keep_snapshots = st.checkbox(
+            "Keep existing VDE snapshots as explicit historical references",
+            key=f"database_management_dependency_keep_snapshots_{entity.value.lower()}_{record['id']}",
+        )
+        if st.button(
+            "Stage permanent delete with historical snapshots",
+            key=f"database_management_dependency_delete_{entity.value.lower()}_{record['id']}",
+            disabled=not keep_snapshots,
+        ):
+            command = _command_payload(entity, "DELETE", record, component_domain=component_domain)
+            command["physics_action"] = "KEEP_EXISTING"
+            _stage_command(command)
+            st.success("Permanent delete staged with explicit snapshot preservation.")
+
+
+def _render_vde_dependency_resolution(record: dict, dependencies: dict) -> None:
+    fuel_rows = tuple(dependencies.get("fuel_rows") or ())
+    saved_proposals = tuple(dependencies.get("saved_proposals") or ())
+    baseline_requests = tuple(dependencies.get("baseline_requests") or ())
+    record_id = int(record["id"])
+    with st.expander("VDE dependency resolution"):
+        st.caption(
+            f"{len(fuel_rows)} Fuel row(s), {len(saved_proposals)} saved proposal reference(s), "
+            f"and {len(baseline_requests)} baseline request reference(s)."
+        )
+        if fuel_rows:
+            st.dataframe(
+                pd.DataFrame(fuel_rows)[
+                    ["id", "vde_id", "electrification", "fuel_type", "record_origin", "review_status"]
+                ],
+                hide_index=True,
+                width="stretch",
+            )
+
+        if st.button("Archive instead", key=f"database_management_vde_dependency_archive_{record_id}"):
+            _stage_command(_command_payload(EntityType.VDE, "ARCHIVE", record, component_domain=None))
+            st.success("VDE archive staged for review.")
+
+        candidates = [
+            item
+            for item in browse_records(EntityType.VDE, include_archived=False)
+            if int(item["id"]) != record_id
+        ]
+        eligible_rows = [
+            row for row in fuel_rows if str(row.get("record_origin") or "").upper() in {"HOMOLOGATED", "MEASURED"}
+        ]
+        blocked_rows = [row for row in fuel_rows if row not in eligible_rows]
+        if blocked_rows:
+            st.warning(
+                f"{len(blocked_rows)} calculated, Powertrain, or legacy Fuel row(s) cannot be reassigned without recalculation."
+            )
+        if candidates and eligible_rows:
+            labels = {str(item["id"]): _record_label(EntityType.VDE, item) for item in candidates}
+            replacement_id = st.selectbox(
+                "Replacement VDE",
+                tuple(labels),
+                format_func=lambda item: labels[item],
+                key=f"database_management_vde_replacement_{record_id}",
+            )
+            eligible_labels = {
+                int(row["id"]): f"Fuel {row['id']} | {row.get('record_origin') or '-'} | {row.get('electrification') or '-'}"
+                for row in eligible_rows
+            }
+            selected_fuel_ids = st.multiselect(
+                "Fuel rows to reassign",
+                tuple(eligible_labels),
+                format_func=lambda item: eligible_labels[item],
+                default=tuple(eligible_labels),
+                key=f"database_management_vde_fuel_reassign_{record_id}",
+            )
+            if st.button(
+                "Stage Fuel reassignment",
+                key=f"database_management_vde_reassign_stage_{record_id}",
+                disabled=not selected_fuel_ids,
+            ):
+                command = _command_payload(EntityType.VDE, "REASSIGN_RELATIONSHIP", record, component_domain=None)
+                command.update(
+                    {
+                        "resolution_action": "REASSIGN_FUEL",
+                        "replacement_vde_id": replacement_id,
+                        "fuel_row_ids": tuple(selected_fuel_ids),
+                    }
+                )
+                _stage_command(command)
+                st.success("Fuel reassignment staged for review.")
+        elif fuel_rows:
+            st.caption("No directly reassignable Fuel rows or no compatible active VDE is available.")
+
+        all_fuel_ids = tuple(int(row["id"]) for row in fuel_rows)
+        confirm_delete = st.checkbox(
+            "Delete every linked Fuel row before deleting this VDE",
+            key=f"database_management_vde_delete_dependencies_{record_id}",
+        )
+        if st.button(
+            "Stage Fuel and VDE delete",
+            key=f"database_management_vde_delete_stage_{record_id}",
+            disabled=not confirm_delete,
+        ):
+            command = _command_payload(EntityType.VDE, "DELETE", record, component_domain=None)
+            command.update(
+                {
+                    "resolution_action": "DELETE_FUEL_AND_VDE",
+                    "fuel_row_ids": all_fuel_ids,
+                }
+            )
+            _stage_command(command)
+            st.success("Explicit Fuel-first VDE delete staged for review.")
+
+        confirm_admin = st.checkbox(
+            "Administrative delete: acknowledge all linked Fuel rows will be explicitly removed",
+            key=f"database_management_vde_admin_delete_{record_id}",
+        )
+        if st.button(
+            "Stage administrative delete",
+            key=f"database_management_vde_admin_delete_stage_{record_id}",
+            disabled=not confirm_admin,
+        ):
+            command = _command_payload(EntityType.VDE, "DELETE", record, component_domain=None)
+            command.update({"resolution_action": "ADMIN_DELETE", "fuel_row_ids": all_fuel_ids})
+            _stage_command(command)
+            st.success("Administrative VDE delete staged for review.")
+
+
+def _render_impact_preview(index: int, command: dict, preview) -> object | None:
+    entity = EntityType(str(command.get("entity_type") or ""))
+    action = str(command.get("action") or "").upper()
+    if entity not in {EntityType.TIRE, EntityType.COMPONENT} or action not in {
+        "UPDATE",
+        "DELETE",
+        "REASSIGN_RELATIONSHIP",
+    }:
+        return None
+
+    choice_labels = {
+        "KEEP_EXISTING": "Keep existing VDEs and snapshots",
+        "RECALCULATE_UPDATE": "Recalculate and update existing VDE rows",
+        "RECALCULATE_NEW": "Recalculate and create new VDE rows",
+    }
+    choices = ("RECALCULATE_UPDATE", "RECALCULATE_NEW") if action == "REASSIGN_RELATIONSHIP" else tuple(choice_labels)
+    default_choice = command.get("physics_action") if command.get("physics_action") in choices else choices[0]
+    selected = st.selectbox(
+        f"Impact handling - {entity.value.title()} {command.get('record_id')}",
+        choices,
+        index=choices.index(default_choice),
+        format_func=lambda item: choice_labels[item],
+        key=f"database_management_impact_choice_{index}_{entity.value}_{command.get('record_id')}",
+    )
+    impact = preview_dependency_impact(
+        preview,
+        selected,
+        replacement_record_id=command.get("replacement_record_id"),
+        component_domain=command.get("component_domain"),
+    )
+    summary = st.columns(5)
+    summary[0].metric("Request usages", len(impact.usages))
+    summary[1].metric("Historical snapshots", len(impact.historical_usages))
+    summary[2].metric("VDE rows", len(impact.affected_vde_ids))
+    summary[3].metric("Fuel rows", len(impact.stale_fuel_rows))
+    summary[4].metric("Manual review", len(impact.review_required))
+    comparison_rows = _impact_comparison_rows(impact)
+    if comparison_rows:
+        with st.expander(f"Resolved impact - {entity.value.title()} {command.get('record_id')}"):
+            st.dataframe(pd.DataFrame(comparison_rows), hide_index=True, width="stretch")
+    if impact.review_required:
+        st.warning("Some VDE rows have no canonical saved request and cannot be recalculated automatically.")
+    return impact
+
+
+def _impact_comparison_rows(impact) -> list[dict]:
+    rows = []
+    for request in impact.request_recalculations:
+        for comparison in request.get("comparisons") or ():
+            rows.append(
+                {
+                    "Request history": request.get("request_history_id"),
+                    "Proposal": comparison.get("proposal_id"),
+                    "Walk From": comparison.get("walk_from"),
+                    "Status before": comparison.get("before_status"),
+                    "Status after": comparison.get("after_status"),
+                    "Mass before": comparison.get("before_mass_kg"),
+                    "Mass after": comparison.get("after_mass_kg"),
+                    "ABC TOTAL before": _format_abc(comparison.get("before_abc_total")),
+                    "ABC TOTAL after": _format_abc(comparison.get("after_abc_total")),
+                    "VDE before": _format_vde(comparison.get("before_vde")),
+                    "VDE after": _format_vde(comparison.get("after_vde")),
+                }
+            )
+    return rows
+
+
+def _format_abc(value: dict | None) -> str:
+    payload = dict(value or {})
+    return " / ".join(_format_number(payload.get(key)) for key in ("A", "B", "C"))
+
+
+def _format_vde(value: dict | None) -> str:
+    payload = dict(value or {})
+    total_payload = dict(payload.get("total") or {})
+    net_payload = dict(payload.get("net") or {})
+    total = _first_defined(total_payload.get("combined_mj_per_km"), total_payload.get("value"))
+    net = _first_defined(net_payload.get("combined_mj_per_km"), net_payload.get("value"))
+    return f"TOTAL {_format_number(total)} | NET {_format_number(net)}"
+
+
+def _format_number(value) -> str:
+    try:
+        return f"{float(value):.6g}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _first_defined(*values):
+    return next((value for value in values if value is not None), None)
+
+
 def _stage_command(command: dict) -> None:
     staged = list(st.session_state.get(STAGE_KEY) or [])
     identity = (command.get("entity_type"), command.get("action"), command.get("record_id"))
     for index, existing in enumerate(staged):
         if (existing.get("entity_type"), existing.get("action"), existing.get("record_id")) == identity:
             merged = dict(existing)
+            merged.update({key: deepcopy(value) for key, value in command.items() if key != "payload"})
             merged["payload"] = {**dict(existing.get("payload") or {}), **dict(command.get("payload") or {})}
             staged[index] = merged
             st.session_state[STAGE_KEY] = staged

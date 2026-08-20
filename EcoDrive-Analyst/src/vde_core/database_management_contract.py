@@ -40,6 +40,12 @@ class ChangeAction(_TextEnum):
     REASSIGN_RELATIONSHIP = "REASSIGN_RELATIONSHIP"
 
 
+class ImpactPersistenceChoice(_TextEnum):
+    KEEP_EXISTING = "KEEP_EXISTING"
+    RECALCULATE_UPDATE = "RECALCULATE_UPDATE"
+    RECALCULATE_NEW = "RECALCULATE_NEW"
+
+
 VDE_ORIGINS = frozenset({"IMPORTED_REFERENCE", "VDE_SETUP", "MANUAL", "LEGACY"})
 FUEL_ORIGINS = frozenset({"HOMOLOGATED", "MEASURED", "ESTIMATED", "POWERTRAIN_L0", "LEGACY"})
 TIRE_COMPONENT_ORIGINS = frozenset({"IMPORTED", "MANUAL", "QA", "LEGACY"})
@@ -119,6 +125,28 @@ class ChangeResult:
     committed: bool
     change_log_id: int | None = None
     affected_record_ids: tuple[str, ...] = ()
+    request_history_ids: tuple[int, ...] = ()
+    stale_fuel_row_ids: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class ImpactPreview:
+    operation_id: str
+    change_operation_id: str
+    entity_type: str
+    record_id: str
+    persistence_choice: str
+    usages: tuple[dict[str, Any], ...] = ()
+    historical_usages: tuple[dict[str, Any], ...] = ()
+    request_recalculations: tuple[dict[str, Any], ...] = ()
+    affected_vde_ids: tuple[int, ...] = ()
+    stale_fuel_rows: tuple[dict[str, Any], ...] = ()
+    review_required: tuple[dict[str, Any], ...] = ()
+    validation_issues: tuple[ValidationIssue, ...] = ()
+    can_commit: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 def normalize_entity_type(value: EntityType | str) -> EntityType:
@@ -131,6 +159,14 @@ def normalize_change_action(value: ChangeAction | str) -> ChangeAction:
     if isinstance(value, ChangeAction):
         return value
     return ChangeAction(str(value or "").strip().upper())
+
+
+def normalize_impact_persistence_choice(
+    value: ImpactPersistenceChoice | str,
+) -> ImpactPersistenceChoice:
+    if isinstance(value, ImpactPersistenceChoice):
+        return value
+    return ImpactPersistenceChoice(str(value or "").strip().upper())
 
 
 def normalize_record_origin(entity_type: EntityType, value: str | None) -> str:

@@ -15,6 +15,7 @@ from src.vde_core.vde_request_compact_state import (
     normalize_v22_state,
     resolve_v22_metadata_contexts,
 )
+from src.vde_core.vde_request_compact_adapter import build_v22_preview_bundle, compact_baseline_context
 from src.vde_core.vde_request_finalization import build_scenario_configuration_summaries, suggested_scenario_name
 from src.vde_core.vde_request_preview import build_validation_summary, validation_allows_save
 from src.vde_core.vde_request_report import build_vde_request_report_model
@@ -616,11 +617,381 @@ def load_v22_saved_request(record_id: int | str, *, services: dict | None = None
     }
 
 
+def prepare_v22_maintenance_recalculation(
+    record_id: int | str,
+    replacement: dict,
+    *,
+    direct_proposal_ids: tuple[str, ...] | list[str] = (),
+    services: dict | None = None,
+) -> dict:
+    """Resolve a saved request with an explicit catalog snapshot replacement."""
+    loaded = load_v22_saved_request(record_id, services=services)
+    if not loaded:
+        return {
+            "status": "review_required",
+            "request_history_id": int(record_id),
+            "issues": [{"code": "request_history_missing", "message": "Saved request history is unavailable."}],
+        }
+
+    state = _state_with_catalog_replacement(
+        loaded["state"],
+        replacement,
+        direct_proposal_ids={str(item) for item in direct_proposal_ids},
+    )
+    repositories = saved_component_repositories_from_state(state)
+    bundle = build_v22_preview_bundle(
+        state,
+        baseline_context=compact_baseline_context(state),
+        component_repositories=repositories,
+    )
+    state["preview"] = {
+        "status": "fresh",
+        "fingerprint": bundle.get("fingerprint"),
+        "result": bundle,
+    }
+    state["save"] = {"status": "pending", "result": None}
+    validation = dict(bundle.get("validation_summary") or {})
+    save_plan = build_v22_save_plan(state)
+    old_vde_ids = {
+        str(row.get("proposal_id") or ""): int(row["saved_vde_row_id"])
+        for row in list(loaded.get("proposal_records") or [])
+        if row.get("saved_vde_row_id") is not None
+    }
+    blocking = []
+    if not validation_allows_save(validation):
+        blocking.append({"code": "validation_not_savable", "message": "Recalculation contains blocking validation issues."})
+    if not save_plan.get("can_execute"):
+        blocking.extend(list(save_plan.get("blocking_issues") or []))
+    missing_vde_ids = [
+        str(row.get("proposal_id") or "")
+        for row in list(save_plan.get("proposals_to_save") or [])
+        if str(row.get("proposal_id") or "") not in old_vde_ids
+    ]
+    if missing_vde_ids:
+        blocking.append(
+            {
+                "code": "saved_vde_link_missing",
+                "message": "Saved VDE link is unavailable for: " + ", ".join(missing_vde_ids) + ".",
+            }
+        )
+
+    return {
+        "status": "ready" if not blocking else "review_required",
+        "request_history_id": int(loaded["record_id"]),
+        "source_record_key": loaded.get("record_key"),
+        "state": state,
+        "bundle": bundle,
+        "save_plan": save_plan,
+        "old_vde_ids": old_vde_ids,
+        "comparisons": _maintenance_comparisons(loaded, bundle),
+        "issues": blocking,
+    }
+
+
+def persist_v22_maintenance_recalculation(
+    con: sqlite3.Connection,
+    prepared: dict,
+    *,
+    strategy: str,
+) -> dict:
+    """Persist one prepared request revision using an existing transaction."""
+    normalized_strategy = str(strategy or "").strip().upper()
+    if normalized_strategy not in {"RECALCULATE_UPDATE", "RECALCULATE_NEW"}:
+        raise ValueError("Maintenance strategy must be RECALCULATE_UPDATE or RECALCULATE_NEW.")
+    if str(prepared.get("status") or "") != "ready":
+        raise ValueError("Only a ready maintenance recalculation can be persisted.")
+
+    state = normalize_v22_state(prepared.get("state") or {})
+    bundle = deepcopy(dict(prepared.get("bundle") or {}))
+    save_plan = deepcopy(dict(prepared.get("save_plan") or {}))
+    old_vde_ids = {str(key): int(value) for key, value in dict(prepared.get("old_vde_ids") or {}).items()}
+    validation = dict(bundle.get("validation_summary") or {})
+    draft = deepcopy(dict(bundle.get("draft") or build_v22_canonical_request_draft(state)))
+    fingerprint = _fingerprint_from_state(state, bundle)
+    historical_state = _build_history_state(state, bundle, fingerprint)
+    source = deepcopy(dict(draft.get("source") or {}))
+    baseline_effective = deepcopy(dict(dict(state.get("baseline") or {}).get("effective") or {}))
+    proposal_ids = [
+        str(row.get("proposal_id") or "")
+        for row in list(save_plan.get("proposals_to_save") or [])
+    ]
+    record_key = _build_record_key(fingerprint, proposal_ids)
+    _ensure_request_history_tables(con)
+    supported_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(vde_db)").fetchall()}
+
+    cursor = con.execute(
+        f"""
+        INSERT INTO {REQUEST_HISTORY_TABLE} (
+            record_key, save_plan_operation_id, source_type, interface,
+            schema_version, template_version, baseline_vde_id, legislation,
+            cycle_name, fingerprint, validation_status, save_status,
+            state_json, draft_json, preview_bundle_json, save_result_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            record_key,
+            save_plan.get("operation_id"),
+            source.get("source_type"),
+            source.get("interface"),
+            draft.get("schema_version"),
+            draft.get("template_version"),
+            baseline_effective.get("selected_baseline_vde_id"),
+            baseline_effective.get("legislation"),
+            baseline_effective.get("cycle_name"),
+            fingerprint,
+            validation.get("overall_status"),
+            "saving",
+            _json_dumps(historical_state),
+            _json_dumps(draft),
+            _json_dumps(bundle),
+            None,
+        ),
+    )
+    request_history_id = int(cursor.lastrowid)
+    saved_vde_row_ids: dict[str, int] = {}
+    stale_fuel_row_ids: list[int] = []
+
+    for proposal_row in list(save_plan.get("proposals_to_save") or []):
+        proposal_id = str(proposal_row.get("proposal_id") or "")
+        row_payload = dict(proposal_row.get("row_payload") or {})
+        if normalized_strategy == "RECALCULATE_UPDATE":
+            target_id = old_vde_ids.get(proposal_id)
+            if target_id is None:
+                raise ValueError(f"Saved VDE link is missing for {proposal_id}.")
+            before_row = con.execute("SELECT * FROM vde_db WHERE id=?", (target_id,)).fetchone()
+            if before_row is None:
+                raise ValueError(f"Saved VDE {target_id} no longer exists.")
+            _update_vde_row_for_maintenance(con, target_id, row_payload, supported_columns)
+            saved_vde_row_ids[proposal_id] = target_id
+        else:
+            saved_vde_row_ids[proposal_id] = _insert_vde_row(con, row_payload, supported_columns)
+
+    if normalized_strategy == "RECALCULATE_UPDATE":
+        stale_fuel_row_ids = _mark_fuel_rows_stale(con, tuple(saved_vde_row_ids.values()))
+
+    for row in _proposal_history_rows(state, bundle, saved_vde_row_ids):
+        con.execute(
+            f"""
+            INSERT INTO {REQUEST_HISTORY_PROPOSAL_TABLE} (
+                request_history_id, proposal_id, display_index, source_column,
+                walk_from_kind, walk_from_proposal_id, walk_from_source_column,
+                effective_metadata_json, metadata_overrides_json, domain_requests_json,
+                applied_inputs_json, resolved_snapshot_json, preview_summary_json,
+                issues_json, component_actions_json, abc_total_json, abc_net_json,
+                vde_results_json, saved_vde_row_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                request_history_id,
+                row.get("proposal_id"),
+                row.get("display_index"),
+                row.get("source_column"),
+                row.get("walk_from_kind"),
+                row.get("walk_from_proposal_id"),
+                row.get("walk_from_source_column"),
+                row.get("effective_metadata_json"),
+                row.get("metadata_overrides_json"),
+                row.get("domain_requests_json"),
+                row.get("applied_inputs_json"),
+                row.get("resolved_snapshot_json"),
+                row.get("preview_summary_json"),
+                row.get("issues_json"),
+                row.get("component_actions_json"),
+                row.get("abc_total_json"),
+                row.get("abc_net_json"),
+                row.get("vde_results_json"),
+                row.get("saved_vde_row_id"),
+            ),
+        )
+
+    save_result = {
+        "status": "success",
+        "maintenance_strategy": normalized_strategy,
+        "source_request_history_id": int(prepared["request_history_id"]),
+        "record_id": request_history_id,
+        "record_key": record_key,
+        "save_plan_operation_id": save_plan.get("operation_id"),
+        "executed_at": _utc_now_iso(),
+        "saved_proposals": [
+            {"proposal_id": proposal_id, "vde_row_id": row_id, "status": "updated" if normalized_strategy == "RECALCULATE_UPDATE" else "saved"}
+            for proposal_id, row_id in saved_vde_row_ids.items()
+        ],
+        "stale_fuel_row_ids": stale_fuel_row_ids,
+        "issues": [],
+    }
+    con.execute(
+        f"UPDATE {REQUEST_HISTORY_TABLE} SET save_status=?, save_result_json=? WHERE id=?",
+        ("success", _json_dumps(save_result), request_history_id),
+    )
+    return {
+        **save_result,
+        "request_history_id": request_history_id,
+        "saved_vde_row_ids": saved_vde_row_ids,
+    }
+
+
+def _state_with_catalog_replacement(
+    state: dict,
+    replacement: dict,
+    *,
+    direct_proposal_ids: set[str],
+) -> dict:
+    normalized = normalize_v22_state(state)
+    entity_type = str(replacement.get("entity_type") or "").strip().upper()
+    replacement_record = deepcopy(dict(replacement.get("replacement_record") or {}))
+    if entity_type == "TIRE":
+        old_id = str(replacement.get("old_record_id") or "")
+        new_id = replacement_record.get("id")
+        for proposal in list(normalized.get("proposals") or []):
+            proposal_id = str(proposal.get("proposal_id") or "")
+            inputs = dict(dict(proposal.get("inputs") or {}).get("tire") or {})
+            if proposal_id not in direct_proposal_ids and str(inputs.get("tire_db_id") or "") != old_id:
+                continue
+            inputs["tire_db_id"] = new_id
+            inputs["tire_code"] = replacement_record.get("tire_test_code") or replacement_record.get("tire_code")
+            inputs["rrc_N_per_kN"] = _first_defined(
+                replacement_record.get("rr_n_per_kn"),
+                replacement_record.get("iso_rrc_n_per_kn"),
+            )
+            inputs["tire_snapshot"] = deepcopy(replacement_record)
+            proposal.setdefault("inputs", {})["tire"] = inputs
+    elif entity_type == "COMPONENT":
+        domain = str(replacement.get("domain") or replacement_record.get("domain") or "").strip()
+        old_component_id = str(replacement.get("old_component_id") or "")
+        new_component_id = str(replacement_record.get("component_id") or replacement_record.get("component_code") or "")
+        field_map = {
+            "transmission": "transmission_component_db_id",
+            "brake": "brake_component_db_id",
+            "axle_hubs": "axle_hubs_component_db_id",
+            "parasitic": "parasitic_component_db_id",
+        }
+        input_field = field_map.get(domain)
+        if not input_field or not new_component_id:
+            raise ValueError("Component replacement requires a canonical domain and component code.")
+        for proposal in list(normalized.get("proposals") or []):
+            proposal_id = str(proposal.get("proposal_id") or "")
+            inputs = dict(dict(proposal.get("inputs") or {}).get(domain) or {})
+            if proposal_id not in direct_proposal_ids and str(inputs.get(input_field) or "") != old_component_id:
+                continue
+            inputs[input_field] = new_component_id
+            proposal.setdefault("inputs", {})[domain] = inputs
+        snapshots = deepcopy(dict(normalized.get("saved_component_repository_snapshots") or {}))
+        snapshots.setdefault(domain, {})[new_component_id] = deepcopy(replacement_record)
+        normalized["saved_component_repository_snapshots"] = snapshots
+    else:
+        raise ValueError("Only Tire and Component snapshots support maintenance replacement.")
+    normalized["preview"] = {"status": "stale", "fingerprint": None, "result": None}
+    normalized["save"] = {"status": "pending", "result": None}
+    return normalized
+
+
+def _maintenance_comparisons(loaded: dict, bundle: dict) -> list[dict]:
+    before_by_id = {
+        str(row.get("proposal_id") or ""): dict(row)
+        for row in list(loaded.get("proposal_records") or [])
+    }
+    comparisons = []
+    for after in list(dict(bundle.get("resolution_result") or {}).get("proposal_results") or []):
+        proposal_id = str(after.get("proposal_id") or "")
+        before = before_by_id.get(proposal_id, {})
+        before_snapshot = dict(before.get("resolved_snapshot") or {})
+        after_snapshot = dict(after.get("resolved_snapshot") or {})
+        comparisons.append(
+            {
+                "proposal_id": proposal_id,
+                "walk_from": dict(after.get("walk_from") or {}).get("label"),
+                "before_status": _proposal_status(before),
+                "after_status": after.get("status"),
+                "before_mass_kg": _first_defined(
+                    before_snapshot.get("vde_calculation_mass_kg"),
+                    before_snapshot.get("test_mass_kg"),
+                    before_snapshot.get("mass_kg"),
+                ),
+                "after_mass_kg": _first_defined(
+                    after_snapshot.get("vde_calculation_mass_kg"),
+                    after_snapshot.get("test_mass_kg"),
+                    after_snapshot.get("mass_kg"),
+                ),
+                "before_abc_total": deepcopy(dict(before.get("abc_total") or {})),
+                "after_abc_total": deepcopy(dict(after.get("abc_total") or {})),
+                "before_vde": deepcopy(dict(before.get("vde_results") or {})),
+                "after_vde": deepcopy(dict(after.get("vde_results") or {})),
+            }
+        )
+    return comparisons
+
+
+def _proposal_status(proposal_record: dict) -> str | None:
+    blocking = [
+        str(item.get("severity") or "").strip().lower()
+        for item in list(proposal_record.get("issues") or [])
+    ]
+    if "blocked" in blocking:
+        return "Blocked"
+    if "invalid" in blocking:
+        return "Invalid"
+    if "missing" in blocking:
+        return "Missing"
+    if "review" in blocking or "warning" in blocking:
+        return "Review"
+    return "OK"
+
+
+def _first_defined(*values):
+    return next((value for value in values if value is not None), None)
+
+
+def _update_vde_row_for_maintenance(
+    con: sqlite3.Connection,
+    row_id: int,
+    row_payload: dict,
+    supported_columns: set[str],
+) -> None:
+    payload = autoresolve_test_mass(
+        {
+            key: value
+            for key, value in dict(row_payload or {}).items()
+            if key in supported_columns and key not in {"id", "created_at", "updated_at"}
+        }
+    )
+    if "updated_at" in supported_columns:
+        payload["updated_at"] = _utc_now_iso()
+    if not payload:
+        raise ValueError(f"No VDE values were resolved for row {row_id}.")
+    columns = list(payload)
+    con.execute(
+        f"UPDATE vde_db SET {', '.join(f'{column}=?' for column in columns)} WHERE id=?",
+        [payload[column] for column in columns] + [int(row_id)],
+    )
+
+
+def _mark_fuel_rows_stale(con: sqlite3.Connection, vde_ids: tuple[int, ...]) -> list[int]:
+    if not vde_ids:
+        return []
+    placeholders = ",".join("?" for _ in vde_ids)
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        f"SELECT id, record_origin FROM fuelcons_db WHERE vde_id IN ({placeholders}) ORDER BY id",
+        tuple(vde_ids),
+    ).fetchall()
+    updated_at = _utc_now_iso()
+    for row in rows:
+        origin = str(row["record_origin"] or "LEGACY").strip().upper()
+        status = "STALE_VDE" if origin in {"ESTIMATED", "POWERTRAIN_L0"} else "REVIEW_REQUIRED"
+        con.execute(
+            "UPDATE fuelcons_db SET review_status=?, updated_at=? WHERE id=?",
+            (status, updated_at, int(row["id"])),
+        )
+    return [int(row["id"]) for row in rows]
+
+
 __all__ = [
     "REQUEST_HISTORY_PROPOSAL_TABLE",
     "REQUEST_HISTORY_TABLE",
     "build_v22_save_plan",
     "load_v22_saved_request",
+    "persist_v22_maintenance_recalculation",
+    "prepare_v22_maintenance_recalculation",
     "save_v22_request",
     "saved_component_repositories_from_state",
 ]

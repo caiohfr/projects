@@ -22,6 +22,7 @@ from src.vde_core.repositories import (
     insert_fuelcons_row,
     update_fuelcons_by_id,
 )
+from src.vde_core.vde_net_total_contract import canonical_vde_read
 from src.vde_core.vde_setup_service import to_float
 
 
@@ -169,21 +170,19 @@ def summarize_saved_scenario_revision_states(
 
 def resolve_vde_energy_values(vde_row: dict) -> dict[str, Any]:
     row = dict(vde_row or {})
-    vde_total = to_float(row.get("vde_total_mj_per_km"))
-    vde_net = to_float(row.get("vde_net_mj_per_km"))
+    row["vde_total_mj_per_km"] = to_float(row.get("vde_total_mj_per_km"))
+    row["vde_net_mj_per_km"] = to_float(row.get("vde_net_mj_per_km"))
+    canonical = canonical_vde_read(row)
     warnings: list[str] = []
 
-    if vde_total is None and vde_net is not None:
-        vde_total = vde_net
-        warnings.append("legacy_vde_net_used_as_total_candidate")
-    if vde_total is None:
+    if canonical.total_mj_per_km is None:
         warnings.append("vde_total_missing")
-    if vde_net is None:
+    if canonical.net_mj_per_km is None:
         warnings.append("vde_net_missing")
 
     return {
-        "vde_total_mj_per_km": vde_total,
-        "vde_net_mj_per_km": vde_net,
+        "vde_total_mj_per_km": canonical.total_mj_per_km,
+        "vde_net_mj_per_km": canonical.net_mj_per_km,
         "warnings": warnings,
     }
 

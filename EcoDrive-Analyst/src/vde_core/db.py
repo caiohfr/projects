@@ -183,6 +183,7 @@ def _backfill_database_management_defaults() -> None:
         defaults = (
             ("vde_db", "record_origin", "LEGACY"),
             ("vde_db", "record_status", "ACTIVE"),
+            ("vde_db", "review_status", "CURRENT"),
             ("fuelcons_db", "record_origin", "LEGACY"),
             ("fuelcons_db", "record_status", "ACTIVE"),
             ("fuelcons_db", "review_status", "CURRENT"),
@@ -282,6 +283,9 @@ def ensure_migrations() -> None:
         "trailer_C_coef_Npkph2": "REAL",
         "mass_rule_status": "TEXT",
         "mass_rule_notes": "TEXT",
+    })
+    added += ensure_columns("vde_db", {
+        "review_status": "TEXT DEFAULT 'CURRENT'",
     })
     added += ensure_columns("tire_roadload_db", {
         "calculation_mode": "TEXT",

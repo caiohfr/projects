@@ -36,12 +36,31 @@ class PwtFuelEnergyServiceTests(unittest.TestCase):
         self.assertAlmostEqual(result["vde_total_mj_per_km"], 2.0)
         self.assertEqual(result["warnings"], [])
 
-    def test_resolve_vde_energy_values_falls_back_from_legacy_net(self):
+    def test_resolve_vde_energy_values_never_promotes_net_only_row_without_legacy_origin(self):
         result = resolve_vde_energy_values({"vde_net_mj_per_km": 1.84})
 
-        self.assertAlmostEqual(result["vde_total_mj_per_km"], 1.84)
+        self.assertIsNone(result["vde_total_mj_per_km"])
+        self.assertIsNone(result["vde_net_mj_per_km"])
+        self.assertIn("vde_total_missing", result["warnings"])
+        self.assertNotIn("legacy_vde_net_used_as_total_candidate", result["warnings"])
+
+    def test_resolve_vde_energy_values_reports_legacy_row_as_total_unavailable(self):
+        result = resolve_vde_energy_values(
+            {"vde_net_mj_per_km": 1.84, "record_origin": "LEGACY"}
+        )
+
+        self.assertIsNone(result["vde_total_mj_per_km"])
+        self.assertIsNone(result["vde_net_mj_per_km"])
+        self.assertIn("vde_total_missing", result["warnings"])
+
+    def test_resolve_vde_energy_values_reports_canonical_total_and_net(self):
+        result = resolve_vde_energy_values(
+            {"vde_total_mj_per_km": 2.0, "vde_net_mj_per_km": 1.84, "record_origin": "VDE_SETUP"}
+        )
+
+        self.assertAlmostEqual(result["vde_total_mj_per_km"], 2.0)
         self.assertAlmostEqual(result["vde_net_mj_per_km"], 1.84)
-        self.assertIn("legacy_vde_net_used_as_total_candidate", result["warnings"])
+        self.assertEqual(result["warnings"], [])
 
     def test_build_fuel_estimate_request_from_vde_maps_row_into_contract(self):
         request = build_fuel_estimate_request_from_vde(
@@ -78,7 +97,7 @@ class PwtFuelEnergyServiceTests(unittest.TestCase):
         self.assertEqual(request.energy_basis, "VDE_TOTAL")
         self.assertEqual(request.method, "physics_simple")
         self.assertEqual(request.vehicle_features["electrification"], "HEV")
-        self.assertAlmostEqual(request.vehicle_features["vde_total_mj_per_km"], 1.7)
+        self.assertIsNone(request.vehicle_features["vde_total_mj_per_km"])
         self.assertAlmostEqual(request.vehicle_features["mass_kg"], 1735.0)
         self.assertAlmostEqual(request.vehicle_features["test_mass_kg"], 1814.0)
         self.assertAlmostEqual(request.vehicle_features["inertia_class"], 1814.0)
@@ -87,6 +106,10 @@ class PwtFuelEnergyServiceTests(unittest.TestCase):
         self.assertAlmostEqual(request.vehicle_features["coast_A_N"], 120.0)
         self.assertEqual(request.vehicle_features["source_vde_revision"], "2026-06-23T09:30:00")
         self.assertIn(
+            "vde_total_missing",
+            request.vehicle_features["compatibility_warnings"],
+        )
+        self.assertNotIn(
             "legacy_vde_net_used_as_total_candidate",
             request.vehicle_features["compatibility_warnings"],
         )

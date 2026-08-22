@@ -126,6 +126,7 @@ from src.vde_core.vde_request_compact_state import (
     set_v22_tire_pressure_unit_preference,
 )
 from src.vde_core.vde_request_contract import is_blank
+from src.vde_core.vde_net_total_contract import canonical_vde_read
 
 
 V22_SESSION_KEY = "vde_setup_v22"
@@ -964,7 +965,7 @@ def _baseline_summary_rows_cached(db_path_signature: str) -> list[dict]:
                 "Cycle": row.get("cycle") or row.get("cycle_name"),
                 "Test mass": row.get("test_mass_kg") or row.get("mass_kg"),
                 "ABC_TOTAL": _abc_label(row),
-                "VDE_TOTAL": row.get("vde_total") or row.get("vde_total_mj_per_km") or row.get("vde_net_mj_per_km"),
+                "VDE_TOTAL": canonical_vde_read(row).total_mj_per_km,
                 "Notes": row.get("notes"),
             }
         )

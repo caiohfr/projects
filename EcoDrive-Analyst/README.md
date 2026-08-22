@@ -49,6 +49,11 @@ Core idea:
 
 - `VDE_TOTAL` is the demand derived from `ABC_TOTAL`
 - `VDE_NET` is available only when transmission losses / neutral drag are resolved
+- Historical EcoDrive VDE records stored `VDE_TOTAL` in `vde_net_mj_per_km` (Package 7G
+  normalized affected rows). New code must read TOTAL/NET through
+  `src/vde_core/vde_net_total_contract.py::canonical_vde_read()` and must never use
+  `vde_net_mj_per_km` as a fallback for TOTAL — see
+  `docs/sprints/PACKAGE_7G_VDE_NET_TOTAL_CONTRACT.md`.
 
 ### Powertrain Scenario
 

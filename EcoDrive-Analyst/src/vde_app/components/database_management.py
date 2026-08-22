@@ -51,6 +51,7 @@ _DETAIL_FIELDS = {
         "engine_type", "engine_model", "transmission_type", "transmission_model", "drive_type",
         "mass_kg", "test_mass_kg", "inertia_class", "cda_m2", "weight_dist_fr_pct", "payload_kg",
         "coast_A_N", "coast_B_N_per_kph", "coast_C_N_per_kph2",
+        "vde_total_mj_per_km", "vde_net_mj_per_km", "review_status",
     ),
     EntityType.FUEL_CONSUMPTION: (
         "vde_id", "electrification", "fuel_type", "method_note", "source_name", "source_record_id",

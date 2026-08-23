@@ -19,6 +19,7 @@ from src.vde_core.comparison_report_service import (
     build_scenario_comparison_item,
     build_vde_comparison_item,
     list_comparison_scenarios,
+    list_vde_catalog,
     resolve_cycle_vde_results,
     resolve_roadload_boundaries,
     resolve_temporary_transmission_from_component,
@@ -351,6 +352,36 @@ class ScenarioCatalogTests(unittest.TestCase):
 
     def test_catalog_empty_filter_matches_nothing(self):
         rows = list_comparison_scenarios({"make": "NOT-A-REAL-MAKE"})
+        self.assertEqual(rows, [])
+
+
+class VdeCatalogTests(unittest.TestCase):
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "vde_catalog.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def test_catalog_lists_qa_vde_rows_without_full_resolution(self):
+        rows = list_vde_catalog()
+        self.assertEqual(len(rows), 7)
+        for row in rows:
+            self.assertIn("vde_id", row)
+            self.assertIn("legislation", row)
+            self.assertNotIn("roadload", row)
+
+    def test_catalog_filters_by_legislation(self):
+        rows = list_vde_catalog({"legislation": "EPA"})
+        self.assertEqual(len(rows), 7)
+
+    def test_catalog_filters_by_unknown_make_returns_empty(self):
+        rows = list_vde_catalog({"make": "NOT-A-REAL-MAKE"})
         self.assertEqual(rows, [])
 
 

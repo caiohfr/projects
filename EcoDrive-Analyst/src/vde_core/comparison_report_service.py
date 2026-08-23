@@ -725,6 +725,32 @@ def list_comparison_scenarios(filters: Mapping[str, Any] | None = None) -> list[
     return db_module.fetchall(sql, tuple(params)) if params else db_module.fetchall(sql)
 
 
+def list_vde_catalog(filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Lightweight bare-VDE catalog for the "Select VDEs directly" mode (Sec 24) --
+    never resolves a full ComparisonItem just to populate a selector.
+    """
+    filters = filters or {}
+    sql = (
+        "SELECT id AS vde_id, make, model, year, category, legislation, record_origin "
+        "FROM vde_db WHERE 1=1"
+    )
+    params: list[Any] = []
+    if filters.get("make"):
+        sql += " AND make = ?"
+        params.append(filters["make"])
+    if filters.get("legislation"):
+        sql += " AND legislation = ?"
+        params.append(filters["legislation"])
+    if filters.get("category"):
+        sql += " AND category = ?"
+        params.append(filters["category"])
+    if filters.get("record_origin"):
+        sql += " AND record_origin = ?"
+        params.append(filters["record_origin"])
+    sql += " ORDER BY COALESCE(updated_at, created_at) DESC"
+    return db_module.fetchall(sql, tuple(params)) if params else db_module.fetchall(sql)
+
+
 # -----------------------------------------------------------------------------
 # Metric comparison (Sec 22-27)
 # -----------------------------------------------------------------------------
@@ -865,5 +891,6 @@ __all__ = [
     "build_scenario_comparison_item",
     "build_comparison_dataset",
     "list_comparison_scenarios",
+    "list_vde_catalog",
     "compare_metric",
 ]

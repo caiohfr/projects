@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from src.vde_app.units import format_quantity
-from src.vde_core.comparison_metric_registry import list_metrics
+from src.vde_core.comparison_metric_registry import get_metric, list_metrics
+from src.vde_core.fuel_energy import LHV_MJ_PER_L, MJ_TO_Wh
 from src.vde_core.comparison_report_service import (
     ComparisonDataset,
     ComparisonItem,
@@ -358,6 +359,364 @@ def build_scenario_header(item: ComparisonItem) -> dict[str, Any]:
     }
 
 
+def build_reference_summary(item: ComparisonItem) -> dict[str, Any]:
+    """Compact Reference summary for the Dashboard tab (Sec 7). No score, no badge."""
+    aggregate = item.vde["aggregate"]
+    fuel = item.fuel_energy or {}
+    return {
+        "label": item.label or "Unknown vehicle",
+        "legislation": item.vehicle.get("legislation"),
+        "cycle_name": item.vehicle.get("cycle_name"),
+        "record_origin": item.provenance.record_origin,
+        "vde_total": aggregate.get("total"),
+        "vde_net": aggregate.get("net"),
+        "fuel_l_per_100km": fuel.get("fuel_l_per_100km"),
+        "fuel_km_per_l": fuel.get("fuel_km_per_l"),
+        "energy_wh_per_km": fuel.get("energy_Wh_per_km"),
+        "gco2_per_km": fuel.get("gco2_per_km"),
+        "eta_pt_est": fuel.get("eta_pt_est"),
+    }
+
+
+@dataclass(frozen=True)
+class BarRow:
+    label: str
+    value: float
+    formatted_value: str
+    semantic: str | None
+
+
+def build_metric_bar_rows(
+    dataset: ComparisonDataset, metric_key: str, *, unit_system: str = "Metric"
+) -> dict[str, list]:
+    """One generic row-builder reused for VDE/fuel/energy/CO2/mass/CdA/RRC bars.
+    Always routes through compare_metric() -- never re-implements delta/compatibility.
+    Nothing is silently dropped: excluded items carry an explicit reason (Sec 10, 41).
+    """
+    metric = get_metric(metric_key)
+    if metric is None:
+        return {"rows": [], "excluded": []}
+
+    rows: list[BarRow] = []
+    excluded: list[dict[str, str]] = []
+
+    self_result = compare_metric(dataset.reference, dataset.reference, metric_key)
+    ref_label = dataset.reference.label or "Unknown vehicle"
+    if self_result["available"]:
+        rows.append(
+            BarRow(
+                label=ref_label,
+                value=self_result["reference_value"],
+                formatted_value=format_value(self_result["reference_value"], metric.unit_family, unit_system),
+                semantic=None,
+            )
+        )
+    else:
+        excluded.append({"label": ref_label, "reason": f"{metric.label} unavailable"})
+
+    for item in dataset.comparisons:
+        result = compare_metric(dataset.reference, item, metric_key)
+        label = item.label or "Unknown vehicle"
+        if not result["compatible"]:
+            excluded.append({"label": label, "reason": "Different cycle / incompatible basis"})
+            continue
+        if not result["available"]:
+            excluded.append({"label": label, "reason": f"{metric.label} unavailable"})
+            continue
+        rows.append(
+            BarRow(
+                label=label,
+                value=result["comparison_value"],
+                formatted_value=format_value(result["comparison_value"], metric.unit_family, unit_system),
+                semantic=_semantic_for_display(result["semantic"]),
+            )
+        )
+    return {"rows": rows, "excluded": excluded}
+
+
+# -----------------------------------------------------------------------------
+# Roadload & VDE physical chart data preparation (Sec 22-38, Package 8C)
+#
+# Physical traces (ABC, roadload curve, cycle demand) are a pure function of
+# vde_id + boundary -- two FuelCons scenarios sharing one VDE would otherwise
+# draw two identical overlapping traces. This dedup applies ONLY here, never
+# to Scorecard/Dashboard scenario-level rows (Sec 25).
+# -----------------------------------------------------------------------------
+
+
+def _scenario_identity(item: ComparisonItem) -> str:
+    if item.fuelcons_id is not None:
+        origin = item.provenance.record_origin or "UNKNOWN"
+        return f"{origin} (#{item.fuelcons_id})"
+    return item.label or f"VDE #{item.vde_id}"
+
+
+@dataclass(frozen=True)
+class DedupedVdeGroup:
+    vde_id: int
+    label: str
+    used_by: tuple[str, ...]
+    item: ComparisonItem
+
+
+def deduplicate_by_vde_id(items: Sequence[ComparisonItem]) -> list[DedupedVdeGroup]:
+    groups: dict[int, DedupedVdeGroup] = {}
+    order: list[int] = []
+    for item in items:
+        if item.vde_id is None:
+            continue
+        identity = _scenario_identity(item)
+        if item.vde_id not in groups:
+            groups[item.vde_id] = DedupedVdeGroup(
+                vde_id=item.vde_id, label=item.label or f"VDE #{item.vde_id}", used_by=(identity,), item=item
+            )
+            order.append(item.vde_id)
+        else:
+            existing = groups[item.vde_id]
+            if identity not in existing.used_by:
+                groups[item.vde_id] = DedupedVdeGroup(
+                    vde_id=existing.vde_id, label=existing.label, used_by=existing.used_by + (identity,), item=existing.item
+                )
+    return [groups[vde_id] for vde_id in order]
+
+
+def build_abc_rows(dataset: ComparisonDataset, boundary: str) -> dict[str, list]:
+    boundary_key = boundary.lower()
+    groups = deduplicate_by_vde_id((dataset.reference, *dataset.comparisons))
+    rows: list[dict[str, Any]] = []
+    excluded: list[dict[str, str]] = []
+    for group in groups:
+        rb = group.item.roadload[boundary_key]
+        if not rb.available:
+            excluded.append({"label": group.label, "reason": f"Roadload {boundary} unavailable"})
+            continue
+        rows.append({"label": group.label, "used_by": group.used_by, "A": rb.A, "B": rb.B, "C": rb.C})
+    return {"rows": rows, "excluded": excluded}
+
+
+def build_roadload_curve_rows(dataset: ComparisonDataset, boundary: str) -> dict[str, list]:
+    """Row shape matches plots.roadload_curve_comparison_chart's expected input
+    exactly ({label, A_N, B_N_per_kph, C_N_per_kph2}) -- no adapter needed at
+    the render layer.
+    """
+    boundary_key = boundary.lower()
+    groups = deduplicate_by_vde_id((dataset.reference, *dataset.comparisons))
+    rows: list[dict[str, Any]] = []
+    excluded: list[dict[str, str]] = []
+    for group in groups:
+        rb = group.item.roadload[boundary_key]
+        if not rb.available:
+            excluded.append({"label": group.label, "reason": f"Roadload {boundary} unavailable"})
+            continue
+        rows.append({"label": group.label, "A_N": rb.A, "B_N_per_kph": rb.B, "C_N_per_kph2": rb.C})
+    return {"rows": rows, "excluded": excluded}
+
+
+def build_cycle_demand_rows(dataset: ComparisonDataset, cycle_frame, boundaries: Sequence[str]) -> dict[str, Any]:
+    """Thin adapter: builds the `scenarios` list roadload_analysis.build_cycle_power_analysis
+    expects from deduped ComparisonItems, then returns its `series` unmodified --
+    the power/energy math itself is never re-implemented here.
+    """
+    from src.vde_core.roadload_analysis import build_cycle_power_analysis
+
+    groups = deduplicate_by_vde_id((dataset.reference, *dataset.comparisons))
+    scenarios = []
+    for group in groups:
+        total_rb = group.item.roadload["total"]
+        net_rb = group.item.roadload["net"]
+        scenarios.append(
+            {
+                "id": str(group.vde_id),
+                "label": group.label,
+                "mass_kg": group.item.vehicle.get("mass_kg"),
+                "total": {"A": total_rb.A, "B": total_rb.B, "C": total_rb.C} if total_rb.available else {},
+                "net": {"A": net_rb.A, "B": net_rb.B, "C": net_rb.C} if net_rb.available else {},
+            }
+        )
+    analysis = build_cycle_power_analysis(cycle_frame, scenarios)
+
+    resolved = {(s["scenario_id"], s["boundary"]) for s in analysis["series"]}
+    excluded: list[dict[str, str]] = []
+    for group in groups:
+        for boundary in boundaries:
+            if (str(group.vde_id), boundary) not in resolved:
+                excluded.append({"label": group.label, "reason": f"Roadload {boundary} or mass unavailable"})
+
+    return {
+        "time_s": analysis["time_s"],
+        "speed_kph": analysis["speed_kph"],
+        "series": [s for s in analysis["series"] if s["boundary"] in boundaries],
+        "excluded": excluded,
+    }
+
+
+# -----------------------------------------------------------------------------
+# FE x VDE / equi-PSE and competitor delta (Sec 15-21, Package 8C)
+#
+# The three inconsistent LHV tables found in the repo (fuel_energy.py,
+# derivatives.py, plots.py's hardcoded default) are resolved by treating
+# fuel_energy.py::LHV_MJ_PER_L/MJ_TO_Wh as canonical -- it is what actually
+# backs the stored consumption numbers, unlike the other two display-only
+# tables. "Flex"/"Electric"/unknown fuel_type is not LHV-mappable and is
+# excluded rather than guessed (never invent a blend percentage).
+# -----------------------------------------------------------------------------
+
+_LHV_MAPPABLE_FUEL_TYPES = {"Gasoline": "Gasoline", "Diesel": "Diesel", "Ethanol": "E100"}
+
+
+def is_temporary_net(item: ComparisonItem) -> bool:
+    return "temporary_transmission_used" in item.warnings
+
+
+def _consumed_energy_mj_per_km(fuel: Mapping[str, Any]) -> float | None:
+    if fuel.get("electrification") == "BEV":
+        wh = fuel.get("energy_Wh_per_km")
+        return (wh / MJ_TO_Wh) if wh is not None else None
+    lhv_key = _LHV_MAPPABLE_FUEL_TYPES.get(fuel.get("fuel_type"))
+    l100 = fuel.get("fuel_l_per_100km")
+    if lhv_key is None or l100 is None:
+        return None
+    return (l100 / 100.0) * LHV_MJ_PER_L[lhv_key]
+
+
+def build_fe_vde_points(dataset: ComparisonDataset, *, boundary: str, mode: str) -> dict[str, list]:
+    """mode in {"volumetric", "energy_normalized", "electrical"}. x is always
+    item.vde["aggregate"][boundary] -- never a fallback boundary. Excluded
+    points always carry a reason (Sec 16, 41); nothing is silently dropped.
+    """
+    boundary_key = boundary.lower()
+    reference = dataset.reference
+    ref_fuel_type = (reference.fuel_energy or {}).get("fuel_type")
+    points: list[dict[str, Any]] = []
+    excluded: list[dict[str, str]] = []
+
+    for item in (reference, *dataset.comparisons):
+        label = item.label or "Unknown vehicle"
+        x = item.vde["aggregate"].get(boundary_key)
+        if x is None:
+            excluded.append({"label": label, "reason": f"VDE {boundary} unavailable"})
+            continue
+
+        fuel = item.fuel_energy or {}
+        if mode == "volumetric":
+            fuel_type = fuel.get("fuel_type")
+            if not fuel_type or (item is not reference and fuel_type != ref_fuel_type):
+                excluded.append({"label": label, "reason": "Different fuel family - use energy-normalized mode"})
+                continue
+            y = fuel.get("fuel_l_per_100km")
+            if y is None:
+                excluded.append({"label": label, "reason": "Fuel consumption unavailable"})
+                continue
+        elif mode == "energy_normalized":
+            y = _consumed_energy_mj_per_km(fuel)
+            if y is None:
+                excluded.append({"label": label, "reason": "Fuel blend not resolvable to an energy basis"})
+                continue
+        elif mode == "electrical":
+            if fuel.get("electrification") != "BEV":
+                excluded.append({"label": label, "reason": "Not a BEV scenario"})
+                continue
+            y = fuel.get("energy_Wh_per_km")
+            if y is None:
+                excluded.append({"label": label, "reason": "Electrical energy unavailable"})
+                continue
+        else:
+            raise ValueError(f"Unknown FE x VDE mode: {mode!r}")
+
+        points.append(
+            {
+                "label": label,
+                "role": item.role.value,
+                "x": x,
+                "y": y,
+                "provenance": item.provenance.record_origin,
+                "is_temporary_net": is_temporary_net(item),
+                "revision_status": item.provenance.revision_status.value if item.provenance.revision_status else None,
+            }
+        )
+    return {"points": points, "excluded": excluded}
+
+
+def _linspace(start: float, stop: float, num: int) -> list[float]:
+    if num < 2 or start == stop:
+        return [start] * max(num, 1)
+    step = (stop - start) / (num - 1)
+    return [start + step * i for i in range(num)]
+
+
+def build_iso_pse_lines(
+    x_min: float, x_max: float, eta_values: Sequence[float], *, mode: str, fuel_type: str | None = None
+) -> list[dict[str, Any]]:
+    """Reuses the same PSE ratio (demand/consumed) as powertrain_efficiency.py,
+    inverted to solve for y given x and eta -- never a duplicated equation.
+    Returns [] (no lines, not fake ones) when the dataset doesn't support a
+    defensible line for this mode/fuel_type (Sec 18-19).
+    """
+    lhv = None
+    if mode == "volumetric":
+        lhv_key = _LHV_MAPPABLE_FUEL_TYPES.get(fuel_type)
+        if lhv_key is None:
+            return []
+        lhv = LHV_MJ_PER_L[lhv_key]
+    elif mode not in ("energy_normalized", "electrical"):
+        raise ValueError(f"Unknown FE x VDE mode: {mode!r}")
+
+    xs = _linspace(x_min, x_max, 40)
+    lines: list[dict[str, Any]] = []
+    for eta in eta_values:
+        if eta is None or eta <= 0:
+            continue
+        if mode == "volumetric":
+            ys = [x / eta / lhv * 100.0 for x in xs]
+        elif mode == "energy_normalized":
+            ys = [x / eta for x in xs]
+        else:  # electrical
+            ys = [x * MJ_TO_Wh / eta for x in xs]
+        lines.append({"eta": eta, "x": list(xs), "y": ys})
+    return lines
+
+
+def build_competitor_delta_rows(
+    dataset: ComparisonDataset, metric_key: str
+) -> dict[str, list]:
+    """Reference is fixed at 0%/no-verdict; comparisons come straight from
+    compare_metric() -- delta semantics are never recomputed here (Sec 20-21).
+    """
+    metric = get_metric(metric_key)
+    if metric is None:
+        return {"rows": [], "excluded": []}
+
+    rows: list[dict[str, Any]] = [
+        {
+            "label": dataset.reference.label or "Unknown vehicle",
+            "role": "REFERENCE",
+            "percent_delta": 0.0,
+            "absolute_delta": 0.0,
+            "semantic": None,
+        }
+    ]
+    excluded: list[dict[str, str]] = []
+    for item in dataset.comparisons:
+        result = compare_metric(dataset.reference, item, metric_key)
+        label = item.label or "Unknown vehicle"
+        if not result["compatible"]:
+            excluded.append({"label": label, "reason": "Different cycle / incompatible basis"})
+            continue
+        if not result["available"]:
+            excluded.append({"label": label, "reason": f"{metric.label} unavailable"})
+            continue
+        rows.append(
+            {
+                "label": label,
+                "role": "COMPARISON",
+                "percent_delta": result["percent_delta"],
+                "absolute_delta": result["absolute_delta"],
+                "semantic": _semantic_for_display(result["semantic"]),
+            }
+        )
+    return {"rows": rows, "excluded": excluded}
+
+
 def dataset_warnings_summary(dataset: ComparisonDataset) -> list[str]:
     items = (dataset.reference, *dataset.comparisons)
     warnings: list[str] = []
@@ -396,4 +755,16 @@ __all__ = [
     "build_scorecard_sections",
     "build_scenario_header",
     "dataset_warnings_summary",
+    "build_reference_summary",
+    "BarRow",
+    "build_metric_bar_rows",
+    "DedupedVdeGroup",
+    "deduplicate_by_vde_id",
+    "build_abc_rows",
+    "build_roadload_curve_rows",
+    "build_cycle_demand_rows",
+    "is_temporary_net",
+    "build_fe_vde_points",
+    "build_iso_pse_lines",
+    "build_competitor_delta_rows",
 ]

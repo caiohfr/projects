@@ -10,17 +10,28 @@ from src.vde_app.comparison_report_viewmodels import (
     MAX_COMPARISONS,
     SelectionState,
     add_comparison,
+    build_abc_rows,
+    build_competitor_delta_rows,
+    build_cycle_demand_rows,
+    build_fe_vde_points,
+    build_iso_pse_lines,
+    build_metric_bar_rows,
+    build_reference_summary,
+    build_roadload_curve_rows,
     build_scenario_header,
     build_scenario_options,
     build_scorecard_sections,
     dataset_warnings_summary,
+    deduplicate_by_vde_id,
     format_value,
+    is_temporary_net,
     remove_comparison,
     set_reference,
     sync_comparisons_from_widget,
 )
 from src.vde_core import db as db_module
 from src.vde_core.comparison_report_service import (
+    ComparisonDataset,
     ComparisonRole,
     build_scenario_comparison_item,
     build_vde_comparison_item,
@@ -325,6 +336,236 @@ class ScorecardConstructionTests(unittest.TestCase):
         self.assertIn("stale", joined.lower())
         self.assertIn("NET boundary", joined)
         self.assertIn("Mixed legislations", joined)
+
+
+class DashboardRoadloadViewModelTests(unittest.TestCase):
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "dashboard.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+        with sqlite3.connect(self.db_path) as con:
+            rows = [
+                (1, 900001, "ICE", "Gasoline", "HOMOLOGATED", 6.0, 16.7, None, 140.0, 0.30),
+                (2, 900001, "ICE", "Gasoline", "ESTIMATED", 6.5, 15.4, None, 150.0, 0.28),  # shares VDE with #1
+                (3, 900006, "BEV", "Electric", "ESTIMATED", None, None, 150.0, 0.0, 0.90),  # missing transmission -> no NET
+            ]
+            con.executemany(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, "
+                "fuel_l_per_100km, fuel_km_per_l, energy_Wh_per_km, gco2_per_km, eta_pt_est) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            con.commit()
+        self.reference = build_scenario_comparison_item(1, role=ComparisonRole.REFERENCE)
+        self.same_vde = build_scenario_comparison_item(2)
+        self.bev_no_net = build_scenario_comparison_item(3)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def _dataset(self, comparisons):
+        return ComparisonDataset(reference=self.reference, comparisons=tuple(comparisons))
+
+    def test_reference_summary_has_no_score(self):
+        summary = build_reference_summary(self.reference)
+        self.assertEqual(summary["vde_total"], 1.24)
+        self.assertNotIn("score", summary)
+
+    def test_metric_bar_rows_include_reference_and_comparison(self):
+        dataset = self._dataset([self.same_vde])
+        result = build_metric_bar_rows(dataset, "vde_total")
+        self.assertEqual(len(result["rows"]), 2)
+        self.assertEqual(result["excluded"], [])
+
+    def test_metric_bar_rows_net_excludes_missing_with_reason_never_falls_back(self):
+        dataset = self._dataset([self.bev_no_net])
+        result = build_metric_bar_rows(dataset, "vde_net")
+        self.assertEqual(len(result["rows"]), 1)  # only reference has NET
+        self.assertEqual(len(result["excluded"]), 1)
+        self.assertIn("unavailable", result["excluded"][0]["reason"])
+
+    def test_dedup_by_vde_id_collapses_shared_vde_with_attribution(self):
+        dataset = self._dataset([self.same_vde])
+        groups = deduplicate_by_vde_id((dataset.reference, *dataset.comparisons))
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0].used_by), 2)
+        self.assertEqual(len(dataset.comparisons), 1)  # Scorecard-level distinctness untouched (8B)
+
+    def test_abc_rows_dedup_and_reflect_boundary(self):
+        dataset = self._dataset([self.same_vde])
+        result = build_abc_rows(dataset, "TOTAL")
+        self.assertEqual(len(result["rows"]), 1)
+        self.assertEqual(len(result["rows"][0]["used_by"]), 2)
+        self.assertEqual(result["rows"][0]["A"], 118.0)
+
+    def test_roadload_curve_rows_match_plots_module_shape(self):
+        dataset = self._dataset([])
+        result = build_roadload_curve_rows(dataset, "TOTAL")
+        self.assertEqual(len(result["rows"]), 1)
+        self.assertEqual(set(result["rows"][0]) - {"label"}, {"A_N", "B_N_per_kph", "C_N_per_kph2"})
+
+    def test_roadload_curve_rows_net_missing_excluded_no_fallback(self):
+        dataset = self._dataset([self.bev_no_net])
+        result = build_roadload_curve_rows(dataset, "NET")
+        excluded_labels = {e["label"] for e in result["excluded"]}
+        self.assertIn(self.bev_no_net.label, excluded_labels)
+        self.assertTrue(all("unavailable" in e["reason"] for e in result["excluded"]))
+
+    def test_cycle_demand_rows_total_and_net_are_distinct_series(self):
+        from src.vde_core.cycles import use_standard_cycle
+
+        cycle = use_standard_cycle("EPA")
+        dataset = self._dataset([])
+        result = build_cycle_demand_rows(dataset, cycle, ["TOTAL", "NET"])
+        boundaries = {s["boundary"] for s in result["series"]}
+        self.assertEqual(boundaries, {"TOTAL", "NET"})
+        total_series = next(s for s in result["series"] if s["boundary"] == "TOTAL")
+        net_series = next(s for s in result["series"] if s["boundary"] == "NET")
+        self.assertNotEqual(total_series["demanded_power_kw"], net_series["demanded_power_kw"])
+
+    def test_cycle_demand_rows_missing_net_excluded_no_fallback(self):
+        from src.vde_core.cycles import use_standard_cycle
+
+        cycle = use_standard_cycle("EPA")
+        dataset = self._dataset([self.bev_no_net])
+        result = build_cycle_demand_rows(dataset, cycle, ["TOTAL", "NET"])
+        net_scenario_ids = {s["scenario_id"] for s in result["series"] if s["boundary"] == "NET"}
+        self.assertNotIn(str(self.bev_no_net.vde_id), net_scenario_ids)
+        self.assertTrue(any(e["reason"].endswith("unavailable") for e in result["excluded"]))
+
+
+class FeVdePseCompetitorDeltaTests(unittest.TestCase):
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "fevde.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+        with sqlite3.connect(self.db_path) as con:
+            rows = [
+                (1, 900001, "ICE", "Gasoline", "HOMOLOGATED", 6.0, None, 140.0),
+                (2, 900002, "ICE", "Gasoline", "ESTIMATED", 6.5, None, 150.0),
+                (3, 900003, "ICE", "Ethanol", "ESTIMATED", 8.5, None, 130.0),
+                (4, 900004, "ICE", "Flex", "ESTIMATED", 7.0, None, 145.0),
+                (5, 900006, "BEV", "Electric", "ESTIMATED", None, 150.0, 0.0),
+            ]
+            con.executemany(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, "
+                "fuel_l_per_100km, energy_Wh_per_km, gco2_per_km) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            con.commit()
+        self.reference = build_scenario_comparison_item(1, role=ComparisonRole.REFERENCE)
+        self.gasoline = build_scenario_comparison_item(2)
+        self.ethanol = build_scenario_comparison_item(3)
+        self.flex = build_scenario_comparison_item(4)
+        self.bev = build_scenario_comparison_item(5)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def _dataset(self, comparisons):
+        return ComparisonDataset(reference=self.reference, comparisons=tuple(comparisons))
+
+    def test_volumetric_mode_includes_same_fuel_family_only(self):
+        dataset = self._dataset([self.gasoline, self.ethanol])
+        result = build_fe_vde_points(dataset, boundary="TOTAL", mode="volumetric")
+        point_labels = {p["label"] for p in result["points"]}
+        self.assertIn(self.gasoline.label, point_labels)
+        self.assertNotIn(self.ethanol.label, point_labels)
+        self.assertIn(self.ethanol.label, {e["label"] for e in result["excluded"]})
+
+    def test_energy_normalized_mode_includes_ethanol_and_bev_excludes_flex(self):
+        dataset = self._dataset([self.ethanol, self.flex, self.bev])
+        result = build_fe_vde_points(dataset, boundary="TOTAL", mode="energy_normalized")
+        point_labels = {p["label"] for p in result["points"]}
+        self.assertIn(self.ethanol.label, point_labels)
+        self.assertIn(self.bev.label, point_labels)
+        self.assertNotIn(self.flex.label, point_labels)
+        self.assertIn(self.flex.label, {e["label"] for e in result["excluded"]})
+
+    def test_electrical_mode_only_includes_bev(self):
+        dataset = self._dataset([self.gasoline, self.bev])
+        result = build_fe_vde_points(dataset, boundary="TOTAL", mode="electrical")
+        point_labels = {p["label"] for p in result["points"]}
+        self.assertIn(self.bev.label, point_labels)
+        self.assertNotIn(self.gasoline.label, point_labels)
+
+    def test_missing_net_point_excluded_with_reason_no_fallback(self):
+        dataset = self._dataset([self.bev])
+        result = build_fe_vde_points(dataset, boundary="NET", mode="electrical")
+        self.assertIn(self.bev.label, {e["label"] for e in result["excluded"]})
+        self.assertEqual(result["points"], [])
+
+    def test_iso_pse_lines_volumetric_empty_for_unmappable_fuel(self):
+        self.assertEqual(build_iso_pse_lines(0.2, 1.2, [0.3], mode="volumetric", fuel_type="Flex"), [])
+        self.assertEqual(build_iso_pse_lines(0.2, 1.2, [0.3], mode="volumetric", fuel_type=None), [])
+
+    def test_iso_pse_lines_volumetric_present_for_mappable_fuel(self):
+        lines = build_iso_pse_lines(0.2, 1.2, [0.3], mode="volumetric", fuel_type="Gasoline")
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["eta"], 0.3)
+        self.assertEqual(len(lines[0]["x"]), 40)
+
+    def test_iso_pse_lines_change_with_basis(self):
+        vol_lines = build_iso_pse_lines(0.5, 0.5, [0.3], mode="volumetric", fuel_type="Gasoline")
+        energy_lines = build_iso_pse_lines(0.5, 0.5, [0.3], mode="energy_normalized")
+        electrical_lines = build_iso_pse_lines(0.5, 0.5, [0.3], mode="electrical")
+        values = {vol_lines[0]["y"][0], energy_lines[0]["y"][0], electrical_lines[0]["y"][0]}
+        self.assertEqual(len(values), 3)
+
+    def test_competitor_delta_reference_is_zero_no_verdict(self):
+        dataset = self._dataset([self.gasoline])
+        result = build_competitor_delta_rows(dataset, "vde_total")
+        ref_row = result["rows"][0]
+        self.assertEqual(ref_row["role"], "REFERENCE")
+        self.assertEqual(ref_row["percent_delta"], 0.0)
+        self.assertIsNone(ref_row["semantic"])
+
+    def test_competitor_delta_vde_lower_is_better(self):
+        cheaper_row = _qa_row(900002)
+        cheaper_row["id"] = 900002
+        cheaper_row["vde_total_mj_per_km"] = 1.10  # reference (900001) is 1.24
+        cheaper_item = build_scenario_comparison_item(2, vde_row=cheaper_row)
+        dataset = self._dataset([cheaper_item])
+        result = build_competitor_delta_rows(dataset, "vde_total")
+        self.assertEqual(result["rows"][1]["semantic"], "BETTER")
+
+    def test_competitor_delta_fuel_economy_higher_is_better(self):
+        dataset = self._dataset([self.ethanol])  # any comparison; direction under test is registry-driven
+        result = build_competitor_delta_rows(dataset, "fuel_km_per_l")
+        # ethanol fuel_km_per_l unavailable (only fuel_l_per_100km seeded) -> excluded, proving no fabrication
+        self.assertEqual(result["rows"], [result["rows"][0]])
+        self.assertTrue(result["excluded"])
+
+    def test_competitor_delta_mass_is_neutral(self):
+        dataset = self._dataset([self.gasoline])
+        result = build_competitor_delta_rows(dataset, "mass_kg")
+        self.assertIsNone(result["rows"][1]["semantic"])
+
+    def test_competitor_delta_incompatible_metric_is_excluded_not_faked(self):
+        wltp_row = _qa_row(900002)
+        wltp_row["id"] = 900002
+        wltp_row["legislation"] = "WLTP"
+        wltp_scenario = build_scenario_comparison_item(2, vde_row=wltp_row)
+        dataset = self._dataset([wltp_scenario])
+        result = build_competitor_delta_rows(dataset, "vde_total")
+        self.assertEqual(len(result["rows"]), 1)
+        self.assertEqual(len(result["excluded"]), 1)
+
+    def test_is_temporary_net_reflects_transmission_source(self):
+        row = _qa_row(900006)
+        temp = {"source": "MANUAL", "A": 9.0, "B": 0.003, "C": 0.0006}
+        temporary_item = build_vde_comparison_item(900006, vde_row=row, temporary_transmission=temp)
+        missing_item = build_vde_comparison_item(900006, vde_row=row)
+        self.assertTrue(is_temporary_net(temporary_item))
+        self.assertFalse(is_temporary_net(missing_item))
 
 
 class FormatValueTests(unittest.TestCase):

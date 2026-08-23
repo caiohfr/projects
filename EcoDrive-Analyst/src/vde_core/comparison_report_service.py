@@ -693,6 +693,102 @@ def build_comparison_dataset(
 
 
 # -----------------------------------------------------------------------------
+# Explicit lineage chain resolution (Package 8D)
+#
+# The only explicit lineage source in the schema is vde_db.vde_id_parent --
+# fuelcons_db has no parent field of its own (confirmed by inspection before
+# 8D). This is therefore always Physical VDE Lineage: a FuelCons scenario
+# resolves lineage through its linked vde_id, but the chain nodes themselves
+# are VDE identities, never FuelCons identities. Never infers a relationship
+# from timestamps, labels, scenario order, or matching values -- only
+# vde_id_parent is consulted.
+# -----------------------------------------------------------------------------
+
+_MAX_LINEAGE_DEPTH = 50
+
+
+class LineageChainStatus(_TextEnum):
+    ROOT = "ROOT"  # selected VDE has no parent -- valid root, chain length 1
+    EXPLICIT = "EXPLICIT"  # selected VDE has one or more explicit ancestors, walk completed cleanly
+    BROKEN = "BROKEN"  # walk stopped: a stored parent id does not resolve to an existing VDE row
+    MALFORMED = "MALFORMED"  # walk stopped: self-parent, cycle, or repeated-node reference detected
+
+
+@dataclass(frozen=True)
+class LineageChainNode:
+    vde_id: int
+    label: str
+    parent_vde_id: int | None
+    vde_row: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class LineageChainResult:
+    nodes: tuple[LineageChainNode, ...]  # ordered root -> ... -> selected
+    status: LineageChainStatus
+    warnings: tuple[str, ...] = field(default_factory=tuple)
+
+
+def resolve_lineage_chain(vde_id: int, *, vde_row: Mapping[str, Any] | None = None) -> LineageChainResult:
+    """Walk vde_db.vde_id_parent upward from `vde_id`, building an explicit
+    ancestry chain ordered root -> ... -> selected. Guards against missing
+    parents, self-parent, cycles, and repeated nodes via a visited-id set --
+    a malformed chain produces a warning and a truncated chain, never
+    infinite recursion (Package 8D Sec 29, 41).
+    """
+    start_row = dict(vde_row) if vde_row is not None else fetch_vde_by_id(vde_id)
+    if not start_row:
+        return LineageChainResult(
+            nodes=(), status=LineageChainStatus.BROKEN, warnings=(f"lineage_root_not_found: vde_id={vde_id}",)
+        )
+
+    chain: list[LineageChainNode] = []
+    visited: set[int] = set()
+    warnings: list[str] = []
+    status = LineageChainStatus.ROOT
+
+    current_id = int(vde_id)
+    current_row = start_row
+    while True:
+        parent_raw = current_row.get("vde_id_parent")
+        parent_id = int(parent_raw) if parent_raw is not None else None
+        chain.append(
+            LineageChainNode(
+                vde_id=current_id, label=build_vehicle_label(current_row), parent_vde_id=parent_id, vde_row=current_row
+            )
+        )
+        visited.add(current_id)
+
+        if parent_id is None:
+            status = LineageChainStatus.ROOT if len(chain) == 1 else LineageChainStatus.EXPLICIT
+            break
+        if parent_id == current_id:
+            status = LineageChainStatus.MALFORMED
+            warnings.append(f"self_parent_reference: vde_id={current_id} references itself as parent")
+            break
+        if parent_id in visited:
+            status = LineageChainStatus.MALFORMED
+            warnings.append(f"lineage_cycle_detected: vde_id={parent_id} already appears earlier in this chain")
+            break
+        if len(chain) >= _MAX_LINEAGE_DEPTH:
+            status = LineageChainStatus.MALFORMED
+            warnings.append("lineage_chain_truncated_max_depth")
+            break
+
+        parent_row = fetch_vde_by_id(parent_id)
+        if not parent_row:
+            status = LineageChainStatus.BROKEN
+            warnings.append(f"broken_lineage_reference: vde_id={current_id} parent vde_id={parent_id} not found")
+            break
+
+        current_id = parent_id
+        current_row = parent_row
+
+    chain.reverse()
+    return LineageChainResult(nodes=tuple(chain), status=status, warnings=tuple(warnings))
+
+
+# -----------------------------------------------------------------------------
 # Scenario catalog (Sec 44-46, Package 8B)
 #
 # Lightweight metadata for selection UIs -- never resolves a full ComparisonItem
@@ -813,6 +909,15 @@ def _semantic_for(direction: MetricDirection, absolute_delta: float) -> str | No
     return "BETTER" if absolute_delta > 0 else "WORSE"
 
 
+def extract_metric_value(item: ComparisonItem, metric_key: str) -> Any:
+    """The single canonical accessor for one Registry metric's raw value on
+    one item -- reused by compare_metric() and by Explore/Lineage (Package
+    8D) so no second value-extraction path is ever maintained.
+    """
+    extractor = _METRIC_EXTRACTORS.get(metric_key)
+    return extractor(item) if extractor else None
+
+
 def compare_metric(reference_item: ComparisonItem, comparison_item: ComparisonItem, metric_key: str) -> dict[str, Any]:
     """Canonical delta of one metric between a comparison item and Reference.
 
@@ -893,4 +998,9 @@ __all__ = [
     "list_comparison_scenarios",
     "list_vde_catalog",
     "compare_metric",
+    "extract_metric_value",
+    "LineageChainStatus",
+    "LineageChainNode",
+    "LineageChainResult",
+    "resolve_lineage_chain",
 ]

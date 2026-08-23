@@ -11,6 +11,7 @@ import pandas as pd
 from src.vde_core import db as db_module
 from src.vde_core.comparison_report_service import (
     ComparisonRole,
+    LineageChainStatus,
     LineageStatus,
     RevisionStatus,
     SourceKind,
@@ -18,9 +19,11 @@ from src.vde_core.comparison_report_service import (
     build_comparison_dataset,
     build_scenario_comparison_item,
     build_vde_comparison_item,
+    extract_metric_value,
     list_comparison_scenarios,
     list_vde_catalog,
     resolve_cycle_vde_results,
+    resolve_lineage_chain,
     resolve_roadload_boundaries,
     resolve_temporary_transmission_from_component,
     resolve_transmission_boundary,
@@ -448,6 +451,119 @@ class DeterminismTests(unittest.TestCase):
         item1 = build_vde_comparison_item(900001, vde_row=row)
         item2 = build_vde_comparison_item(900001, vde_row=row)
         self.assertEqual(item1, item2)
+
+
+class MetricValueExtractionTests(unittest.TestCase):
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "extract_metric.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def test_extract_metric_value_matches_compare_metric_reference_value(self):
+        from src.vde_core.comparison_report_service import compare_metric
+
+        item = build_vde_comparison_item(900001)
+        self.assertEqual(extract_metric_value(item, "vde_total"), 1.24)
+        self_result = compare_metric(item, item, "vde_total")
+        self.assertEqual(extract_metric_value(item, "vde_total"), self_result["reference_value"])
+
+    def test_extract_metric_value_unknown_key_is_none_not_a_crash(self):
+        item = build_vde_comparison_item(900001)
+        self.assertIsNone(extract_metric_value(item, "not_a_real_metric"))
+
+
+class LineageChainResolverTests(unittest.TestCase):
+    """Package 8D. The only explicit lineage source is vde_db.vde_id_parent --
+    this resolver must never infer a relationship from anything else, and must
+    never recurse forever on malformed data (Investigation Addendum Sec 6-8).
+    """
+
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "lineage_chain.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def _set_parent(self, vde_id: int, parent_id) -> None:
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE vde_db SET vde_id_parent=? WHERE id=?", (parent_id, vde_id))
+            con.commit()
+
+    def test_root_only_chain_status_root(self):
+        result = resolve_lineage_chain(900001)
+        self.assertEqual(len(result.nodes), 1)
+        self.assertEqual(result.status, LineageChainStatus.ROOT)
+        self.assertEqual(result.warnings, ())
+
+    def test_two_node_chain_ordered_root_to_selected(self):
+        self._set_parent(900002, 900001)
+        result = resolve_lineage_chain(900002)
+        self.assertEqual(result.status, LineageChainStatus.EXPLICIT)
+        self.assertEqual([n.vde_id for n in result.nodes], [900001, 900002])
+
+    def test_three_node_chain_ordered_root_to_selected(self):
+        self._set_parent(900002, 900001)
+        self._set_parent(900003, 900002)
+        result = resolve_lineage_chain(900003)
+        self.assertEqual(result.status, LineageChainStatus.EXPLICIT)
+        self.assertEqual([n.vde_id for n in result.nodes], [900001, 900002, 900003])
+
+    def test_broken_reference_stops_chain_with_structured_warning(self):
+        self._set_parent(900002, 999999)  # 999999 does not exist
+        result = resolve_lineage_chain(900002)
+        self.assertEqual(result.status, LineageChainStatus.BROKEN)
+        self.assertEqual([n.vde_id for n in result.nodes], [900002])
+        self.assertTrue(any(w.startswith("broken_lineage_reference") for w in result.warnings))
+
+    def test_self_parent_is_malformed_no_infinite_recursion(self):
+        self._set_parent(900002, 900002)
+        result = resolve_lineage_chain(900002)
+        self.assertEqual(result.status, LineageChainStatus.MALFORMED)
+        self.assertEqual([n.vde_id for n in result.nodes], [900002])
+        self.assertTrue(any(w.startswith("self_parent_reference") for w in result.warnings))
+
+    def test_cycle_is_malformed_no_infinite_recursion(self):
+        self._set_parent(900001, 900003)
+        self._set_parent(900002, 900001)
+        self._set_parent(900003, 900002)  # 900001 -> 900003 -> 900002 -> 900001
+        result = resolve_lineage_chain(900001)
+        self.assertEqual(result.status, LineageChainStatus.MALFORMED)
+        self.assertTrue(any(w.startswith("lineage_cycle_detected") for w in result.warnings))
+        self.assertLessEqual(len(result.nodes), 3)  # bounded, never runs away
+
+    def test_duplicate_node_reference_is_malformed(self):
+        # A -> B, and B's parent points back at A a second time via a longer
+        # loop -- same visited-set guard as a direct cycle, no special-casing.
+        self._set_parent(900002, 900001)
+        self._set_parent(900001, 900002)
+        result = resolve_lineage_chain(900002)
+        self.assertEqual(result.status, LineageChainStatus.MALFORMED)
+
+    def test_no_lineage_is_ever_inferred_from_similar_data(self):
+        # Three otherwise-similar QA rows with no vde_id_parent set anywhere --
+        # timestamps/labels/values must never substitute for the explicit field.
+        for vde_id in (900001, 900002, 900003):
+            result = resolve_lineage_chain(vde_id)
+            self.assertEqual(len(result.nodes), 1)
+            self.assertEqual(result.status, LineageChainStatus.ROOT)
+
+    def test_lineage_chain_status_has_exactly_four_conceptual_values(self):
+        self.assertEqual(
+            {s.value for s in LineageChainStatus}, {"ROOT", "EXPLICIT", "BROKEN", "MALFORMED"}
+        )
 
 
 class ComparisonReportPageSmokeTests(unittest.TestCase):

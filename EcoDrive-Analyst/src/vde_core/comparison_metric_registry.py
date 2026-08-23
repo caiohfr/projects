@@ -60,27 +60,27 @@ _METRICS: tuple[MetricDefinition, ...] = (
     MetricDefinition("gear_count", "Gear count", "Powertrain", "count", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
     MetricDefinition("final_drive_ratio", "Final drive", "Powertrain", "ratio", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
     # --- Physical setup --------------------------------------------------
-    MetricDefinition("mass_kg", "Mass", "Physical setup", "mass_kg", MetricDirection.NEUTRAL, "VEHICLE", ("table", "bar"), ComparisonRule.BASIS_METADATA),
+    MetricDefinition("mass_kg", "Mass", "Physical setup", "mass_kg", MetricDirection.NEUTRAL, "VEHICLE", ("table", "bar", "scatter"), ComparisonRule.BASIS_METADATA),
     MetricDefinition("test_mass_kg", "Test mass", "Physical setup", "mass_kg", MetricDirection.NEUTRAL, "VEHICLE", ("table", "bar"), ComparisonRule.BASIS_METADATA),
-    MetricDefinition("cda_m2", "CdA", "Physical setup", "area_m2", MetricDirection.LOWER_IS_BETTER, "VEHICLE", ("table", "bar"), ComparisonRule.ALWAYS),
-    MetricDefinition("rrc_n_per_kn", "RRC", "Physical setup", "rrc_n_per_kn", MetricDirection.LOWER_IS_BETTER, "VEHICLE", ("table", "bar"), ComparisonRule.ALWAYS),
+    MetricDefinition("cda_m2", "CdA", "Physical setup", "area_m2", MetricDirection.LOWER_IS_BETTER, "VEHICLE", ("table", "bar", "scatter"), ComparisonRule.ALWAYS),
+    MetricDefinition("rrc_n_per_kn", "RRC", "Physical setup", "rrc_n_per_kn", MetricDirection.LOWER_IS_BETTER, "VEHICLE", ("table", "bar", "scatter"), ComparisonRule.ALWAYS),
     # --- Roadload (raw coefficients, no automatic verdict) --------------
-    MetricDefinition("roadload_a_total", "A (TOTAL)", "Roadload", "force_n", MetricDirection.NEUTRAL, "ROADLOAD_TOTAL", ("table",), ComparisonRule.SAME_LEGISLATION_CYCLE),
-    MetricDefinition("roadload_b_total", "B (TOTAL)", "Roadload", "force_n_per_kph", MetricDirection.NEUTRAL, "ROADLOAD_TOTAL", ("table",), ComparisonRule.SAME_LEGISLATION_CYCLE),
-    MetricDefinition("roadload_c_total", "C (TOTAL)", "Roadload", "force_n_per_kph2", MetricDirection.NEUTRAL, "ROADLOAD_TOTAL", ("table",), ComparisonRule.SAME_LEGISLATION_CYCLE),
-    MetricDefinition("roadload_a_net", "A (NET)", "Roadload", "force_n", MetricDirection.NEUTRAL, "ROADLOAD_NET", ("table",), ComparisonRule.SAME_LEGISLATION_CYCLE),
-    MetricDefinition("roadload_b_net", "B (NET)", "Roadload", "force_n_per_kph", MetricDirection.NEUTRAL, "ROADLOAD_NET", ("table",), ComparisonRule.SAME_LEGISLATION_CYCLE),
-    MetricDefinition("roadload_c_net", "C (NET)", "Roadload", "force_n_per_kph2", MetricDirection.NEUTRAL, "ROADLOAD_NET", ("table",), ComparisonRule.SAME_LEGISLATION_CYCLE),
+    MetricDefinition("roadload_a_total", "A (TOTAL)", "Roadload", "force_n", MetricDirection.NEUTRAL, "ROADLOAD_TOTAL", ("table", "bar", "scatter"), ComparisonRule.SAME_LEGISLATION_CYCLE),
+    MetricDefinition("roadload_b_total", "B (TOTAL)", "Roadload", "force_n_per_kph", MetricDirection.NEUTRAL, "ROADLOAD_TOTAL", ("table", "bar", "scatter"), ComparisonRule.SAME_LEGISLATION_CYCLE),
+    MetricDefinition("roadload_c_total", "C (TOTAL)", "Roadload", "force_n_per_kph2", MetricDirection.NEUTRAL, "ROADLOAD_TOTAL", ("table", "bar", "scatter"), ComparisonRule.SAME_LEGISLATION_CYCLE),
+    MetricDefinition("roadload_a_net", "A (NET)", "Roadload", "force_n", MetricDirection.NEUTRAL, "ROADLOAD_NET", ("table", "bar", "scatter"), ComparisonRule.SAME_LEGISLATION_CYCLE),
+    MetricDefinition("roadload_b_net", "B (NET)", "Roadload", "force_n_per_kph", MetricDirection.NEUTRAL, "ROADLOAD_NET", ("table", "bar", "scatter"), ComparisonRule.SAME_LEGISLATION_CYCLE),
+    MetricDefinition("roadload_c_net", "C (NET)", "Roadload", "force_n_per_kph2", MetricDirection.NEUTRAL, "ROADLOAD_NET", ("table", "bar", "scatter"), ComparisonRule.SAME_LEGISLATION_CYCLE),
     # --- Vehicle demand ---------------------------------------------------
     MetricDefinition("vde_total", "VDE TOTAL", "Vehicle demand", "energy_mj_per_km", MetricDirection.LOWER_IS_BETTER, "VDE_TOTAL", ("table", "bar", "scatter"), ComparisonRule.SAME_LEGISLATION_CYCLE),
     MetricDefinition("vde_net", "VDE NET", "Vehicle demand", "energy_mj_per_km", MetricDirection.LOWER_IS_BETTER, "VDE_NET", ("table", "bar", "scatter"), ComparisonRule.SAME_LEGISLATION_CYCLE),
     # --- Fuel / Energy / CO2 (existing FuelCons outputs only) ------------
-    MetricDefinition("fuel_l_per_100km", "Fuel consumption", "Fuel / Energy / CO2", "l_per_100km", MetricDirection.LOWER_IS_BETTER, "FUEL_CONSUMPTION", ("table", "bar"), ComparisonRule.ALWAYS),
-    MetricDefinition("fuel_km_per_l", "Fuel economy", "Fuel / Energy / CO2", "km_per_l", MetricDirection.HIGHER_IS_BETTER, "FUEL_CONSUMPTION", ("table", "bar"), ComparisonRule.ALWAYS),
+    MetricDefinition("fuel_l_per_100km", "Fuel consumption", "Fuel / Energy / CO2", "l_per_100km", MetricDirection.LOWER_IS_BETTER, "FUEL_CONSUMPTION", ("table", "bar", "scatter"), ComparisonRule.ALWAYS),
+    MetricDefinition("fuel_km_per_l", "Fuel economy", "Fuel / Energy / CO2", "km_per_l", MetricDirection.HIGHER_IS_BETTER, "FUEL_CONSUMPTION", ("table", "bar", "scatter"), ComparisonRule.ALWAYS),
     MetricDefinition("energy_wh_per_km", "Energy consumption", "Fuel / Energy / CO2", "wh_per_km", MetricDirection.LOWER_IS_BETTER, "FUEL_ENERGY", ("table", "bar", "scatter"), ComparisonRule.ALWAYS),
-    MetricDefinition("gco2_per_km", "CO2", "Fuel / Energy / CO2", "gco2_per_km", MetricDirection.LOWER_IS_BETTER, "CO2", ("table", "bar"), ComparisonRule.ALWAYS),
+    MetricDefinition("gco2_per_km", "CO2", "Fuel / Energy / CO2", "gco2_per_km", MetricDirection.LOWER_IS_BETTER, "CO2", ("table", "bar", "scatter"), ComparisonRule.ALWAYS),
     # --- Efficiency (existing PSE / effective efficiency metrics only) --
-    MetricDefinition("eta_pt_est", "Estimated powertrain efficiency", "Efficiency", "ratio", MetricDirection.HIGHER_IS_BETTER, "PSE", ("table", "bar"), ComparisonRule.ALWAYS),
+    MetricDefinition("eta_pt_est", "Estimated powertrain efficiency", "Efficiency", "ratio", MetricDirection.HIGHER_IS_BETTER, "PSE", ("table", "bar", "scatter"), ComparisonRule.ALWAYS),
 )
 
 _METRICS_BY_KEY: dict[str, MetricDefinition] = {m.key: m for m in _METRICS}

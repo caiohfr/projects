@@ -20,18 +20,27 @@ import streamlit as st
 
 from src.vde_app.comparison_report_charts import (
     build_cycle_demand_figure,
+    build_explore_bar,
+    build_explore_line,
+    build_explore_scatter,
     build_fe_vde_figure,
     build_grouped_bar_figure,
+    build_lineage_waterfall_chart,
 )
 from src.vde_app.comparison_report_viewmodels import (
     MAX_COMPARISONS,
+    ComparisonItem,
     ScorecardSection,
     SelectionState,
     build_abc_rows,
     build_competitor_delta_rows,
     build_cycle_demand_rows,
+    build_explore_bar_rows,
+    build_explore_line_rows,
+    build_explore_scatter_points,
     build_fe_vde_points,
     build_iso_pse_lines,
+    build_lineage_waterfall,
     build_metric_bar_rows,
     build_reference_summary,
     build_roadload_curve_rows,
@@ -40,6 +49,12 @@ from src.vde_app.comparison_report_viewmodels import (
     build_scorecard_sections,
     dataset_warnings_summary,
     format_value,
+    list_available_explore_metrics,
+    list_available_lineage_metrics,
+    list_explore_dimension_values,
+    list_explore_dimensions,
+    metric_axis_label,
+    resolve_lineage_context,
     set_reference,
     sync_comparisons_from_widget,
 )
@@ -52,6 +67,7 @@ from src.vde_app.units import normalize_unit_system, quantity_input, unit_label
 from src.vde_core.comparison_metric_registry import get_metric
 from src.vde_core.comparison_report_service import (
     ComparisonDataset,
+    LineageChainStatus,
     build_comparison_dataset,
     list_comparison_scenarios,
     list_vde_catalog,
@@ -84,6 +100,13 @@ _DELTA_METRIC_OPTIONS = (
     "vde_total", "vde_net", "fuel_l_per_100km", "fuel_km_per_l",
     "energy_wh_per_km", "gco2_per_km", "eta_pt_est", "mass_kg", "cda_m2", "rrc_n_per_kn",
 )
+_LINEAGE_WARNING_MESSAGES = {
+    "broken_lineage_reference": "This lineage chain references a parent VDE that no longer exists in the database.",
+    "self_parent_reference": "This VDE lists itself as its own parent -- the chain stops here.",
+    "lineage_cycle_detected": "A cycle was detected in this lineage chain -- the chain stops here.",
+    "lineage_chain_truncated_max_depth": "This lineage chain is unusually long and was truncated as a safety guard.",
+    "lineage_root_not_found": "The selected VDE record could not be resolved.",
+}
 
 
 # -----------------------------------------------------------------------------
@@ -688,6 +711,275 @@ def _render_roadload_tab(scorecard_dataset: ComparisonDataset | None) -> None:
 
 
 # -----------------------------------------------------------------------------
+# Explore tab: Custom Chart + Lineage (Package 8D)
+#
+# Two independent sections, never merged into one overloaded form (Sec 2).
+# Custom Chart is Metric-Registry-driven generic exploration; Lineage is an
+# explicit parent-child VDE walk. Neither infers a relationship or a trend --
+# the user interprets the chart (Sec 51).
+# -----------------------------------------------------------------------------
+
+
+def _explore_source_options(scorecard_dataset: ComparisonDataset | None) -> list[str]:
+    options: list[str] = []
+    if scorecard_dataset is not None:
+        options.append("Selected complete scenarios")
+    direct_state: SelectionState | None = st.session_state.get(_DIRECT_VDE_SELECTION_KEY)
+    if direct_state is not None and direct_state.reference_fuelcons_id is not None:
+        options.append("Selected physical VDEs")
+    return options
+
+
+def _build_explore_dataset(
+    source: str, scorecard_dataset: ComparisonDataset | None, temp_by_vde: dict
+) -> ComparisonDataset | None:
+    """Sec 48: reuses whatever is already selected elsewhere -- the Scorecard
+    dataset, or the Roadload tab's existing direct-VDE selection state -- and
+    never renders a second, fragile selection UI here.
+    """
+    if source == "Selected complete scenarios":
+        return scorecard_dataset
+    if source == "Selected physical VDEs":
+        direct_state: SelectionState | None = st.session_state.get(_DIRECT_VDE_SELECTION_KEY)
+        if direct_state is None or direct_state.reference_fuelcons_id is None:
+            return None
+        reference_spec = {"kind": "VDE_ONLY", "vde_id": direct_state.reference_fuelcons_id}
+        comparison_specs = [{"kind": "VDE_ONLY", "vde_id": vde_id} for vde_id in direct_state.comparison_fuelcons_ids]
+        try:
+            return build_comparison_dataset(reference_spec, comparison_specs, temporary_transmission_by_vde_id=temp_by_vde)
+        except ValueError as exc:
+            st.error(str(exc))
+            return None
+    return None
+
+
+def _render_explore_bar(dataset: ComparisonDataset, items: tuple, unit_system: str, group_key: str | None, filter_key: str | None, filter_values: list[str]) -> None:
+    x_dims = list_explore_dimensions("x")
+    x_label = st.selectbox("X", [d.label for d in x_dims], key="explore_bar_x")
+    x_dim = next(d for d in x_dims if d.label == x_label)
+
+    metrics = list_available_explore_metrics(items, "bar")
+    if not metrics:
+        st.info("No compatible numeric metrics are available for this selection.")
+        return
+    y_label = st.selectbox("Y", [m.label for m in metrics], key="explore_bar_y")
+    y_metric = next(m for m in metrics if m.label == y_label)
+
+    result = build_explore_bar_rows(
+        dataset,
+        x_dimension_key=x_dim.key,
+        y_metric_key=y_metric.key,
+        group_dimension_key=group_key,
+        filter_dimension_key=filter_key,
+        filter_values=filter_values,
+        unit_system=unit_system,
+    )
+    _render_exclusions(result["excluded"])
+    if not result["rows"]:
+        st.info("No compatible numeric metrics are available for this selection.")
+        return
+    fig = build_explore_bar(result["rows"], x_title=x_dim.label, y_title=metric_axis_label(y_metric, unit_system))
+    st.plotly_chart(fig, width="stretch")
+
+
+def _render_explore_scatter(items: tuple, dataset: ComparisonDataset, unit_system: str, group_key: str | None, filter_key: str | None, filter_values: list[str]) -> None:
+    metrics = list_available_explore_metrics(items, "scatter")
+    if not metrics:
+        st.info("No compatible numeric metrics are available for this selection.")
+        return
+    col1, col2 = st.columns(2)
+    x_label = col1.selectbox("X", [m.label for m in metrics], key="explore_scatter_x")
+    x_metric = next(m for m in metrics if m.label == x_label)
+    default_y_index = 1 if len(metrics) > 1 else 0
+    y_label = col2.selectbox("Y", [m.label for m in metrics], index=default_y_index, key="explore_scatter_y")
+    y_metric = next(m for m in metrics if m.label == y_label)
+
+    result = build_explore_scatter_points(
+        dataset,
+        x_metric_key=x_metric.key,
+        y_metric_key=y_metric.key,
+        group_dimension_key=group_key,
+        filter_dimension_key=filter_key,
+        filter_values=filter_values,
+    )
+    _render_exclusions(result["excluded"])
+    if not result["points"]:
+        st.info("No compatible numeric metrics are available for this selection.")
+        return
+    fig = build_explore_scatter(
+        result["points"],
+        x_title=metric_axis_label(x_metric, unit_system),
+        y_title=metric_axis_label(y_metric, unit_system),
+    )
+    st.plotly_chart(fig, width="stretch")
+
+
+def _render_explore_line(dataset: ComparisonDataset, items: tuple, unit_system: str, group_key: str | None, filter_key: str | None, filter_values: list[str]) -> None:
+    x_dims = list_explore_dimensions("order")
+    if not x_dims:
+        st.info("No explicitly ordered dimension is available for a Line chart.")
+        return
+    x_label = st.selectbox("X (ordered)", [d.label for d in x_dims], key="explore_line_x")
+    x_dim = next(d for d in x_dims if d.label == x_label)
+
+    metrics = list_available_explore_metrics(items, "line")
+    if not metrics:
+        st.info("No compatible numeric metrics are available for this selection.")
+        return
+    y_label = st.selectbox("Y", [m.label for m in metrics], key="explore_line_y")
+    y_metric = next(m for m in metrics if m.label == y_label)
+
+    result = build_explore_line_rows(
+        dataset,
+        x_dimension_key=x_dim.key,
+        y_metric_key=y_metric.key,
+        group_dimension_key=group_key,
+        filter_dimension_key=filter_key,
+        filter_values=filter_values,
+        unit_system=unit_system,
+    )
+    _render_exclusions(result["excluded"])
+    if not result["rows"]:
+        st.info(result.get("unavailable_reason") or "No compatible numeric metrics are available for this selection.")
+        return
+    fig = build_explore_line(result["rows"], x_title=x_dim.label, y_title=metric_axis_label(y_metric, unit_system))
+    st.plotly_chart(fig, width="stretch")
+
+
+def _render_explore_custom_chart(dataset: ComparisonDataset, unit_system: str) -> None:
+    items = (dataset.reference, *dataset.comparisons)
+    chart_type = st.selectbox("Chart type", ["Bar", "Scatter", "Line"], key="explore_chart_type")
+
+    col1, col2 = st.columns(2)
+    filter_dims = list_explore_dimensions("filter")
+    filter_label = col1.selectbox("Filter", ["None"] + [d.label for d in filter_dims], key="explore_filter_dimension")
+    filter_dim = next((d for d in filter_dims if d.label == filter_label), None)
+    filter_values: list[str] = []
+    if filter_dim is not None:
+        available_values = list_explore_dimension_values(items, filter_dim.key)
+        filter_values = col1.multiselect(
+            f"{filter_dim.label} values", available_values, key=f"explore_filter_values_{filter_dim.key}"
+        )
+
+    group_dims = list_explore_dimensions("group")
+    group_label = col2.selectbox("Group / color", ["None"] + [d.label for d in group_dims], key="explore_group_dimension")
+    group_dim = next((d for d in group_dims if d.label == group_label), None)
+
+    group_key = group_dim.key if group_dim else None
+    filter_key = filter_dim.key if filter_dim else None
+
+    if chart_type == "Bar":
+        _render_explore_bar(dataset, items, unit_system, group_key, filter_key, filter_values)
+    elif chart_type == "Scatter":
+        _render_explore_scatter(items, dataset, unit_system, group_key, filter_key, filter_values)
+    else:
+        _render_explore_line(dataset, items, unit_system, group_key, filter_key, filter_values)
+
+
+def _lineage_item_key(item: ComparisonItem) -> str:
+    if item.fuelcons_id is not None:
+        return f"fc:{item.fuelcons_id}"
+    return f"vde:{item.vde_id}"
+
+
+def _render_lineage_tab(dataset: ComparisonDataset, temp_by_vde: dict, unit_system: str) -> None:
+    items = [item for item in (dataset.reference, *dataset.comparisons) if item.vde_id is not None]
+    if not items:
+        st.info("No scenarios with a resolvable VDE are available to analyze lineage for.")
+        return
+
+    keys = [_lineage_item_key(item) for item in items]
+    labels = {key: f"{item.label or 'Unknown vehicle'} (VDE #{item.vde_id})" for key, item in zip(keys, items)}
+    selected_key = st.selectbox(
+        "Analyze lineage for", keys, format_func=lambda k: labels[k], key="lineage_selected_item"
+    )
+    selected_item = items[keys.index(selected_key)]
+
+    context = resolve_lineage_context(selected_item)
+    if context is None:
+        st.info("No explicit parent-child lineage is available for this scenario.")
+        return
+
+    caption = "Physical VDE Lineage"
+    if context.is_fuelcons_scenario:
+        caption += f" -- resolved from FuelCons scenario '{context.originating_label}'"
+    st.caption(caption)
+
+    chain = context.chain
+    if not chain.nodes:
+        for warning in chain.warnings:
+            st.warning(_LINEAGE_WARNING_MESSAGES.get(warning.split(":")[0], warning))
+        st.info("No explicit parent-child lineage is available for this scenario.")
+        return
+    if len(chain.nodes) == 1 and chain.status == LineageChainStatus.ROOT:
+        st.info(f"'{chain.nodes[0].label}' is a lineage root -- no explicit parent scenario is recorded.")
+    for warning in chain.warnings:
+        st.warning(_LINEAGE_WARNING_MESSAGES.get(warning.split(":")[0], warning))
+
+    metrics = list_available_lineage_metrics(chain)
+    if not metrics:
+        st.info("No compatible numeric metrics are available across this lineage chain.")
+        return
+    metric_label = st.selectbox("Metric", [m.label for m in metrics], key="lineage_metric")
+    metric = next(m for m in metrics if m.label == metric_label)
+
+    waterfall = build_lineage_waterfall(
+        chain, metric.key, unit_system=unit_system, temporary_transmission_by_vde_id=temp_by_vde
+    )
+    if waterfall.steps:
+        fig = build_lineage_waterfall_chart(waterfall.steps, y_title=metric_axis_label(metric, unit_system))
+        st.plotly_chart(fig, width="stretch")
+    if not waterfall.complete and waterfall.incomplete_reason:
+        st.warning(waterfall.incomplete_reason)
+
+    if waterfall.steps:
+        table_rows = [
+            {
+                "Step": i,
+                "Scenario": step.label,
+                "Parent": step.parent_vde_id if step.parent_vde_id is not None else "-",
+                "Provenance": step.provenance or "UNKNOWN",
+                "Metric value": step.formatted_value,
+                "Δ vs Parent": step.formatted_delta or "-",
+                "Status": step.status,
+            }
+            for i, step in enumerate(waterfall.steps)
+        ]
+        st.dataframe(pd.DataFrame(table_rows), hide_index=True, width="stretch")
+
+
+def _render_explore_tab(scorecard_dataset: ComparisonDataset | None) -> None:
+    source_options = _explore_source_options(scorecard_dataset)
+    if not source_options:
+        st.info("Select scenarios in Scorecard to explore them here.")
+        return
+
+    source = (
+        st.radio("Data source", source_options, horizontal=True, key="explore_data_source")
+        if len(source_options) > 1
+        else source_options[0]
+    )
+    temp_by_vde = st.session_state.setdefault(_TEMP_TRANSMISSION_KEY, {})
+    dataset = _build_explore_dataset(source, scorecard_dataset, temp_by_vde)
+    if dataset is None:
+        st.info("Select a reference scenario/VDE to begin exploring.")
+        return
+
+    warnings = dataset_warnings_summary(dataset)
+    if warnings:
+        with st.expander(f"{len(warnings)} dataset warning(s)", expanded=False):
+            for warning in warnings:
+                st.warning(warning)
+
+    unit_system = normalize_unit_system(st.session_state.get("unit_system"))
+    custom_chart_tab, lineage_tab = st.tabs(["Custom Chart", "Lineage"])
+    with custom_chart_tab:
+        _render_explore_custom_chart(dataset, unit_system)
+    with lineage_tab:
+        _render_lineage_tab(dataset, temp_by_vde, unit_system)
+
+
+# -----------------------------------------------------------------------------
 # Legacy bridge and page entry point
 # -----------------------------------------------------------------------------
 
@@ -730,7 +1022,7 @@ def render_comparison_report() -> None:
     with roadload_tab:
         _render_roadload_tab(dataset)
     with explore_tab:
-        st.info("Explore Lite is planned for a future package.")
+        _render_explore_tab(dataset)
 
     _render_legacy_bridge()
 

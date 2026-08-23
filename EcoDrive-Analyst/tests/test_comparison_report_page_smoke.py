@@ -154,12 +154,60 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
         self.assertEqual(state.reference_fuelcons_id, 1)
         self.assertEqual(state.comparison_fuelcons_ids, (2,))
 
-    def test_explore_placeholder_unchanged(self):
+    def test_explore_tab_empty_state_with_no_selection(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(any("Select scenarios in Scorecard to explore them here." in info.value for info in app.info))
+
+    def test_explore_tab_renders_custom_chart_and_lineage_by_default(self):
         app = AppTest.from_file(str(PAGE_PATH))
         app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
-        self.assertTrue(any("Explore Lite is planned for a future package." in info.value for info in app.info))
+        selectbox_labels = {sb.label for sb in app.selectbox}
+        self.assertIn("Chart type", selectbox_labels)
+        self.assertIn("Analyze lineage for", selectbox_labels)
+        self.assertTrue(any("Physical VDE Lineage" in c.value for c in app.caption))
+
+    def test_explore_tab_lineage_root_shows_no_parent_message(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        # Default lineage selection is the Reference (vde_id_parent is NULL on
+        # the QA seed) -- a root is a valid, non-error state (Sec 40).
+        self.assertTrue(any("is a lineage root" in info.value for info in app.info))
+
+    def test_explore_tab_lineage_waterfall_renders_for_explicit_parent_chain(self):
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE vde_db SET vde_id_parent=900001 WHERE id=900002")
+            con.commit()
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
+        app.run(timeout=90)
+        app.selectbox(key="lineage_selected_item").set_value("fc:2")
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertGreaterEqual(len(app.dataframe), 1)  # lineage step table rendered
+
+    def test_explore_tab_duplicate_scenario_labels_do_not_crash_bar_chart(self):
+        self._insert_duplicate_header_fixture()
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2, 3))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+
+    def test_switching_between_scorecard_dashboard_roadload_and_explore_does_not_corrupt_selection(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        state = app.session_state["comparison_selection"]
+        self.assertEqual(state.reference_fuelcons_id, 1)
+        self.assertEqual(state.comparison_fuelcons_ids, (2,))
 
 
 if __name__ == "__main__":

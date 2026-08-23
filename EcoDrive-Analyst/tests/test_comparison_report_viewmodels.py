@@ -13,8 +13,12 @@ from src.vde_app.comparison_report_viewmodels import (
     build_abc_rows,
     build_competitor_delta_rows,
     build_cycle_demand_rows,
+    build_explore_bar_rows,
+    build_explore_line_rows,
+    build_explore_scatter_points,
     build_fe_vde_points,
     build_iso_pse_lines,
+    build_lineage_waterfall,
     build_metric_bar_rows,
     build_reference_summary,
     build_roadload_curve_rows,
@@ -25,7 +29,15 @@ from src.vde_app.comparison_report_viewmodels import (
     deduplicate_by_vde_id,
     format_value,
     is_temporary_net,
+    list_available_explore_metrics,
+    list_available_lineage_metrics,
+    list_explore_dimension_values,
+    list_explore_dimensions,
+    list_explore_numeric_metrics,
+    list_lineage_capable_metrics,
+    metric_axis_label,
     remove_comparison,
+    resolve_lineage_context,
     set_reference,
     sync_comparisons_from_widget,
 )
@@ -33,9 +45,11 @@ from src.vde_core import db as db_module
 from src.vde_core.comparison_report_service import (
     ComparisonDataset,
     ComparisonRole,
+    LineageChainStatus,
     build_scenario_comparison_item,
     build_vde_comparison_item,
     list_comparison_scenarios,
+    resolve_lineage_chain,
 )
 from src.vde_core.qa_mock_data import build_vde_seed_rows, seed_qa_database
 
@@ -588,6 +602,425 @@ class FormatValueTests(unittest.TestCase):
     def test_signed_delta_shows_plus_for_positive(self):
         self.assertTrue(format_value(0.05, "energy_mj_per_km", "Metric", signed=True).startswith("+"))
         self.assertTrue(format_value(-0.05, "energy_mj_per_km", "Metric", signed=True).startswith("-"))
+
+
+# -----------------------------------------------------------------------------
+# Explore Lite -- dimensions, metric selectors (Sec 52, Package 8D)
+# -----------------------------------------------------------------------------
+
+
+class ExploreDimensionAndMetricSelectorTests(unittest.TestCase):
+    def test_x_dimensions_include_scenario_vehicle_and_curated_categoricals(self):
+        keys = {d.key for d in list_explore_dimensions("x")}
+        self.assertEqual(
+            keys,
+            {"scenario", "vehicle", "make", "model_year", "category", "legislation", "electrification", "fuel_type", "provenance"},
+        )
+
+    def test_order_dimension_is_only_model_year(self):
+        keys = [d.key for d in list_explore_dimensions("order")]
+        self.assertEqual(keys, ["model_year"])
+
+    def test_group_and_filter_dimensions_exclude_scenario_vehicle_make_and_year(self):
+        for role in ("group", "filter"):
+            keys = {d.key for d in list_explore_dimensions(role)}
+            self.assertEqual(keys, {"category", "legislation", "electrification", "fuel_type", "provenance"})
+
+    def test_numeric_metrics_exclude_text_fields_and_use_registry_label(self):
+        metrics = list_explore_numeric_metrics("bar")
+        self.assertIn("mass_kg", [m.key for m in metrics])
+        self.assertNotIn("make", [m.key for m in metrics])  # text metric never leaks into a numeric axis
+        mass = next(m for m in metrics if m.key == "mass_kg")
+        self.assertEqual(mass.label, "Mass")  # Registry label, not a raw column name
+
+    def test_scatter_only_offers_scatter_compatible_metrics(self):
+        scatter_keys = {m.key for m in list_explore_numeric_metrics("scatter")}
+        bar_keys = {m.key for m in list_explore_numeric_metrics("bar")}
+        self.assertIn("vde_total", scatter_keys)
+        self.assertTrue(scatter_keys.issubset(bar_keys))  # every scatter metric is also bar-eligible today
+
+    def test_line_metric_eligibility_matches_bar(self):
+        self.assertEqual(
+            {m.key for m in list_explore_numeric_metrics("line")}, {m.key for m in list_explore_numeric_metrics("bar")}
+        )
+
+    def test_metric_axis_label_includes_unit(self):
+        from src.vde_core.comparison_metric_registry import get_metric
+
+        self.assertEqual(metric_axis_label(get_metric("vde_total"), "Metric"), "VDE TOTAL [MJ/km]")
+
+
+# -----------------------------------------------------------------------------
+# Explore Lite -- Bar / Scatter / Line builders, group/filter, duplicate labels
+# (Sec 53-56, 63, Package 8D). VDE_ONLY items are used directly where fuel/
+# powertrain fields are not the point under test -- no fuelcons DB needed.
+# -----------------------------------------------------------------------------
+
+
+class ExploreVdeOnlyChartTests(unittest.TestCase):
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "explore_vde_only.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+        self.reference = build_vde_comparison_item(900001, role=ComparisonRole.REFERENCE)
+        self.other = build_vde_comparison_item(900002)
+        self.no_mass_source = build_vde_comparison_item(900003)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def _dataset(self, comparisons):
+        return ComparisonDataset(reference=self.reference, comparisons=tuple(comparisons))
+
+    def test_bar_scenario_x_vde_total_correct_count_and_reference_preserved(self):
+        dataset = self._dataset([self.other])
+        result = build_explore_bar_rows(dataset, x_dimension_key="scenario", y_metric_key="vde_total")
+        self.assertEqual(len(result["rows"]), 2)
+        self.assertEqual(result["excluded"], [])
+        self.assertIn("REFERENCE", {r.role for r in result["rows"]})
+
+    def test_bar_missing_metric_excluded_with_reason(self):
+        row = _qa_row(900002)
+        row["vde_net_mj_per_km"] = None
+        row["trans_A_coef_N"] = None
+        row["trans_B_coef_Npkph"] = None
+        row["trans_C_coef_Npkph2"] = None
+        no_net_item = build_vde_comparison_item(900002, vde_row=row)
+        dataset = self._dataset([no_net_item])
+        result = build_explore_bar_rows(dataset, x_dimension_key="scenario", y_metric_key="vde_net")
+        self.assertEqual(len(result["rows"]), 1)  # only Reference has NET
+        self.assertEqual(len(result["excluded"]), 1)
+        self.assertIn("unavailable", result["excluded"][0]["reason"])
+
+    def test_bar_duplicate_scenario_display_titles_remain_distinct(self):
+        row_a = _qa_row(900001)
+        row_b = _qa_row(900002)
+        row_b["make"], row_b["model"], row_b["year"] = row_a["make"], row_a["model"], row_a["year"]
+        twin = build_vde_comparison_item(900002, vde_row=row_b)
+        dataset = self._dataset([twin])
+        result = build_explore_bar_rows(dataset, x_dimension_key="scenario", y_metric_key="vde_total")
+        labels = [r.label for r in result["rows"]]
+        self.assertEqual(len(labels), len(set(labels)))  # never merged despite identical source label
+        self.assertEqual(len(result["rows"]), 2)
+
+    def test_scatter_mass_vs_vde_total_valid_points(self):
+        dataset = self._dataset([self.other])
+        result = build_explore_scatter_points(dataset, x_metric_key="mass_kg", y_metric_key="vde_total")
+        self.assertEqual(len(result["points"]), 2)
+        self.assertEqual(result["excluded"], [])
+
+    def test_scatter_missing_x_excluded_with_reason(self):
+        dataset = self._dataset([self.other])
+        result = build_explore_scatter_points(dataset, x_metric_key="fuel_l_per_100km", y_metric_key="vde_total")
+        # VDE_ONLY items never populate fuel_energy -- X is unavailable for both.
+        self.assertEqual(result["points"], [])
+        self.assertEqual(len(result["excluded"]), 2)
+
+    def test_scatter_missing_y_excluded_with_reason(self):
+        dataset = self._dataset([self.other])
+        result = build_explore_scatter_points(dataset, x_metric_key="mass_kg", y_metric_key="gco2_per_km")
+        self.assertEqual(result["points"], [])
+        self.assertEqual(len(result["excluded"]), 2)
+
+    def test_scatter_scenario_identity_preserved_independently_of_label(self):
+        row_b = _qa_row(900002)
+        row_b["make"], row_b["model"], row_b["year"] = _qa_row(900001)["make"], _qa_row(900001)["model"], _qa_row(900001)["year"]
+        twin = build_vde_comparison_item(900002, vde_row=row_b)
+        dataset = self._dataset([twin])
+        result = build_explore_scatter_points(dataset, x_metric_key="mass_kg", y_metric_key="vde_total")
+        identities = {p.identity for p in result["points"]}
+        labels = {p.label for p in result["points"]}
+        self.assertEqual(len(identities), 2)  # distinct canonical identity...
+        self.assertEqual(len(labels), 1)  # ...despite an identical display label
+
+    def test_line_unordered_dimension_is_rejected(self):
+        dataset = self._dataset([self.other])
+        result = build_explore_line_rows(dataset, x_dimension_key="scenario", y_metric_key="vde_total")
+        self.assertEqual(result["rows"], [])
+        self.assertIsNotNone(result.get("unavailable_reason"))
+
+    def test_line_model_year_ordering_is_deterministic_not_selection_order(self):
+        row_2010 = _qa_row(900002)
+        row_2010["year"] = 2010
+        row_2015 = _qa_row(900003)
+        row_2015["year"] = 2015
+        item_2010 = build_vde_comparison_item(900002, vde_row=row_2010)
+        item_2015 = build_vde_comparison_item(900003, vde_row=row_2015)
+        # Reference year is 2026 (unmodified QA seed). Selection order below is
+        # deliberately NOT chronological -- the builder must still sort by year.
+        dataset = self._dataset([item_2015, item_2010])
+        result = build_explore_line_rows(dataset, x_dimension_key="model_year", y_metric_key="vde_total")
+        years = [r.x for r in result["rows"]]
+        self.assertEqual(years, sorted(years))
+        self.assertEqual(years, [2010, 2015, 2026])
+
+
+# -----------------------------------------------------------------------------
+# Explore Lite -- group/filter, temporary NET (Sec 56-57, Package 8D). These
+# need FuelCons-linked items for Electrification/Fuel type/Provenance.
+# -----------------------------------------------------------------------------
+
+
+class ExploreGroupFilterTests(unittest.TestCase):
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "explore_group_filter.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+        with sqlite3.connect(self.db_path) as con:
+            rows = [
+                (1, 900001, "ICE", "Gasoline", "HOMOLOGATED", 6.0, 150.0),
+                (2, 900002, "PHEV", "Gasoline", "ESTIMATED", 4.0, 90.0),
+                (3, 900003, "BEV", "Electric", "SCENARIO", None, 0.0),
+                (4, 900006, "ICE", "Gasoline", "ESTIMATED", 7.0, 160.0),
+            ]
+            con.executemany(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, "
+                "fuel_l_per_100km, gco2_per_km) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            con.commit()
+        self.reference = build_scenario_comparison_item(1, role=ComparisonRole.REFERENCE)
+        self.phev = build_scenario_comparison_item(2)
+        self.bev = build_scenario_comparison_item(3)
+        self.ice_no_net = build_scenario_comparison_item(4)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def _dataset(self, comparisons):
+        return ComparisonDataset(reference=self.reference, comparisons=tuple(comparisons))
+
+    def test_group_by_electrification(self):
+        dataset = self._dataset([self.phev, self.bev])
+        result = build_explore_bar_rows(
+            dataset, x_dimension_key="scenario", y_metric_key="mass_kg", group_dimension_key="electrification"
+        )
+        groups = {r.group for r in result["rows"]}
+        self.assertEqual(groups, {"ICE", "PHEV", "BEV"})
+
+    def test_group_by_provenance(self):
+        dataset = self._dataset([self.phev, self.bev])
+        result = build_explore_bar_rows(
+            dataset, x_dimension_key="scenario", y_metric_key="mass_kg", group_dimension_key="provenance"
+        )
+        groups = {r.group for r in result["rows"]}
+        self.assertEqual(groups, {"HOMOLOGATED", "ESTIMATED", "SCENARIO"})
+
+    def test_filter_one_category_keeps_only_matching_items(self):
+        dataset = self._dataset([self.phev, self.bev, self.ice_no_net])
+        result = build_explore_bar_rows(
+            dataset,
+            x_dimension_key="scenario",
+            y_metric_key="mass_kg",
+            filter_dimension_key="electrification",
+            filter_values=["ICE"],
+        )
+        self.assertEqual(len(result["rows"]), 2)  # reference + ice_no_net
+        self.assertEqual({r.role for r in result["rows"]}, {"REFERENCE", "COMPARISON"})
+
+    def test_filter_excludes_reference_when_it_does_not_match(self):
+        dataset = self._dataset([self.phev])
+        result = build_explore_bar_rows(
+            dataset,
+            x_dimension_key="scenario",
+            y_metric_key="mass_kg",
+            filter_dimension_key="electrification",
+            filter_values=["PHEV"],
+        )
+        self.assertEqual(len(result["rows"]), 1)
+        self.assertEqual(result["rows"][0].role, "COMPARISON")
+        self.assertIn(self.reference.label, [e["label"] for e in result["excluded"]])
+
+    def test_empty_filter_result_handled_safely(self):
+        dataset = self._dataset([self.phev, self.bev])
+        result = build_explore_bar_rows(
+            dataset,
+            x_dimension_key="scenario",
+            y_metric_key="mass_kg",
+            filter_dimension_key="electrification",
+            filter_values=["HEV"],  # no seeded item has this value
+        )
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(len(result["excluded"]), 3)
+
+    def test_metric_unavailable_for_every_item_is_not_offered(self):
+        dataset = self._dataset([self.bev])  # only Reference (ICE) + BEV, neither has energy_Wh_per_km set on Reference
+        items = (dataset.reference, *dataset.comparisons)
+        metrics = list_available_explore_metrics(items, "bar")
+        self.assertNotIn("energy_wh_per_km", [m.key for m in metrics])
+
+    def test_temporary_net_is_marked_on_scatter_points(self):
+        row = _qa_row(900006)
+        temp = {"source": "MANUAL", "A": 9.0, "B": 0.003, "C": 0.0006}
+        temp_reference = build_vde_comparison_item(900006, role=ComparisonRole.REFERENCE, vde_row=row, temporary_transmission=temp)
+        missing_comparison = build_vde_comparison_item(900001)
+        dataset = ComparisonDataset(reference=temp_reference, comparisons=(missing_comparison,))
+        result = build_explore_scatter_points(dataset, x_metric_key="mass_kg", y_metric_key="vde_net")
+        temp_point = next(p for p in result["points"] if p.role == "REFERENCE")
+        self.assertTrue(temp_point.is_temporary_net)
+
+
+# -----------------------------------------------------------------------------
+# Physical VDE Lineage -- context resolution, metric availability, waterfall
+# (Sec 58-63, Package 8D Investigation Addendum)
+# -----------------------------------------------------------------------------
+
+
+class LineageContextTests(unittest.TestCase):
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "lineage_context.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+        with sqlite3.connect(self.db_path) as con:
+            con.executemany(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin) VALUES (?, ?, ?, ?, ?)",
+                [
+                    (1, 900001, "ICE", "Gasoline", "HOMOLOGATED"),
+                    (2, 900001, "ICE", "Gasoline", "ESTIMATED"),  # shares VDE 900001 with #1
+                ],
+            )
+            con.commit()
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def test_bare_vde_selection_is_not_labeled_as_fuelcons_scenario(self):
+        item = build_vde_comparison_item(900001)
+        context = resolve_lineage_context(item)
+        self.assertFalse(context.is_fuelcons_scenario)
+
+    def test_fuelcons_scenario_selection_resolves_linked_vde_and_keeps_scenario_as_context_only(self):
+        item = build_scenario_comparison_item(1)
+        context = resolve_lineage_context(item)
+        self.assertTrue(context.is_fuelcons_scenario)
+        self.assertEqual([n.vde_id for n in context.chain.nodes], [900001])
+        self.assertIn(item.label, context.originating_label)
+
+    def test_two_fuelcons_scenarios_sharing_one_vde_produce_identical_physical_lineage(self):
+        item1 = build_scenario_comparison_item(1)
+        item2 = build_scenario_comparison_item(2)
+        self.assertNotEqual(item1.fuelcons_id, item2.fuelcons_id)  # distinct scenarios elsewhere
+        context1 = resolve_lineage_context(item1)
+        context2 = resolve_lineage_context(item2)
+        self.assertEqual(
+            [n.vde_id for n in context1.chain.nodes], [n.vde_id for n in context2.chain.nodes]
+        )  # same physical lineage
+        self.assertEqual(context1.chain.status, context2.chain.status)
+
+    def test_list_lineage_capable_metrics_excludes_fuel_energy_co2_pse(self):
+        keys = {m.key for m in list_lineage_capable_metrics()}
+        self.assertFalse(keys & {"fuel_l_per_100km", "fuel_km_per_l", "energy_wh_per_km", "gco2_per_km", "eta_pt_est"})
+        self.assertIn("vde_total", keys)
+
+    def test_list_available_lineage_metrics_requires_availability_at_every_node(self):
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE vde_db SET vde_id_parent=900001 WHERE id=900002")
+            # vde_total is a persisted aggregate (canonical_vde_read), not derived
+            # from coast_A/B/C at read time -- it must be nulled directly to make
+            # the metric itself unavailable at this node.
+            con.execute(
+                "UPDATE vde_db SET vde_total_mj_per_km=NULL, vde_net_mj_per_km=NULL, "
+                "coast_A_N=NULL, coast_B_N_per_kph=NULL, coast_C_N_per_kph2=NULL WHERE id=900002"
+            )
+            con.commit()
+        chain = resolve_lineage_chain(900002)
+        available_keys = {m.key for m in list_available_lineage_metrics(chain)}
+        self.assertNotIn("vde_total", available_keys)  # unavailable at the 900002 node
+        self.assertIn("mass_kg", available_keys)  # unaffected physical metric stays available
+
+
+class LineageWaterfallTests(unittest.TestCase):
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "lineage_waterfall.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def _set_parent(self, vde_id: int, parent_id) -> None:
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE vde_db SET vde_id_parent=? WHERE id=?", (parent_id, vde_id))
+            con.commit()
+
+    def test_root_only_chain_produces_single_baseline_step(self):
+        chain = resolve_lineage_chain(900001)
+        waterfall = build_lineage_waterfall(chain, "vde_total")
+        self.assertEqual(len(waterfall.steps), 1)
+        self.assertIsNone(waterfall.steps[0].delta)
+        self.assertTrue(waterfall.complete)
+
+    def test_child_step_is_child_minus_parent_and_lower_is_better_marks_better(self):
+        self._set_parent(900002, 900001)  # 900002's vde_total (1.215) < 900001's (1.24)
+        chain = resolve_lineage_chain(900002)
+        waterfall = build_lineage_waterfall(chain, "vde_total")
+        self.assertEqual(len(waterfall.steps), 2)
+        child_step = waterfall.steps[1]
+        self.assertAlmostEqual(child_step.delta, 1.215 - 1.24, places=6)
+        self.assertEqual(child_step.semantic, "BETTER")
+
+    def test_neutral_metric_has_delta_but_no_semantic_verdict(self):
+        self._set_parent(900002, 900001)
+        chain = resolve_lineage_chain(900002)
+        waterfall = build_lineage_waterfall(chain, "mass_kg")
+        child_step = waterfall.steps[1]
+        self.assertIsNotNone(child_step.delta)
+        self.assertIsNone(child_step.semantic)
+
+    def test_missing_metric_mid_chain_is_incomplete_no_fallback(self):
+        self._set_parent(900002, 900001)
+        self._set_parent(900003, 900002)
+        with sqlite3.connect(self.db_path) as con:
+            con.execute(
+                "UPDATE vde_db SET vde_total_mj_per_km=NULL, vde_net_mj_per_km=NULL, "
+                "coast_A_N=NULL, coast_B_N_per_kph=NULL, coast_C_N_per_kph2=NULL WHERE id=900002"
+            )
+            con.commit()
+        chain = resolve_lineage_chain(900003)
+        waterfall = build_lineage_waterfall(chain, "vde_total")
+        self.assertFalse(waterfall.complete)
+        self.assertIsNotNone(waterfall.incomplete_reason)
+        self.assertEqual(waterfall.steps[-1].status, "UNAVAILABLE")
+        self.assertEqual(len(waterfall.steps), 2)  # walk stops at the broken node, never fabricates 900003's step
+
+    def test_incompatible_cycle_blocks_cycle_specific_metric_but_not_physical_metric(self):
+        self._set_parent(900002, 900001)
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE vde_db SET legislation='WLTP' WHERE id=900002")
+            con.commit()
+        chain = resolve_lineage_chain(900002)
+
+        cycle_specific = build_lineage_waterfall(chain, "vde_total")
+        self.assertFalse(cycle_specific.complete)
+        self.assertEqual(cycle_specific.steps[-1].status, "INCOMPATIBLE")
+
+        physical = build_lineage_waterfall(chain, "mass_kg")
+        self.assertTrue(physical.complete)
+        self.assertEqual(physical.steps[-1].status, "OK")
+
+    def test_broken_reference_chain_is_reported_incomplete(self):
+        self._set_parent(900002, 999999)
+        chain = resolve_lineage_chain(900002)
+        self.assertEqual(chain.status, LineageChainStatus.BROKEN)
+        waterfall = build_lineage_waterfall(chain, "vde_total")
+        self.assertFalse(waterfall.complete)
+        self.assertEqual(len(waterfall.steps), 1)  # only the resolvable node
 
 
 if __name__ == "__main__":

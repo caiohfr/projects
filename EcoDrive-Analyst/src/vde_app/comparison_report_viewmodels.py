@@ -9,17 +9,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from src.vde_app.units import format_quantity
-from src.vde_core.comparison_metric_registry import get_metric, list_metrics
+from src.vde_app.units import unit_label as _unit_label
+from src.vde_core.comparison_metric_registry import MetricDefinition, get_metric, list_metrics
 from src.vde_core.fuel_energy import LHV_MJ_PER_L, MJ_TO_Wh
 from src.vde_core.comparison_report_service import (
     ComparisonDataset,
     ComparisonItem,
     ComparisonRole,
+    LineageChainResult,
+    LineageChainStatus,
     RevisionStatus,
+    build_vde_comparison_item,
     compare_metric,
+    extract_metric_value,
+    resolve_lineage_chain,
 )
 
 MAX_COMPARISONS = 10
@@ -197,6 +203,22 @@ def format_value(raw_value: Any, unit_family: str, unit_system: str, *, unavaila
     if signed and isinstance(raw_value, (int, float)) and raw_value > 0 and not text.startswith("+"):
         text = f"+{text}"
     return text
+
+
+def metric_axis_label(metric: MetricDefinition, unit_system: str) -> str:
+    """Single source of truth for "Label [unit]" axis titles (Explore/Lineage,
+    Package 8D) -- reuses the same unit_family -> quantity mapping format_value
+    already relies on, so a chart axis and a Scorecard cell never disagree.
+    """
+    if metric.unit_family == "l_per_100km":
+        unit = "gal/100mi" if unit_system == "US customary" else "L/100km"
+        return f"{metric.label} [{unit}]"
+    if metric.unit_family == "km_per_l":
+        return f"{metric.label} [km/l]"
+    quantity = _UNIT_QUANTITY_MAP.get(metric.unit_family)
+    if quantity:
+        return f"{metric.label} [{_unit_label(quantity, unit_system)}]"
+    return metric.label
 
 
 def _format_delta(absolute_delta: float | None, percent_delta: float | None, unit_family: str, unit_system: str) -> str | None:
@@ -449,6 +471,17 @@ def _scenario_identity(item: ComparisonItem) -> str:
         origin = item.provenance.record_origin or "UNKNOWN"
         return f"{origin} (#{item.fuelcons_id})"
     return item.label or f"VDE #{item.vde_id}"
+
+
+def _canonical_identity(item: ComparisonItem) -> str:
+    """Sec 10: chart-preparation dictionary keys must be canonical IDs, never
+    display labels -- two distinct VDE_ONLY items can legitimately share an
+    identical label, unlike _scenario_identity() above (which falls back to
+    label and exists only for the Roadload dedup-attribution UI text).
+    """
+    if item.fuelcons_id is not None:
+        return f"fc:{item.fuelcons_id}"
+    return f"vde:{item.vde_id}"
 
 
 @dataclass(frozen=True)
@@ -739,6 +772,523 @@ def dataset_warnings_summary(dataset: ComparisonDataset) -> list[str]:
     return warnings
 
 
+# -----------------------------------------------------------------------------
+# Explore Lite -- generic chart data prep (Sec 3-25, Package 8D)
+#
+# Consumes ComparisonDataset + Metric Registry only. Never exposes raw SQLite
+# fields, arbitrary expressions, or a second hardcoded KPI list -- numeric axes
+# come from comparison_metric_registry.list_metrics(); categorical dimensions
+# come from the small curated table below (Sec 11), since Scenario/Vehicle/
+# Provenance have no Registry entry of their own but are still legitimate,
+# already-computed ComparisonItem fields.
+# -----------------------------------------------------------------------------
+
+
+def _dim_vehicle(item: ComparisonItem) -> str | None:
+    make = str(item.vehicle.get("make") or "").strip()
+    model = str(item.vehicle.get("model") or "").strip()
+    return " ".join(part for part in (make, model) if part) or None
+
+
+@dataclass(frozen=True)
+class ExploreDimension:
+    key: str
+    label: str
+    extractor: Callable[[ComparisonItem], Any]
+    roles: frozenset[str]  # subset of {"x", "order", "group", "filter"}
+
+
+_EXPLORE_DIMENSIONS: tuple[ExploreDimension, ...] = (
+    ExploreDimension("scenario", "Scenario", lambda i: i.label or f"VDE #{i.vde_id}", frozenset({"x"})),
+    ExploreDimension("vehicle", "Vehicle", _dim_vehicle, frozenset({"x"})),
+    ExploreDimension("make", "Make", lambda i: i.vehicle.get("make"), frozenset({"x"})),
+    ExploreDimension("model_year", "Model Year", lambda i: i.vehicle.get("year"), frozenset({"x", "order"})),
+    ExploreDimension("category", "Category", lambda i: i.vehicle.get("category"), frozenset({"x", "group", "filter"})),
+    ExploreDimension(
+        "legislation", "Legislation", lambda i: i.vehicle.get("legislation"), frozenset({"x", "group", "filter"})
+    ),
+    ExploreDimension(
+        "electrification",
+        "Electrification",
+        lambda i: i.powertrain.get("electrification"),
+        frozenset({"x", "group", "filter"}),
+    ),
+    ExploreDimension(
+        "fuel_type", "Fuel type", lambda i: i.powertrain.get("fuel_type"), frozenset({"x", "group", "filter"})
+    ),
+    ExploreDimension(
+        "provenance", "Provenance", lambda i: i.provenance.record_origin, frozenset({"x", "group", "filter"})
+    ),
+)
+_EXPLORE_DIMENSIONS_BY_KEY = {d.key: d for d in _EXPLORE_DIMENSIONS}
+
+
+def _dimension_by_key(key: str | None) -> ExploreDimension | None:
+    return _EXPLORE_DIMENSIONS_BY_KEY.get(key) if key else None
+
+
+def list_explore_dimensions(role: str) -> list[ExploreDimension]:
+    return [d for d in _EXPLORE_DIMENSIONS if role in d.roles]
+
+
+def list_explore_numeric_metrics(chart_type: str) -> list[MetricDefinition]:
+    """chart_type in {"bar", "scatter", "line"}. Line reuses Bar-compatible
+    metrics -- a Line chart is a Bar chart with an explicit ordering basis
+    (Sec 17), not a distinct metric class.
+    """
+    lookup_type = "bar" if chart_type == "line" else chart_type
+    return [m for m in list_metrics() if m.unit_family not in ("text",) and lookup_type in m.compatible_chart_types]
+
+
+def list_available_explore_metrics(items: Sequence[ComparisonItem], chart_type: str) -> list[MetricDefinition]:
+    """Sec 8: a metric with zero available values across the current items is
+    not offered at all; partial availability is fine (excluded items are
+    reported per-row by the chart builders below).
+    """
+    candidates = list_explore_numeric_metrics(chart_type)
+    return [m for m in candidates if any(extract_metric_value(item, m.key) is not None for item in items)]
+
+
+def list_explore_dimension_values(items: Sequence[ComparisonItem], dimension_key: str) -> list[str]:
+    dim = _dimension_by_key(dimension_key)
+    if dim is None:
+        return []
+    values = {str(dim.extractor(item)) for item in items if dim.extractor(item) not in (None, "")}
+    return sorted(values)
+
+
+def _dedupe_display_labels(labels: list[str]) -> list[str]:
+    """Presentation-only disambiguation equivalent to components/comparison_report.py's
+    _dedupe_titles (Sec 10) -- kept local so this module stays Streamlit-free
+    and dependency-direction-clean (UI imports viewmodels, never the reverse).
+    Two distinct scenarios sharing one label must never be merged into one bar.
+    """
+    seen: dict[str, int] = {}
+    result = []
+    for label in labels:
+        seen[label] = seen.get(label, 0) + 1
+        result.append(label if seen[label] == 1 else f"{label} ({seen[label]})")
+    return result
+
+
+def _apply_dimension_filter(
+    items: Sequence[ComparisonItem], filter_dimension_key: str | None, filter_values: Sequence[str]
+) -> tuple[list[ComparisonItem], list[dict[str, str]]]:
+    if not filter_dimension_key or not filter_values:
+        return list(items), []
+    dim = _dimension_by_key(filter_dimension_key)
+    if dim is None:
+        return list(items), []
+    allowed = {str(v) for v in filter_values}
+    kept: list[ComparisonItem] = []
+    excluded: list[dict[str, str]] = []
+    for item in items:
+        value = dim.extractor(item)
+        if value is not None and str(value) in allowed:
+            kept.append(item)
+        else:
+            excluded.append({"label": item.label or "Unknown vehicle", "reason": f"Filtered out by {dim.label}"})
+    return kept, excluded
+
+
+@dataclass(frozen=True)
+class ExploreBarRow:
+    identity: str
+    label: str
+    value: float
+    formatted_value: str
+    role: str
+    group: str | None = None
+
+
+@dataclass(frozen=True)
+class ExploreScatterPoint:
+    identity: str
+    label: str
+    role: str
+    x: float
+    y: float
+    provenance: str | None
+    is_temporary_net: bool
+    revision_status: str | None
+    group: str | None = None
+
+
+@dataclass(frozen=True)
+class ExploreLineRow:
+    identity: str
+    x: Any
+    x_label: str
+    y: float
+    formatted_y: str
+    role: str
+    group: str | None = None
+
+
+def build_explore_bar_rows(
+    dataset: ComparisonDataset,
+    *,
+    x_dimension_key: str,
+    y_metric_key: str,
+    group_dimension_key: str | None = None,
+    filter_dimension_key: str | None = None,
+    filter_values: Sequence[str] = (),
+    unit_system: str = "Metric",
+) -> dict[str, Any]:
+    metric = get_metric(y_metric_key)
+    x_dim = _dimension_by_key(x_dimension_key)
+    if metric is None or x_dim is None or "bar" not in metric.compatible_chart_types:
+        return {"rows": [], "excluded": []}
+
+    items, filter_excluded = _apply_dimension_filter(
+        (dataset.reference, *dataset.comparisons), filter_dimension_key, filter_values
+    )
+    group_dim = _dimension_by_key(group_dimension_key) if group_dimension_key else None
+
+    excluded: list[dict[str, str]] = list(filter_excluded)
+    kept_items: list[ComparisonItem] = []
+    labels: list[str] = []
+    for item in items:
+        x_value = x_dim.extractor(item)
+        if x_value in (None, ""):
+            excluded.append({"label": item.label or "Unknown vehicle", "reason": f"{x_dim.label} unavailable"})
+            continue
+        value = extract_metric_value(item, y_metric_key)
+        if value is None:
+            excluded.append({"label": item.label or "Unknown vehicle", "reason": f"{metric.label} unavailable"})
+            continue
+        kept_items.append(item)
+        labels.append(str(x_value))
+
+    labels = _dedupe_display_labels(labels)
+    rows: list[ExploreBarRow] = []
+    for item, label in zip(kept_items, labels):
+        value = extract_metric_value(item, y_metric_key)
+        group_value = group_dim.extractor(item) if group_dim is not None else None
+        rows.append(
+            ExploreBarRow(
+                identity=_canonical_identity(item),
+                label=label,
+                value=value,
+                formatted_value=format_value(value, metric.unit_family, unit_system),
+                role=item.role.value,
+                group=str(group_value) if group_value not in (None, "") else None,
+            )
+        )
+    return {"rows": rows, "excluded": excluded}
+
+
+def build_explore_scatter_points(
+    dataset: ComparisonDataset,
+    *,
+    x_metric_key: str,
+    y_metric_key: str,
+    group_dimension_key: str | None = None,
+    filter_dimension_key: str | None = None,
+    filter_values: Sequence[str] = (),
+) -> dict[str, Any]:
+    x_metric = get_metric(x_metric_key)
+    y_metric = get_metric(y_metric_key)
+    if (
+        x_metric is None
+        or y_metric is None
+        or "scatter" not in x_metric.compatible_chart_types
+        or "scatter" not in y_metric.compatible_chart_types
+    ):
+        return {"points": [], "excluded": []}
+
+    items, excluded = _apply_dimension_filter((dataset.reference, *dataset.comparisons), filter_dimension_key, filter_values)
+    group_dim = _dimension_by_key(group_dimension_key) if group_dimension_key else None
+
+    points: list[ExploreScatterPoint] = []
+    for item in items:
+        label = item.label or "Unknown vehicle"
+        x = extract_metric_value(item, x_metric_key)
+        y = extract_metric_value(item, y_metric_key)
+        missing = [m.label for m, v in ((x_metric, x), (y_metric, y)) if v is None]
+        if missing:
+            excluded.append({"label": label, "reason": f"{' / '.join(missing)} unavailable"})
+            continue
+        group_value = group_dim.extractor(item) if group_dim is not None else None
+        points.append(
+            ExploreScatterPoint(
+                identity=_canonical_identity(item),
+                label=label,
+                role=item.role.value,
+                x=x,
+                y=y,
+                provenance=item.provenance.record_origin,
+                is_temporary_net=is_temporary_net(item),
+                revision_status=item.provenance.revision_status.value if item.provenance.revision_status else None,
+                group=str(group_value) if group_value not in (None, "") else None,
+            )
+        )
+    return {"points": points, "excluded": excluded}
+
+
+def build_explore_line_rows(
+    dataset: ComparisonDataset,
+    *,
+    x_dimension_key: str,
+    y_metric_key: str,
+    group_dimension_key: str | None = None,
+    filter_dimension_key: str | None = None,
+    filter_values: Sequence[str] = (),
+    unit_system: str = "Metric",
+) -> dict[str, Any]:
+    """Sec 17: Line X must come from an explicitly orderable dimension --
+    list_explore_dimensions("order") only ever offers Model Year today, so an
+    unordered choice (e.g. selection order) is structurally unavailable
+    rather than merely discouraged.
+    """
+    x_dim = _dimension_by_key(x_dimension_key)
+    metric = get_metric(y_metric_key)
+    if x_dim is None or "order" not in x_dim.roles or metric is None or "bar" not in metric.compatible_chart_types:
+        return {"rows": [], "excluded": [], "unavailable_reason": "Select a valid ordered X dimension for Line charts."}
+
+    items, excluded = _apply_dimension_filter((dataset.reference, *dataset.comparisons), filter_dimension_key, filter_values)
+    group_dim = _dimension_by_key(group_dimension_key) if group_dimension_key else None
+
+    prepared: list[tuple[Any, ComparisonItem]] = []
+    for item in items:
+        x_value = x_dim.extractor(item)
+        if x_value in (None, ""):
+            excluded.append({"label": item.label or "Unknown vehicle", "reason": f"{x_dim.label} unavailable"})
+            continue
+        y_value = extract_metric_value(item, y_metric_key)
+        if y_value is None:
+            excluded.append({"label": item.label or "Unknown vehicle", "reason": f"{metric.label} unavailable"})
+            continue
+        prepared.append((x_value, item))
+
+    prepared.sort(key=lambda pair: (pair[0], _canonical_identity(pair[1])))
+
+    rows: list[ExploreLineRow] = []
+    for x_value, item in prepared:
+        y_value = extract_metric_value(item, y_metric_key)
+        group_value = group_dim.extractor(item) if group_dim is not None else None
+        rows.append(
+            ExploreLineRow(
+                identity=_canonical_identity(item),
+                x=x_value,
+                x_label=str(x_value),
+                y=y_value,
+                formatted_y=format_value(y_value, metric.unit_family, unit_system),
+                role=item.role.value,
+                group=str(group_value) if group_value not in (None, "") else None,
+            )
+        )
+    return {"rows": rows, "excluded": excluded, "unavailable_reason": None}
+
+
+# -----------------------------------------------------------------------------
+# Physical VDE Lineage (Sec 26-43, Package 8D)
+#
+# The only explicit lineage source in this repository is vde_db.vde_id_parent
+# (confirmed by inspection: fuelcons_db has no parent field of its own). This
+# is therefore always Physical VDE Lineage. A FuelCons scenario may enter this
+# view by resolving its linked VDE, but the chain identity is the VDE id chain
+# -- the originating scenario is kept only as display context (Package 8D
+# Investigation Addendum, replacing the original "FuelCons scenario lineage
+# uses FuelCons identity" requirement).
+# -----------------------------------------------------------------------------
+
+_LINEAGE_INELIGIBLE_SOURCE_REQUIREMENTS = frozenset({"FUEL_CONSUMPTION", "FUEL_ENERGY", "ELECTRICAL_ENERGY", "CO2", "PSE"})
+
+
+@dataclass(frozen=True)
+class LineageContext:
+    chain: LineageChainResult
+    originating_label: str
+    originating_identity: str
+    is_fuelcons_scenario: bool
+
+
+def resolve_lineage_context(item: ComparisonItem) -> LineageContext | None:
+    if item.vde_id is None:
+        return None
+    return LineageContext(
+        chain=resolve_lineage_chain(item.vde_id),
+        originating_label=item.label or f"VDE #{item.vde_id}",
+        originating_identity=_scenario_identity(item),
+        is_fuelcons_scenario=item.fuelcons_id is not None,
+    )
+
+
+def list_lineage_capable_metrics() -> list[MetricDefinition]:
+    """A lineage chain's nodes are always VDE_ONLY items (Sec 30) -- fuel/
+    energy/CO2/PSE metrics require a FuelCons scenario and are never
+    populated on a bare VDE, so offering them here would always resolve to
+    "unavailable at every node" rather than a usable waterfall.
+    """
+    return [
+        m
+        for m in list_metrics()
+        if m.unit_family not in ("text",) and m.source_requirement not in _LINEAGE_INELIGIBLE_SOURCE_REQUIREMENTS
+    ]
+
+
+def list_available_lineage_metrics(chain: LineageChainResult) -> list[MetricDefinition]:
+    """Sec 31: only offer a metric that every required chain node can
+    legitimately expose -- a metric missing at even one node is excluded
+    from the selector rather than offered and then failing mid-walk.
+    """
+    if not chain.nodes:
+        return []
+    items = [build_vde_comparison_item(node.vde_id, vde_row=node.vde_row) for node in chain.nodes]
+    return [m for m in list_lineage_capable_metrics() if all(extract_metric_value(i, m.key) is not None for i in items)]
+
+
+@dataclass(frozen=True)
+class LineageStep:
+    vde_id: int
+    label: str
+    parent_vde_id: int | None
+    provenance: str | None
+    value: float | None
+    formatted_value: str
+    delta: float | None
+    formatted_delta: str | None
+    semantic: str | None  # "BETTER" | "WORSE" | None
+    status: str  # "OK" | "UNAVAILABLE" | "INCOMPATIBLE"
+
+
+@dataclass(frozen=True)
+class LineageWaterfallResult:
+    metric_key: str
+    steps: tuple[LineageStep, ...]
+    complete: bool
+    incomplete_reason: str | None
+    chain_status: str
+    chain_warnings: tuple[str, ...]
+
+
+def build_lineage_waterfall(
+    chain: LineageChainResult,
+    metric_key: str,
+    *,
+    unit_system: str = "Metric",
+    temporary_transmission_by_vde_id: Mapping[int, Mapping[str, Any]] | None = None,
+) -> LineageWaterfallResult:
+    """Sec 32: baseline = absolute root value; each subsequent step = child
+    value - parent value (never recomputed from anything but compare_metric,
+    so semantics/compatibility/basis rules are never duplicated). Sec 35-36:
+    the first unavailable or incompatible node truncates the walk -- no
+    fallback, no fabricated continuation.
+    """
+    metric = get_metric(metric_key)
+    if metric is None or not chain.nodes:
+        return LineageWaterfallResult(
+            metric_key=metric_key,
+            steps=(),
+            complete=False,
+            incomplete_reason="Metric not available." if metric is None else "No lineage chain resolved.",
+            chain_status=chain.status.value,
+            chain_warnings=chain.warnings,
+        )
+
+    temp_by_vde = temporary_transmission_by_vde_id or {}
+    items = [
+        build_vde_comparison_item(node.vde_id, vde_row=node.vde_row, temporary_transmission=temp_by_vde.get(node.vde_id))
+        for node in chain.nodes
+    ]
+
+    baseline_value = extract_metric_value(items[0], metric_key)
+    if baseline_value is None:
+        return LineageWaterfallResult(
+            metric_key=metric_key,
+            steps=(),
+            complete=False,
+            incomplete_reason=f"{metric.label} unavailable at the root of this chain.",
+            chain_status=chain.status.value,
+            chain_warnings=chain.warnings,
+        )
+
+    steps: list[LineageStep] = [
+        LineageStep(
+            vde_id=chain.nodes[0].vde_id,
+            label=chain.nodes[0].label,
+            parent_vde_id=None,
+            provenance=items[0].provenance.record_origin,
+            value=baseline_value,
+            formatted_value=format_value(baseline_value, metric.unit_family, unit_system),
+            delta=None,
+            formatted_delta=None,
+            semantic=None,
+            status="OK",
+        )
+    ]
+
+    complete = True
+    incomplete_reason: str | None = None
+    for i in range(1, len(items)):
+        node = chain.nodes[i]
+        result = compare_metric(items[i - 1], items[i], metric_key)
+        if not result["compatible"]:
+            complete = False
+            incomplete_reason = f"{node.label}: different cycle / incompatible basis vs its parent."
+            steps.append(
+                LineageStep(
+                    vde_id=node.vde_id,
+                    label=node.label,
+                    parent_vde_id=node.parent_vde_id,
+                    provenance=items[i].provenance.record_origin,
+                    value=None,
+                    formatted_value="-",
+                    delta=None,
+                    formatted_delta=None,
+                    semantic=None,
+                    status="INCOMPATIBLE",
+                )
+            )
+            break
+        if not result["available"]:
+            complete = False
+            incomplete_reason = f"{node.label}: {metric.label} unavailable."
+            steps.append(
+                LineageStep(
+                    vde_id=node.vde_id,
+                    label=node.label,
+                    parent_vde_id=node.parent_vde_id,
+                    provenance=items[i].provenance.record_origin,
+                    value=None,
+                    formatted_value="-",
+                    delta=None,
+                    formatted_delta=None,
+                    semantic=None,
+                    status="UNAVAILABLE",
+                )
+            )
+            break
+        steps.append(
+            LineageStep(
+                vde_id=node.vde_id,
+                label=node.label,
+                parent_vde_id=node.parent_vde_id,
+                provenance=items[i].provenance.record_origin,
+                value=result["comparison_value"],
+                formatted_value=format_value(result["comparison_value"], metric.unit_family, unit_system),
+                delta=result["absolute_delta"],
+                formatted_delta=_format_delta(result["absolute_delta"], result["percent_delta"], metric.unit_family, unit_system),
+                semantic=_semantic_for_display(result["semantic"]),
+                status="OK",
+            )
+        )
+
+    if complete and chain.status in (LineageChainStatus.BROKEN, LineageChainStatus.MALFORMED):
+        complete = False
+        incomplete_reason = "Ancestry walk stopped: " + (chain.warnings[-1] if chain.warnings else chain.status.value)
+
+    return LineageWaterfallResult(
+        metric_key=metric_key,
+        steps=tuple(steps),
+        complete=complete,
+        incomplete_reason=incomplete_reason,
+        chain_status=chain.status.value,
+        chain_warnings=chain.warnings,
+    )
+
+
 __all__ = [
     "MAX_COMPARISONS",
     "ScenarioOption",
@@ -749,6 +1299,7 @@ __all__ = [
     "remove_comparison",
     "sync_comparisons_from_widget",
     "format_value",
+    "metric_axis_label",
     "ScorecardCell",
     "ScorecardRow",
     "ScorecardSection",
@@ -767,4 +1318,22 @@ __all__ = [
     "build_fe_vde_points",
     "build_iso_pse_lines",
     "build_competitor_delta_rows",
+    "ExploreDimension",
+    "list_explore_dimensions",
+    "list_explore_numeric_metrics",
+    "list_available_explore_metrics",
+    "list_explore_dimension_values",
+    "ExploreBarRow",
+    "ExploreScatterPoint",
+    "ExploreLineRow",
+    "build_explore_bar_rows",
+    "build_explore_scatter_points",
+    "build_explore_line_rows",
+    "LineageContext",
+    "resolve_lineage_context",
+    "list_lineage_capable_metrics",
+    "list_available_lineage_metrics",
+    "LineageStep",
+    "LineageWaterfallResult",
+    "build_lineage_waterfall",
 ]

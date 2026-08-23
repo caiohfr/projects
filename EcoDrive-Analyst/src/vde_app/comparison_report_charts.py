@@ -129,8 +129,130 @@ def build_cycle_demand_figure(series: Sequence[dict[str, Any]], time_s: Sequence
     return fig
 
 
+def build_explore_bar(rows: Sequence[Any], *, x_title: str, y_title: str) -> go.Figure:
+    """Explore Custom Chart - Bar (Package 8D). Row shape (label/value/optional
+    group) is identical to build_grouped_bar_figure's, so it is reused rather
+    than duplicated -- see comparison_report_viewmodels.build_explore_bar_rows.
+    """
+    dict_rows = [{"label": row.label, "value": row.value, "group": row.group} for row in rows]
+    return build_grouped_bar_figure(dict_rows, y_title=y_title, x_title=x_title)
+
+
+def _explore_scatter_hover(point: Any) -> str:
+    parts = [point.label, f"Provenance: {point.provenance or 'UNKNOWN'}"]
+    if point.is_temporary_net:
+        parts.append("NET · TEMPORARY")
+    if point.revision_status == "STALE":
+        parts.append("STALE SOURCE")
+    return "<br>".join(parts)
+
+
+def build_explore_scatter(points: Sequence[Any], *, x_title: str, y_title: str) -> go.Figure:
+    """Explore Custom Chart - Scatter (Package 8D). No regression/trend lines
+    -- exploration only (Sec 16, 51). Reference marked with a star, matching
+    build_fe_vde_figure's existing convention; grouped by dimension when the
+    caller supplies one (one trace per group value, never averaged).
+    """
+    fig = go.Figure()
+    if not points:
+        fig.update_layout(xaxis_title=x_title, yaxis_title=y_title)
+        return fig
+
+    groups: list[str] = []
+    for point in points:
+        group = point.group or "Scenarios"
+        if group not in groups:
+            groups.append(group)
+
+    for group in groups:
+        group_points = [p for p in points if (p.group or "Scenarios") == group]
+        fig.add_scatter(
+            x=[p.x for p in group_points],
+            y=[p.y for p in group_points],
+            mode="markers",
+            name=group,
+            marker=dict(
+                symbol=["star" if p.role == "REFERENCE" else "circle" for p in group_points],
+                size=[14 if p.role == "REFERENCE" else 10 for p in group_points],
+            ),
+            hovertext=[_explore_scatter_hover(p) for p in group_points],
+            hoverinfo="text",
+        )
+    fig.update_layout(xaxis_title=x_title, yaxis_title=y_title)
+    return fig
+
+
+def build_explore_line(rows: Sequence[Any], *, x_title: str, y_title: str) -> go.Figure:
+    """Explore Custom Chart - Line (Package 8D). Rows must already be ordered
+    by an explicit basis (comparison_report_viewmodels.build_explore_line_rows
+    sorts by the chosen ordered dimension) -- this builder never reorders or
+    infers order from selection sequence (Sec 17).
+    """
+    fig = go.Figure()
+    if not rows:
+        fig.update_layout(xaxis_title=x_title, yaxis_title=y_title)
+        return fig
+
+    groups: list[str] = []
+    for row in rows:
+        group = row.group or "Value"
+        if group not in groups:
+            groups.append(group)
+
+    for group in groups:
+        group_rows = [r for r in rows if (r.group or "Value") == group]
+        fig.add_scatter(
+            x=[r.x for r in group_rows], y=[r.y for r in group_rows], mode="lines+markers", name=group
+        )
+    fig.update_layout(xaxis_title=x_title, yaxis_title=y_title)
+    return fig
+
+
+def build_lineage_waterfall_chart(steps: Sequence[Any], *, y_title: str) -> go.Figure:
+    """Physical VDE Lineage waterfall (Package 8D Sec 32, 37). `steps` is
+    LineageWaterfallResult.steps: baseline is an absolute value, each
+    following OK step is already child-parent (never recomputed here). Only
+    OK steps are plotted -- a trailing UNAVAILABLE/INCOMPATIBLE marker step
+    carries no numeric value and is surfaced by the caller via
+    LineageWaterfallResult.incomplete_reason instead of a misleading bar.
+    """
+    ok_steps = [step for step in steps if step.status == "OK"]
+    fig = go.Figure()
+    if not ok_steps:
+        fig.update_layout(yaxis_title=y_title)
+        return fig
+
+    measures = ["absolute"] + ["relative"] * (len(ok_steps) - 1)
+    x_labels = [step.label for step in ok_steps]
+    y_values = [step.value if step.delta is None else step.delta for step in ok_steps]
+    text = [step.formatted_value if step.delta is None else (step.formatted_delta or "") for step in ok_steps]
+
+    if len(ok_steps) > 1:
+        measures.append("total")
+        x_labels.append(f"{ok_steps[-1].label} (final)")
+        y_values.append(ok_steps[-1].value)
+        text.append(ok_steps[-1].formatted_value)
+
+    fig.add_trace(
+        go.Waterfall(
+            x=x_labels,
+            y=y_values,
+            measure=measures,
+            text=text,
+            textposition="outside",
+            connector=dict(line=dict(color="rgba(107,114,128,0.5)")),
+        )
+    )
+    fig.update_layout(yaxis_title=y_title, showlegend=False)
+    return fig
+
+
 __all__ = [
     "build_grouped_bar_figure",
     "build_fe_vde_figure",
     "build_cycle_demand_figure",
+    "build_explore_bar",
+    "build_explore_scatter",
+    "build_explore_line",
+    "build_lineage_waterfall_chart",
 ]

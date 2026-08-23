@@ -50,9 +50,15 @@ _METRICS: tuple[MetricDefinition, ...] = (
     MetricDefinition("year", "Year", "Vehicle", "count", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
     MetricDefinition("category", "Category", "Vehicle", "text", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
     MetricDefinition("legislation", "Legislation", "Vehicle", "text", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
-    MetricDefinition("electrification", "Electrification", "Vehicle", "text", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
-    MetricDefinition("drive_type", "Drive type", "Vehicle", "text", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
-    MetricDefinition("transmission_type", "Transmission", "Vehicle", "text", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
+    MetricDefinition("cycle_name", "Cycle / certification basis", "Vehicle", "text", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
+    # --- Powertrain --------------------------------------------------
+    MetricDefinition("electrification", "Electrification", "Powertrain", "text", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
+    MetricDefinition("fuel_type", "Fuel type", "Powertrain", "text", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
+    MetricDefinition("engine_type", "Engine", "Powertrain", "text", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
+    MetricDefinition("drive_type", "Drive type", "Powertrain", "text", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
+    MetricDefinition("transmission_type", "Transmission", "Powertrain", "text", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
+    MetricDefinition("gear_count", "Gear count", "Powertrain", "count", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
+    MetricDefinition("final_drive_ratio", "Final drive", "Powertrain", "ratio", MetricDirection.NEUTRAL, "VEHICLE", ("table",), ComparisonRule.ALWAYS),
     # --- Physical setup --------------------------------------------------
     MetricDefinition("mass_kg", "Mass", "Physical setup", "mass_kg", MetricDirection.NEUTRAL, "VEHICLE", ("table", "bar"), ComparisonRule.BASIS_METADATA),
     MetricDefinition("test_mass_kg", "Test mass", "Physical setup", "mass_kg", MetricDirection.NEUTRAL, "VEHICLE", ("table", "bar"), ComparisonRule.BASIS_METADATA),

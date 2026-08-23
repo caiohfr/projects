@@ -24,6 +24,7 @@ from typing import Any, Mapping
 
 import pandas as pd
 
+from src.vde_core import db as db_module
 from src.vde_core.comparison_metric_registry import ComparisonRule, MetricDirection, get_metric
 from src.vde_core.component_repositories import get_component
 from src.vde_core.cycles import use_standard_cycle
@@ -692,6 +693,39 @@ def build_comparison_dataset(
 
 
 # -----------------------------------------------------------------------------
+# Scenario catalog (Sec 44-46, Package 8B)
+#
+# Lightweight metadata for selection UIs -- never resolves a full ComparisonItem
+# (no transmission/cycle/ABC work) just to populate a selector.
+# -----------------------------------------------------------------------------
+
+
+def list_comparison_scenarios(filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+    filters = filters or {}
+    sql = (
+        "SELECT f.id AS fuelcons_id, f.vde_id, f.electrification, f.fuel_type, "
+        "f.record_origin, f.created_at, "
+        "v.make, v.model, v.year, v.category, v.legislation "
+        "FROM fuelcons_db f JOIN vde_db v ON v.id = f.vde_id WHERE 1=1"
+    )
+    params: list[Any] = []
+    if filters.get("make"):
+        sql += " AND v.make = ?"
+        params.append(filters["make"])
+    if filters.get("legislation"):
+        sql += " AND v.legislation = ?"
+        params.append(filters["legislation"])
+    if filters.get("electrification"):
+        sql += " AND f.electrification = ?"
+        params.append(filters["electrification"])
+    if filters.get("record_origin"):
+        sql += " AND f.record_origin = ?"
+        params.append(filters["record_origin"])
+    sql += " ORDER BY f.created_at DESC"
+    return db_module.fetchall(sql, tuple(params)) if params else db_module.fetchall(sql)
+
+
+# -----------------------------------------------------------------------------
 # Metric comparison (Sec 22-27)
 # -----------------------------------------------------------------------------
 
@@ -701,9 +735,14 @@ _METRIC_EXTRACTORS: dict[str, Any] = {
     "year": lambda item: item.vehicle.get("year"),
     "category": lambda item: item.vehicle.get("category"),
     "legislation": lambda item: item.vehicle.get("legislation"),
+    "cycle_name": lambda item: item.vehicle.get("cycle_name"),
     "electrification": lambda item: item.powertrain.get("electrification"),
+    "fuel_type": lambda item: item.powertrain.get("fuel_type"),
+    "engine_type": lambda item: item.powertrain.get("engine_type"),
     "drive_type": lambda item: item.vehicle.get("drive_type"),
     "transmission_type": lambda item: item.powertrain.get("transmission_type"),
+    "gear_count": lambda item: item.powertrain.get("gear_count"),
+    "final_drive_ratio": lambda item: item.powertrain.get("final_drive_ratio"),
     "mass_kg": lambda item: item.vehicle.get("mass_kg"),
     "test_mass_kg": lambda item: item.vehicle.get("test_mass_kg"),
     "cda_m2": lambda item: item.vehicle.get("cda_m2"),
@@ -825,5 +864,6 @@ __all__ = [
     "build_vde_comparison_item",
     "build_scenario_comparison_item",
     "build_comparison_dataset",
+    "list_comparison_scenarios",
     "compare_metric",
 ]

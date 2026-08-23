@@ -27,9 +27,26 @@ class MetricRegistryContentTests(unittest.TestCase):
         groups = {m.group for m in list_metrics()}
         self.assertEqual(
             groups,
-            {"Vehicle", "Physical setup", "Roadload", "Vehicle demand", "Fuel / Energy / CO2", "Efficiency"},
+            {
+                "Vehicle",
+                "Powertrain",
+                "Physical setup",
+                "Roadload",
+                "Vehicle demand",
+                "Fuel / Energy / CO2",
+                "Efficiency",
+            },
         )
         self.assertLess(len(list_metrics()), 40)
+
+    def test_powertrain_fields_are_grouped_separately_from_vehicle(self):
+        powertrain_keys = {m.key for m in list_metrics("Powertrain")}
+        self.assertEqual(
+            powertrain_keys,
+            {"electrification", "fuel_type", "engine_type", "drive_type", "transmission_type", "gear_count", "final_drive_ratio"},
+        )
+        vehicle_keys = {m.key for m in list_metrics("Vehicle")}
+        self.assertFalse(vehicle_keys & powertrain_keys)
 
     def test_direction_examples_from_spec(self):
         self.assertEqual(get_metric("vde_total").direction, MetricDirection.LOWER_IS_BETTER)

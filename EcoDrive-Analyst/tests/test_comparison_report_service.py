@@ -18,6 +18,7 @@ from src.vde_core.comparison_report_service import (
     build_comparison_dataset,
     build_scenario_comparison_item,
     build_vde_comparison_item,
+    list_comparison_scenarios,
     resolve_cycle_vde_results,
     resolve_roadload_boundaries,
     resolve_temporary_transmission_from_component,
@@ -306,6 +307,51 @@ class ItemBuilderTests(unittest.TestCase):
             c.provenance.record_origin for c in dataset.comparisons
         }
         self.assertEqual(origins, {"HOMOLOGATED", "ESTIMATED", "SCENARIO", "IMPORTED_REFERENCE"})
+
+
+class ScenarioCatalogTests(unittest.TestCase):
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "catalog.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+        with sqlite3.connect(self.db_path) as con:
+            con.execute(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin) "
+                "VALUES (1, 900001, 'ICE', 'Gasoline', 'ESTIMATED')"
+            )
+            con.execute(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin) "
+                "VALUES (2, 900002, 'BEV', 'Electric', 'HOMOLOGATED')"
+            )
+            con.commit()
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def test_catalog_does_not_resolve_full_comparison_items(self):
+        rows = list_comparison_scenarios()
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertIn("fuelcons_id", row)
+            self.assertIn("record_origin", row)
+            self.assertIn("legislation", row)
+            self.assertNotIn("roadload", row)
+
+    def test_catalog_filters_by_electrification(self):
+        rows = list_comparison_scenarios({"electrification": "BEV"})
+        self.assertEqual([r["fuelcons_id"] for r in rows], [2])
+
+    def test_catalog_filters_by_record_origin(self):
+        rows = list_comparison_scenarios({"record_origin": "HOMOLOGATED"})
+        self.assertEqual([r["fuelcons_id"] for r in rows], [2])
+
+    def test_catalog_empty_filter_matches_nothing(self):
+        rows = list_comparison_scenarios({"make": "NOT-A-REAL-MAKE"})
+        self.assertEqual(rows, [])
 
 
 class StaleSourceTests(unittest.TestCase):

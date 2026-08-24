@@ -68,6 +68,10 @@ def build_grouped_bar_figure(
     return fig
 
 
+_PSE_GUIDE_COLOR = "rgba(107,114,128,0.55)"
+_PSE_GUIDE_LABEL_COLOR = "rgba(75,85,99,0.9)"
+
+
 def build_fe_vde_figure(
     points: Sequence[dict[str, Any]],
     lines: Sequence[dict[str, Any]],
@@ -75,7 +79,11 @@ def build_fe_vde_figure(
     x_title: str,
     y_title: str,
 ) -> go.Figure:
-    """points: from build_fe_vde_points()["points"]. lines: from build_iso_pse_lines()."""
+    """points: from build_fe_vde_points()["points"]. lines: from build_iso_pse_lines()
+    -- always plotted, when present, as thin muted guides with a direct
+    end-of-line label (Package 8F polish: restrained, visually secondary to
+    the scenario markers, no legend entries competing with "Scenarios").
+    """
     fig = go.Figure()
     for line in lines:
         fig.add_scatter(
@@ -83,9 +91,19 @@ def build_fe_vde_figure(
             y=line["y"],
             mode="lines",
             name=f"eta={line['eta']:.2f}",
-            line=dict(width=1, dash="dot"),
+            line=dict(width=1, dash="dot", color=_PSE_GUIDE_COLOR),
             hoverinfo="name",
+            showlegend=False,
         )
+        if line["x"] and line["y"]:
+            fig.add_annotation(
+                x=line["x"][-1],
+                y=line["y"][-1],
+                text=f"η={line['eta']:.2f}",
+                showarrow=False,
+                xanchor="left",
+                font=dict(size=10, color=_PSE_GUIDE_LABEL_COLOR),
+            )
     if points:
         hover_text = []
         for point in points:
@@ -94,6 +112,8 @@ def build_fe_vde_figure(
                 parts.append("NET · TEMPORARY")
             if point.get("revision_status") == "STALE":
                 parts.append("STALE SOURCE")
+            if point.get("fuel_basis_label"):
+                parts.append(f"Fuel basis: {point['fuel_basis_label']}")
             hover_text.append("<br>".join(parts))
         fig.add_scatter(
             x=[point["x"] for point in points],
@@ -247,6 +267,68 @@ def build_lineage_waterfall_chart(steps: Sequence[Any], *, y_title: str) -> go.F
     return fig
 
 
+def build_walk_chart(rows: Sequence[Any], *, y_title: str, target_value: float | None = None) -> go.Figure:
+    """Versatile KPI Walk hero chart (Package 8F Increment 5). ABSOLUTE rows
+    render a full bar from 0; DELTA rows render a floating bar from their own
+    resolved delta base's absolute value (base = row.absolute_value -
+    row.delta_value, algebraically exact -- WalkRow never carries a second
+    "base value" field to keep it in sync with) up to the item's absolute
+    value. This is a plain go.Bar with an explicit per-bar `base`, never
+    go.Waterfall -- a WalkStep's delta base is explicit presentation intent
+    (PREVIOUS_WALK_STATE / REFERENCE / EXPLICIT_ITEM), not a running
+    cumulative total, so Waterfall's automatic running-total semantics would
+    misrender a REFERENCE- or EXPLICIT_ITEM-based delta. Only status=="OK"
+    rows are plotted -- UNAVAILABLE/INCOMPATIBLE/INVALID_CONFIG rows are the
+    caller's responsibility to surface as text (mirrors
+    build_lineage_waterfall_chart's own OK-only rule), and this builder is
+    intentionally separate from that one -- the two domains (explicit DB
+    lineage vs. presentation-intent walk) are never coupled or repurposed
+    into each other.
+    """
+    fig = go.Figure()
+    ok_rows = [row for row in rows if row.status == "OK"]
+    if ok_rows:
+        bases: list[float] = []
+        heights: list[float] = []
+        colors: list[str] = []
+        texts: list[str] = []
+        labels: list[str] = []
+        hover: list[str] = []
+        for row in ok_rows:
+            if row.display_mode == "ABSOLUTE":
+                bases.append(0.0)
+                heights.append(row.absolute_value)
+                texts.append(row.formatted_absolute_value)
+            else:
+                bases.append(row.absolute_value - row.delta_value)
+                heights.append(row.delta_value)
+                texts.append(row.formatted_delta or "")
+            colors.append(_SEMANTIC_COLOR.get(row.semantic, _NEUTRAL_COLOR))
+            labels.append(row.label)
+            hover_parts = [row.label, f"Absolute: {row.formatted_absolute_value}"]
+            if row.display_mode == "DELTA" and row.formatted_delta:
+                hover_parts.append(f"Δ vs {row.delta_base_label}: {row.formatted_delta}")
+            if row.target_gap is not None:
+                hover_parts.append(f"Target gap: {row.target_gap.absolute_gap:+.3g}")
+            if row.provenance:
+                hover_parts.append(f"Provenance: {row.provenance}")
+            hover.append("<br>".join(hover_parts))
+        fig.add_bar(
+            x=labels,
+            y=heights,
+            base=bases,
+            marker_color=colors,
+            text=texts,
+            textposition="outside",
+            hovertext=hover,
+            hoverinfo="text",
+        )
+    if target_value is not None:
+        fig.add_hline(y=target_value, line_dash="dot", line_color="rgba(107,114,128,0.9)", annotation_text="Target")
+    fig.update_layout(yaxis_title=y_title, showlegend=False)
+    return fig
+
+
 __all__ = [
     "build_grouped_bar_figure",
     "build_fe_vde_figure",
@@ -255,4 +337,5 @@ __all__ = [
     "build_explore_scatter",
     "build_explore_line",
     "build_lineage_waterfall_chart",
+    "build_walk_chart",
 ]

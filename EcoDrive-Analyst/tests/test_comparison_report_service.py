@@ -313,6 +313,69 @@ class ItemBuilderTests(unittest.TestCase):
         self.assertEqual(origins, {"HOMOLOGATED", "ESTIMATED", "SCENARIO", "IMPORTED_REFERENCE"})
 
 
+class OptionalReferenceDatasetTests(unittest.TestCase):
+    """Package 8F Increment 1 -- ComparisonDataset.reference is optional. A
+    benchmark-only review (no Reference selected at all) must build cleanly,
+    never fabricate a Reference, and never promote the first comparison spec
+    into the Reference slot.
+    """
+
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "optional_reference.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def test_no_reference_spec_produces_none_reference(self):
+        dataset = build_comparison_dataset(
+            None,
+            [
+                {"kind": "VDE_ONLY", "vde_id": 900001},
+                {"kind": "VDE_ONLY", "vde_id": 900002},
+                {"kind": "VDE_ONLY", "vde_id": 900003},
+            ],
+        )
+        self.assertIsNone(dataset.reference)
+        self.assertEqual(len(dataset.comparisons), 3)
+
+    def test_no_reference_never_promotes_first_comparison_to_reference_role(self):
+        dataset = build_comparison_dataset(
+            None,
+            [{"kind": "VDE_ONLY", "vde_id": 900001}, {"kind": "VDE_ONLY", "vde_id": 900002}],
+        )
+        self.assertIsNone(dataset.reference)
+        self.assertTrue(all(item.role is ComparisonRole.COMPARISON for item in dataset.comparisons))
+        self.assertEqual(dataset.comparisons[0].vde_id, 900001)
+
+    def test_no_reference_and_no_comparisons_raises(self):
+        with self.assertRaises(ValueError):
+            build_comparison_dataset(None, [])
+
+    def test_no_reference_dataset_still_aggregates_item_warnings(self):
+        # 900006 has no stored transmission -- its NET-missing warning must
+        # still surface on the dataset even with no Reference selected.
+        dataset = build_comparison_dataset(
+            None,
+            [{"kind": "VDE_ONLY", "vde_id": 900006}, {"kind": "VDE_ONLY", "vde_id": 900001}],
+        )
+        self.assertIsNone(dataset.reference)
+        self.assertIn("transmission_missing", dataset.warnings)
+
+    def test_with_reference_spec_is_unchanged(self):
+        dataset = build_comparison_dataset(
+            {"kind": "VDE_ONLY", "vde_id": 900001}, [{"kind": "VDE_ONLY", "vde_id": 900002}]
+        )
+        self.assertIsNotNone(dataset.reference)
+        self.assertEqual(dataset.reference.role, ComparisonRole.REFERENCE)
+        self.assertEqual(dataset.reference.vde_id, 900001)
+
+
 class ScenarioCatalogTests(unittest.TestCase):
     def setUp(self):
         self._temp_dir = tempfile.TemporaryDirectory()

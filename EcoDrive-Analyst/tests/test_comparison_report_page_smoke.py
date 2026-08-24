@@ -8,7 +8,7 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-from src.vde_app.comparison_report_viewmodels import SelectionState
+from src.vde_app.comparison_report_viewmodels import PresentationState, SelectionState, TargetState
 from src.vde_core import db as db_module
 from src.vde_core.qa_mock_data import seed_qa_database
 
@@ -81,7 +81,7 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
         app = AppTest.from_file(str(PAGE_PATH))
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
-        self.assertTrue(any("Select a reference scenario" in info.value for info in app.info))
+        self.assertTrue(any("Select at least one scenario" in info.value for info in app.info))
 
     def test_reference_selection_builds_dataset_and_renders_scorecard(self):
         app = AppTest.from_file(str(PAGE_PATH))
@@ -89,6 +89,18 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
         self.assertGreaterEqual(len(app.dataframe), 1)
+
+    def test_benchmark_only_selection_with_no_reference_renders_without_exception(self):
+        # Package 8F Increment 1: reference_fuelcons_id=None with 2+ comparisons
+        # is a legitimate benchmark-only review -- every tab must render
+        # absolute-only content with no fabricated Reference/delta.
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=None, comparison_fuelcons_ids=(1, 2))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        state = app.session_state["comparison_selection"]
+        self.assertIsNone(state.reference_fuelcons_id)
+        self.assertEqual(state.comparison_fuelcons_ids, (1, 2))
 
     def test_selection_persists_across_normal_rerun(self):
         app = AppTest.from_file(str(PAGE_PATH))
@@ -102,13 +114,210 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
         self.assertEqual(state.reference_fuelcons_id, 1)
         self.assertEqual(state.comparison_fuelcons_ids, (2,))
 
-    def test_dashboard_tab_renders_reference_summary(self):
+    def test_presentation_roles_panel_marks_the_reference_item(self):
+        # Every selected item must appear in both the Current radio and its
+        # own role selectbox (same count, same coverage), and whichever item
+        # holds ComparisonRole.REFERENCE must be visually distinguishable in
+        # this panel -- role/Current alone don't show which item is Reference.
         app = AppTest.from_file(str(PAGE_PATH))
         app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
-        self.assertTrue(any("Reference summary" in md.value for md in app.markdown))
-        self.assertTrue(any("FE × VDE" in md.value for md in app.markdown))
+        radio = app.radio(key="comparison_presentation_current")
+        role_selectboxes = [sb for sb in app.selectbox if sb.key and sb.key.startswith("comparison_presentation_role_")]
+        self.assertEqual(len(role_selectboxes), len(radio.options) - 1)  # -1 for the "None" option
+        self.assertTrue(any("(Reference)" in opt for opt in radio.options))
+        self.assertTrue(any("(Reference)" in sb.label for sb in role_selectboxes))
+
+    def test_presentation_role_assignment_is_independent_of_provenance(self):
+        # Package 8F Increment 2: role (Proposal/Benchmark) and Current are a
+        # separate axis from provenance (record_origin) -- assigning a role
+        # must never mutate or shadow provenance, and both must coexist.
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
+        app.session_state["comparison_presentation_state"] = PresentationState(
+            roles={"fc:2": "PROPOSAL"}, current_item_id="fc:1"
+        )
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(any(exp.label == "Presentation roles" for exp in app.expander))
+        state = app.session_state["comparison_presentation_state"]
+        self.assertEqual(state.roles.get("fc:2"), "PROPOSAL")
+        self.assertEqual(state.current_item_id, "fc:1")
+        # Provenance (record_origin=ESTIMATED for fuelcons_id=2) is untouched --
+        # the Scorecard column header still carries it independently of role.
+        columns = [col for item in app.dataframe if getattr(item.value, "columns", None) is not None for col in item.value.columns]
+        self.assertTrue(any("ESTIMATED" in str(col) for col in columns))
+
+    def test_target_state_survives_rerun_and_stays_scoped_to_its_metric(self):
+        # Package 8F Increment 3: a target set for one Primary KPI metric_key
+        # must survive a normal rerun untouched, no unit reinterpretation.
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
+        app.session_state["comparison_target_state"] = TargetState(targets_by_metric={"vde_total": 1.1})
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(any(exp.label == "Primary KPI & Target" for exp in app.expander))
+
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        state = app.session_state["comparison_target_state"]
+        self.assertEqual(state.targets_by_metric.get("vde_total"), 1.1)
+
+    def test_engineering_filter_displacement_narrows_reference_and_compare_candidates(self):
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE vde_db SET engine_size_l=2.0 WHERE id=900001")
+            con.execute("UPDATE vde_db SET engine_size_l=4.0 WHERE id=900002")
+            con.commit()
+        app = AppTest.from_file(str(PAGE_PATH))
+        # The slider's default spans the full catalog range (2.0-4.0), which
+        # is the "All" neutral state -- narrowing it off that default is what
+        # activates the filter (no separate checkbox).
+        app.session_state["comparison_filter_engine_size_range"] = (1.5, 2.5)
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        # Selectbox .options are format_func-applied display labels, not raw
+        # ids -- QA seed model names are the stable fixture to assert on.
+        reference_select = app.selectbox(key="comparison_reference_select")
+        self.assertTrue(any("Nominal EPA baseline" in opt for opt in reference_select.options))
+        self.assertFalse(any("TWC boundary lower" in opt for opt in reference_select.options))
+        compare_with = app.multiselect(key="comparison_compare_with_select")
+        self.assertFalse(any("TWC boundary lower" in opt for opt in compare_with.options))
+
+    def test_engineering_filter_power_excludes_scenario_missing_power_metadata(self):
+        # id=1 and id=2 get distinct power values (so a real slider range
+        # exists); a third scenario (id=3, linked to a different VDE) is left
+        # with NULL power. Narrowing the slider -- even to a range that still
+        # covers both id=1 and id=2's values -- must still exclude id=3:
+        # missing metadata is excluded once the filter is active, regardless
+        # of the chosen bounds, never treated as 0.
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE fuelcons_db SET engine_max_power_kw=150.0 WHERE id=1")
+            con.execute("UPDATE fuelcons_db SET engine_max_power_kw=300.0 WHERE id=2")
+            con.execute(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, "
+                "fuel_l_per_100km, gco2_per_km) VALUES (3, 900003, 'ICE', 'Gasoline', 'ESTIMATED', 6.8, 155.0)"
+            )
+            con.commit()
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_power_range"] = (150.0, 450.0)
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        reference_select = app.selectbox(key="comparison_reference_select")
+        self.assertTrue(any("Nominal EPA baseline" in opt for opt in reference_select.options))  # id=1, kept
+        compare_with = app.multiselect(key="comparison_compare_with_select")
+        self.assertTrue(any("TWC boundary lower" in opt for opt in compare_with.options))  # id=2, kept
+        self.assertEqual(len(compare_with.options), 2)  # id=1 and id=2 kept; id=3 (missing power) excluded
+
+    def test_reference_never_silently_disappears_after_filter_change(self):
+        # Package 8F "Selection Semantics Fix": filters are a candidate-search
+        # tool only -- the Reference stays selected with NO mismatch warning
+        # when it no longer matches an active filter.
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE vde_db SET engine_size_l=2.0 WHERE id=900001")
+            con.execute("UPDATE vde_db SET engine_size_l=4.0 WHERE id=900002")
+            con.commit()
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
+        # Narrowed to exclude the Reference's own displacement (2.0L) while
+        # still covering the comparison scenario's (4.0L).
+        app.session_state["comparison_filter_engine_size_range"] = (3.0, 4.0)
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        state = app.session_state["comparison_selection"]
+        self.assertEqual(state.reference_fuelcons_id, 1)
+        self.assertEqual(len(app.warning), 0)  # no filter-mismatch warning -- this is not an error condition
+        reference_select = app.selectbox(key="comparison_reference_select")
+        self.assertEqual(reference_select.value, 1)
+        self.assertTrue(any("Nominal EPA baseline" in opt for opt in reference_select.options))
+
+    def test_energy_demand_summary_shows_primary_kpi_boundary_and_pse(self):
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE fuelcons_db SET eta_pt_est=0.30 WHERE id=1")
+            con.commit()
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
+        app.session_state["comparison_primary_kpi"] = "fuel_l_per_100km"
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(any("Energy & Demand Summary" in md.value for md in app.markdown))
+        metrics = list(app.get("metric"))
+        labels = [m.label for m in metrics]
+        self.assertIn("Fuel consumption", labels)  # dynamic Primary KPI, not hard-coded
+        self.assertIn("VDE TOTAL", labels)
+        self.assertIn("Estimated powertrain efficiency", labels)  # PSE shown when available
+
+    def test_energy_demand_summary_shows_delta_vs_reference_and_reference_has_none(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
+        app.session_state["comparison_primary_kpi"] = "fuel_l_per_100km"
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        metrics = [m for m in app.get("metric") if m.label == "Fuel consumption"]
+        self.assertEqual(len(metrics), 2)  # Reference + one comparison
+        reference_metric, comparison_metric = metrics[0], metrics[1]
+        self.assertEqual(reference_metric.delta, "")  # Reference never shows a delta/verdict
+        self.assertIn("vs Ref", comparison_metric.delta)
+
+    def test_energy_demand_summary_absolute_only_without_reference(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=None, comparison_fuelcons_ids=(1, 2))
+        app.session_state["comparison_primary_kpi"] = "fuel_l_per_100km"
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        metrics = [m for m in app.get("metric") if m.label == "Fuel consumption"]
+        self.assertEqual(len(metrics), 2)
+        self.assertTrue(all(m.delta == "" for m in metrics))  # no Reference -> absolute-only, never fabricated
+
+    def test_energy_demand_summary_shows_target_gap_when_target_set(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
+        app.session_state["comparison_primary_kpi"] = "fuel_l_per_100km"
+        app.session_state["comparison_target_state"] = TargetState(targets_by_metric={"fuel_l_per_100km": 6.0})
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        gap_metrics = [m for m in app.get("metric") if m.label == "Gap to Target"]
+        self.assertEqual(len(gap_metrics), 2)  # one per item
+        self.assertIn("+0.50", gap_metrics[0].value)  # Reference: 6.5 - 6.0 actual-target gap
+
+    def test_energy_demand_summary_missing_metric_shows_unavailable_not_zero(self):
+        # fuelcons_id=2 never gets eta_pt_est set -- selecting it as Primary
+        # KPI must show "unavailable" text, never a fabricated 0.
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
+        app.session_state["comparison_primary_kpi"] = "eta_pt_est"
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        pse_metrics = [m for m in app.get("metric") if m.label == "Estimated powertrain efficiency"]
+        self.assertTrue(any(m.value == "unavailable" for m in pse_metrics))
+        self.assertFalse(any(m.value in ("0", "0.0", "0.000") for m in pse_metrics))
+
+    def test_demand_vs_efficiency_shows_no_guesswork_message_for_flex_fuel(self):
+        # Package 8F mini-package: Volumetric mode's equi-PSE guides must stay
+        # absent (never guess an LHV) for a Flex-fuel Reference, with an
+        # explicit, non-crashing explanation instead of a silent gap.
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE fuelcons_db SET fuel_type='Flex' WHERE id=1")
+            con.commit()
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(any("Equi-PSE guides aren't available" in c.value for c in app.caption))
+
+    def test_program_review_tab_renders_walk_hero_and_demand_vs_efficiency(self):
+        # Package 8F: Dashboard was retired in favor of Program Review's
+        # Primary-KPI-driven Walk hero + Demand vs Efficiency + the compact
+        # Energy & Demand Summary (mini-package: replaced Vehicle Demand
+        # Status, which was a standalone chart).
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        markdown_values = [md.value for md in app.markdown]
+        self.assertTrue(any(("KPI Walk" in v or "KPI Comparison" in v) for v in markdown_values))
+        self.assertTrue(any("Demand vs Efficiency" in v for v in markdown_values))
+        self.assertTrue(any("Energy & Demand Summary" in v for v in markdown_values))
 
     def test_roadload_tab_renders_linked_vde_mode(self):
         app = AppTest.from_file(str(PAGE_PATH))
@@ -117,6 +326,20 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         self.assertTrue(any("Roadload ABC" in md.value for md in app.markdown))
         self.assertTrue(any("Roadload force curve" in md.value for md in app.markdown))
+        self.assertTrue(any("Physical Setup" in md.value for md in app.markdown))
+        self.assertTrue(any("VDE by Cycle / Phase" in md.value for md in app.markdown))
+
+    def test_energy_drivers_visual_order_curve_before_abc(self):
+        # Package 8F mandatory case P: Roadload force curve must precede
+        # Roadload ABC in the Energy Drivers tab's render order.
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        markdown_values = [md.value for md in app.markdown]
+        curve_index = markdown_values.index("**Roadload force curve**")
+        abc_index = markdown_values.index("**Roadload ABC**")
+        self.assertLess(curve_index, abc_index)
 
     def test_roadload_direct_vde_mode_works_without_fuelcons(self):
         app = AppTest.from_file(str(PAGE_PATH))
@@ -158,7 +381,7 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
         app = AppTest.from_file(str(PAGE_PATH))
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
-        self.assertTrue(any("Select scenarios in Scorecard to explore them here." in info.value for info in app.info))
+        self.assertTrue(any("Select scenarios above to explore them here." in info.value for info in app.info))
 
     def test_explore_tab_renders_custom_chart_and_lineage_by_default(self):
         app = AppTest.from_file(str(PAGE_PATH))
@@ -208,6 +431,151 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
         state = app.session_state["comparison_selection"]
         self.assertEqual(state.reference_fuelcons_id, 1)
         self.assertEqual(state.comparison_fuelcons_ids, (2,))
+
+
+class SelectionFilterPersistenceTests(unittest.TestCase):
+    """Package 8F -- top-level filters (Make/Category/Legislation/
+    Electrification/Displacement/Power/Provenance) are candidate-SEARCH
+    tools only. They must never invalidate, hide, remove, or warn about an
+    already-selected Reference or Comparison item -- only control what's
+    newly offered for selection.
+    """
+
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "selection_filters.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE vde_db SET make='TOYOTA', legislation='EPA', engine_size_l=2.0 WHERE id=900001")
+            con.execute("UPDATE vde_db SET make='TOYOTA', legislation='EPA', engine_size_l=2.0 WHERE id=900002")
+            con.execute("UPDATE vde_db SET make='LEXUS', legislation='WLTP', engine_size_l=3.0 WHERE id=900003")
+            con.execute(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, "
+                "fuel_l_per_100km, gco2_per_km, engine_max_power_kw) "
+                "VALUES (1, 900001, 'ICE', 'Gasoline', 'HOMOLOGATED', 6.5, 150.0, 150.0)"
+            )
+            con.execute(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, "
+                "fuel_l_per_100km, gco2_per_km, engine_max_power_kw) "
+                "VALUES (2, 900002, 'ICE', 'Gasoline', 'HOMOLOGATED', 7.0, 160.0, 150.0)"
+            )
+            con.execute(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, "
+                "energy_Wh_per_km, gco2_per_km, engine_max_power_kw) "
+                "VALUES (3, 900003, 'BEV', 'Electric', 'ESTIMATED', 180.0, 0.0, 300.0)"
+            )
+            con.commit()
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def test_reference_persists_after_make_filter_switches_away(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=())
+        app.session_state["comparison_filter_make"] = "LEXUS"
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        state = app.session_state["comparison_selection"]
+        self.assertEqual(state.reference_fuelcons_id, 1)
+        self.assertEqual(len(app.warning), 0)  # no filter-mismatch warning
+        reference_select = app.selectbox(key="comparison_reference_select")
+        self.assertEqual(reference_select.value, 1)
+
+    def test_comparisons_persist_after_make_filter_switches_away(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=None, comparison_fuelcons_ids=(1, 2))
+        app.session_state["comparison_filter_make"] = "LEXUS"
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        state = app.session_state["comparison_selection"]
+        self.assertEqual(set(state.comparison_fuelcons_ids), {1, 2})
+        self.assertEqual(len(app.warning), 0)
+
+    def test_adding_new_make_after_filter_switch_spans_both_manufacturers(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=None, comparison_fuelcons_ids=(1, 2))
+        app.session_state["comparison_filter_make"] = "LEXUS"
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        compare_with = app.multiselect(key="comparison_compare_with_select")
+        self.assertEqual(set(compare_with.value), {1, 2})  # Toyota selections still shown as tags
+        # .options are format_func-applied display labels, not raw ids.
+        self.assertTrue(any("LEXUS" in opt for opt in compare_with.options))  # offered as a new candidate
+        compare_with.set_value([1, 2, 3])
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        state = app.session_state["comparison_selection"]
+        self.assertEqual(set(state.comparison_fuelcons_ids), {1, 2, 3})
+
+    def test_persistence_across_legislation_electrification_displacement_power_provenance_filters(self):
+        filter_scenarios = {
+            "comparison_filter_legislation": "WLTP",  # only Lexus (900003) is WLTP
+            "comparison_filter_electrification": "BEV",  # only Lexus is BEV
+            "comparison_filter_record_origin": "ESTIMATED",  # only Lexus is ESTIMATED
+        }
+        for key, value in filter_scenarios.items():
+            with self.subTest(filter_key=key):
+                app = AppTest.from_file(str(PAGE_PATH))
+                app.session_state["comparison_selection"] = SelectionState(
+                    reference_fuelcons_id=1, comparison_fuelcons_ids=(2,)
+                )
+                app.session_state[key] = value
+                app.run(timeout=90)
+                self.assertEqual(len(app.exception), 0)
+                state = app.session_state["comparison_selection"]
+                self.assertEqual(state.reference_fuelcons_id, 1)
+                self.assertEqual(state.comparison_fuelcons_ids, (2,))
+                self.assertEqual(len(app.warning), 0)
+
+        # Displacement/power range sliders: narrow to the Lexus-only range
+        # (900001/900002 are 2.0L/150hp-equivalent, 900003 is 3.0L/300kW).
+        for key, value in (
+            ("comparison_filter_engine_size_range", (2.8, 3.2)),
+            ("comparison_filter_power_range", (250.0, 450.0)),
+        ):
+            with self.subTest(filter_key=key):
+                app = AppTest.from_file(str(PAGE_PATH))
+                app.session_state["comparison_selection"] = SelectionState(
+                    reference_fuelcons_id=1, comparison_fuelcons_ids=(2,)
+                )
+                app.session_state[key] = value
+                app.run(timeout=90)
+                self.assertEqual(len(app.exception), 0)
+                state = app.session_state["comparison_selection"]
+                self.assertEqual(state.reference_fuelcons_id, 1)
+                self.assertEqual(state.comparison_fuelcons_ids, (2,))
+                self.assertEqual(len(app.warning), 0)
+
+    def test_removing_a_selected_item_still_works(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=None, comparison_fuelcons_ids=(1, 2))
+        app.run(timeout=90)
+        compare_with = app.multiselect(key="comparison_compare_with_select")
+        compare_with.set_value([1])
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        state = app.session_state["comparison_selection"]
+        self.assertEqual(state.comparison_fuelcons_ids, (1,))
+
+    def test_removed_item_is_not_silently_readded_after_filter_change(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=None, comparison_fuelcons_ids=(1, 2))
+        app.run(timeout=90)
+        compare_with = app.multiselect(key="comparison_compare_with_select")
+        compare_with.set_value([1])
+        app.run(timeout=90)
+        self.assertEqual(app.session_state["comparison_selection"].comparison_fuelcons_ids, (1,))
+
+        # Now change a filter -- id=2 (explicitly removed) must not reappear.
+        app.session_state["comparison_filter_make"] = "LEXUS"
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        state = app.session_state["comparison_selection"]
+        self.assertEqual(state.comparison_fuelcons_ids, (1,))
 
 
 if __name__ == "__main__":

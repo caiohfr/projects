@@ -1,6 +1,6 @@
 # EcoDrive Analyzer
 
-EcoDrive Analyzer is a Streamlit application for roadload engineering, VDE workflow management, powertrain consumption estimation, and early comparison reporting.
+EcoDrive Analyzer is a Streamlit application for roadload engineering, VDE workflow management, powertrain consumption estimation, and engineering comparison reporting.
 
 The current product is organized around four main blocks:
 
@@ -11,8 +11,10 @@ The current product is organized around four main blocks:
 
 `Database Management` is the official controlled catalog-administration
 workflow. `VDE Setup` is the stable, feature-frozen engineering workflow.
-`Comparison Report` remains the next reporting focus; `Powertrain Scenario`
-remains a future workstream.
+`Comparison Report` is a stable engineering comparison/reporting foundation
+delivered in Sprint 8; `Powertrain Scenario` is an existing capability but
+still less mature than the VDE/Comparison architecture, and remains a future
+development area.
 
 ## Current Product Blocks
 
@@ -94,13 +96,38 @@ Practical reading:
 
 ### Comparison Report
 
-`Comparison Report` is now its own space for:
+Stable engineering comparison/reporting foundation delivered in Sprint 8.
 
-- scenario comparison
-- method analysis
-- peer outlook / benchmark direction
+Current product structure:
 
-It is intentionally still an MVP surface. It should be read as the first step toward a future report / benchmark studio, not as a finished BI layer.
+- `Program Review`
+- `Energy Drivers`
+- `Technical Scorecard`
+- `Explore`
+
+Core capabilities now include, at a high level:
+
+- optional Reference
+- multi-scenario Comparison Set
+- Proposal / Benchmark presentation roles
+- Current designation
+- Primary KPI and optional Target
+- KPI Walk / absolute comparison presentation
+- Demand vs Efficiency
+- equi-PSE guidance
+- Energy & Demand Summary
+- physical setup / roadload / ABC evidence
+- real EPA/WLTP phase VDE
+- demanded power analysis
+- Technical Scorecard
+- custom Explore analysis
+- explicit physical VDE lineage
+- strict TOTAL / NET semantics
+- provenance / stale-source visibility
+
+This is an accepted Sprint 8 product foundation for program / benchmark
+review workflows, not a finished final reporting product -- broader BI/
+benchmark-studio capabilities remain future work.
 
 ## Stable Product Status
 
@@ -109,8 +136,8 @@ EcoDrive
 |
 |-- Database Management   stable / official catalog administration
 |-- VDE Setup             stable / feature frozen
-|-- Comparison Report     next development focus
-`-- Powertrain Scenario   future
+|-- Comparison Report     stable / accepted Sprint 8 product foundation
+`-- Powertrain Scenario   existing capability / future development area
 ```
 
 ## Documentation Index
@@ -120,6 +147,8 @@ Sprint documentation:
 - [Sprint 5 Closure](docs/SPRINT_5_CLOSURE.md)
 - [Sprint 6 Plan](docs/sprints/SPRINT_6_VALIDATION_SCENARIO_BENCH_RELEASE_2026-06-28.md)
 - [Sprint 7 Database Management Checkpoint](docs/sprints/SPRINT_7_DATABASE_MANAGEMENT.md)
+- [Sprint 8 Comparison Report Freeze (Package 8E)](docs/sprints/PACKAGE_8E_COMPARISON_FREEZE.md)
+- [Sprint 8F Program Review Redesign](docs/sprints/PACKAGE_8F_PROGRAM_REVIEW_REDESIGN.md)
 - [VDE Setup Guide](docs/VDE_SETUP_GUIDE.md)
 - [VDE Setup v2.2 Final Stable Contract](docs/VDE_SETUP_V22_FINAL_CHECKPOINT.md)
 - [Powertrain Scenario Guide](docs/POWERTRAIN_SCENARIO_GUIDE.md)
@@ -234,7 +263,13 @@ See [ML / SHAP / Nearest Peers](docs/ML_SHAP_NEAREST_PEERS.md) for the detailed 
 - Regulatory / label benchmarking is still an early scaffold.
 - Performance simulation is still planned.
 - `Physics + ML Residual` and `Map-Based Simulation` are planned, not production engines.
-- Comparison / benchmark reporting is still in an MVP stage.
+- Comparison Report is a stable Sprint 8 engineering foundation, not a
+  finished BI/benchmark-studio product; broader benchmark-authoring and
+  peer-analytics capabilities remain future work.
+- a legacy Gasoline LHV constant (34.2 MJ/L) still exists in
+  `derivatives.py`/`plots.py` alongside the canonical 32.0 MJ/L value
+  Comparison/PSE actually use (`fuel_energy.py::LHV_MJ_PER_L`); this is
+  known technical debt, not yet harmonized.
 - Hidden component priors are future backlog, not a delivered causal inference capability.
 - current `PSE` is cycle-effective system efficiency, not pure engine efficiency.
 - temperature and ambient-pressure roadload conditions are deferred to derived
@@ -263,10 +298,7 @@ Current sprint closure:
 - Technical diagnostics were moved behind advanced / technical details by default.
 - No schema, VDE formula, or ML training changes were introduced in this closure.
 
-Next steps for Sprint 7:
-
-- `Comparison Report` v0
-- baseline vs proposal storytelling
-- delta decomposition
-- `VehicleScenario` internal contract
-- future `Scenario Builder`
+This closure predates Sprint 7 and Sprint 8, both since delivered:
+`Database Management` (Sprint 7) and the `Comparison Report` engineering
+foundation described above (Sprint 8) are no longer forward-looking items --
+see the Documentation Index for their closure records.

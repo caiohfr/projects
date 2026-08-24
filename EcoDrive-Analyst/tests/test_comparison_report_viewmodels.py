@@ -38,6 +38,7 @@ from src.vde_app.comparison_report_viewmodels import (
     build_explore_scatter_points,
     build_fe_vde_points,
     build_iso_pse_lines,
+    compute_adaptive_pse_guides,
     build_lineage_waterfall,
     build_metric_bar_rows,
     build_reference_summary,
@@ -1212,6 +1213,74 @@ class FeVdePseCompetitorDeltaTests(unittest.TestCase):
         missing_item = build_vde_comparison_item(900006, vde_row=row)
         self.assertTrue(is_temporary_net(temporary_item))
         self.assertFalse(is_temporary_net(missing_item))
+
+
+class AdaptivePseGuideTests(unittest.TestCase):
+    """Sprint 8 micro-polish: equi-PSE guides are sized to what's actually
+    plotted instead of a fixed 20/25/30/35 set. energy_normalized mode is
+    used for most cases here because its PSE formula is the identity
+    pse=x/y, so setting y=1.0 lets a point's PSE be dictated directly by x
+    -- no need to route through a full ComparisonDataset for pure numeric
+    checks of the guide-sizing algorithm itself.
+    """
+
+    def _pse_points(self, pse_values):
+        return [{"x": v, "y": 1.0} for v in pse_values]
+
+    def test_guides_adapt_to_a_low_pse_range(self):
+        guides = compute_adaptive_pse_guides(
+            self._pse_points([0.234, 0.249, 0.261, 0.272]), mode="energy_normalized"
+        )
+        self.assertEqual(guides, (0.225, 0.25, 0.275))
+        self.assertNotEqual(guides, (0.20, 0.25, 0.30, 0.35))  # not the old fixed set
+
+    def test_guides_adapt_to_a_high_pse_range(self):
+        guides = compute_adaptive_pse_guides(self._pse_points([0.31, 0.34]), mode="energy_normalized")
+        self.assertEqual(guides, (0.30, 0.325, 0.35))
+
+    def test_narrow_single_point_range_produces_surrounding_guides(self):
+        guides = compute_adaptive_pse_guides(self._pse_points([0.233]), mode="energy_normalized")
+        self.assertGreaterEqual(len(guides), 3)
+        self.assertLess(min(guides), 0.233)
+        self.assertGreater(max(guides), 0.233)
+
+    def test_guide_count_remains_restrained_across_ranges(self):
+        for pse_values in ([0.233], [0.31, 0.34], [0.05, 0.95], [0.234, 0.249, 0.261, 0.272]):
+            with self.subTest(pse_values=pse_values):
+                guides = compute_adaptive_pse_guides(self._pse_points(pse_values), mode="energy_normalized")
+                self.assertGreaterEqual(len(guides), 3)
+                self.assertLessEqual(len(guides), 5)
+
+    def test_generated_lines_are_labeled_with_the_adaptive_guide_values(self):
+        points = self._pse_points([0.31, 0.34])
+        guides = compute_adaptive_pse_guides(points, mode="energy_normalized")
+        lines = build_iso_pse_lines(0.2, 1.2, guides, mode="energy_normalized")
+        self.assertEqual({line["eta"] for line in lines}, set(guides))
+
+    def test_unresolved_volumetric_fuel_type_produces_no_fabricated_guides(self):
+        points = [{"x": 1.0, "y": 6.0}]
+        self.assertEqual(compute_adaptive_pse_guides(points, mode="volumetric", fuel_type="Flex"), ())
+        self.assertEqual(compute_adaptive_pse_guides(points, mode="volumetric", fuel_type=None), ())
+
+    def test_no_computable_pse_produces_no_fabricated_guides(self):
+        # x/y both present but non-positive -- never divide into a fake PSE.
+        points = [{"x": 0.0, "y": 6.0}, {"x": 1.0, "y": 0.0}]
+        self.assertEqual(compute_adaptive_pse_guides(points, mode="energy_normalized"), ())
+
+    def test_volumetric_mode_still_uses_the_resolved_lhv_basis(self):
+        # Tier 2 Cert Gasoline resolves to the canonical Gasoline LHV
+        # (32.0 MJ/L) exactly as build_fe_vde_points/build_iso_pse_lines do
+        # -- the adaptive sizing reuses that same resolution, not a new one.
+        points = [{"x": 1.0, "y": 6.0}]
+        guides = compute_adaptive_pse_guides(points, mode="volumetric", fuel_type="Tier 2 Cert Gasoline")
+        self.assertTrue(guides)
+        gasoline_guides = compute_adaptive_pse_guides(points, mode="volumetric", fuel_type="Gasoline")
+        self.assertEqual(guides, gasoline_guides)  # same canonical family/LHV -> identical guides
+
+    def test_electrical_mode_guides_use_the_electrical_pse_formula(self):
+        points = [{"x": 1.0, "y": 1000.0}]
+        guides = compute_adaptive_pse_guides(points, mode="electrical")
+        self.assertTrue(guides)
 
 
 class FormatValueTests(unittest.TestCase):

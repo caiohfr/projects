@@ -8,11 +8,31 @@ from pathlib import Path
 
 from src.vde_app.comparison_report_viewmodels import (
     MAX_COMPARISONS,
+    HP_PER_KW,
+    PresentationRole,
+    PresentationState,
     SelectionState,
+    apply_engineering_filters,
+    hp_to_kw,
+    kw_to_hp,
+    TargetState,
+    WalkDeltaBase,
+    WalkDisplayMode,
+    WalkStep,
+    WalkViewSpec,
+    build_walk_rows,
+    canonical_identity,
+    default_walk_steps,
+    delta_vs_reference_walk_steps,
+    sequential_walk_steps,
+    evaluate_target_gap,
+    get_target,
+    set_target,
     add_comparison,
     build_abc_rows,
     build_competitor_delta_rows,
     build_cycle_demand_rows,
+    build_cycle_phase_rows,
     build_explore_bar_rows,
     build_explore_line_rows,
     build_explore_scatter_points,
@@ -25,9 +45,11 @@ from src.vde_app.comparison_report_viewmodels import (
     build_scenario_header,
     build_scenario_options,
     build_scorecard_sections,
+    dataset_items,
     dataset_warnings_summary,
     deduplicate_by_vde_id,
     format_value,
+    is_current_item,
     is_temporary_net,
     list_available_explore_metrics,
     list_available_lineage_metrics,
@@ -36,8 +58,11 @@ from src.vde_app.comparison_report_viewmodels import (
     list_explore_numeric_metrics,
     list_lineage_capable_metrics,
     metric_axis_label,
+    presentation_role_for,
     remove_comparison,
     resolve_lineage_context,
+    set_current_item,
+    set_presentation_role,
     set_reference,
     sync_comparisons_from_widget,
 )
@@ -127,6 +152,476 @@ class SelectionStateTests(unittest.TestCase):
         state, errors = sync_comparisons_from_widget(state, list(range(1, MAX_COMPARISONS + 1)) + [999])
         self.assertEqual(len(errors), 1)
         self.assertNotIn(999, state.comparison_fuelcons_ids)
+
+
+class PresentationRoleTests(unittest.TestCase):
+    """Package 8F Increment 2 -- presentation role/Current overlay is purely
+    explicit, session-only state, independent of the canonical ComparisonRole
+    and of provenance. Nothing here ever inspects an item to infer a role.
+    """
+
+    def test_unknown_identity_defaults_to_unspecified(self):
+        state = PresentationState()
+        self.assertEqual(presentation_role_for(state, "fc:1"), PresentationRole.UNSPECIFIED)
+
+    def test_set_role_is_reflected_for_that_identity_only(self):
+        state = PresentationState()
+        state = set_presentation_role(state, "fc:1", PresentationRole.PROPOSAL)
+        self.assertEqual(presentation_role_for(state, "fc:1"), PresentationRole.PROPOSAL)
+        self.assertEqual(presentation_role_for(state, "fc:2"), PresentationRole.UNSPECIFIED)
+
+    def test_set_role_unspecified_clears_the_entry(self):
+        state = PresentationState()
+        state = set_presentation_role(state, "vde:900001", PresentationRole.BENCHMARK)
+        state = set_presentation_role(state, "vde:900001", PresentationRole.UNSPECIFIED)
+        self.assertEqual(presentation_role_for(state, "vde:900001"), PresentationRole.UNSPECIFIED)
+        self.assertEqual(dict(state.roles), {})
+
+    def test_current_is_independent_of_role_not_mutually_exclusive(self):
+        state = PresentationState()
+        state = set_presentation_role(state, "fc:1", PresentationRole.PROPOSAL)
+        state = set_current_item(state, "fc:1")
+        self.assertEqual(presentation_role_for(state, "fc:1"), PresentationRole.PROPOSAL)
+        self.assertTrue(is_current_item(state, "fc:1"))
+
+    def test_current_can_be_cleared(self):
+        state = PresentationState()
+        state = set_current_item(state, "fc:1")
+        state = set_current_item(state, None)
+        self.assertFalse(is_current_item(state, "fc:1"))
+        self.assertIsNone(state.current_item_id)
+
+    def test_only_one_current_item_at_a_time(self):
+        state = PresentationState()
+        state = set_current_item(state, "fc:1")
+        state = set_current_item(state, "fc:2")
+        self.assertFalse(is_current_item(state, "fc:1"))
+        self.assertTrue(is_current_item(state, "fc:2"))
+
+
+class TargetTests(unittest.TestCase):
+    """Package 8F Increment 3 -- Target is session-only, keyed by metric_key,
+    and its BETTER/WORSE reuses the exact same direction rule compare_metric()
+    uses (via semantic_for_delta), never a duplicated sign convention.
+    """
+
+    def test_target_defaults_to_none_for_unset_metric(self):
+        state = TargetState()
+        self.assertIsNone(get_target(state, "vde_total"))
+
+    def test_set_target_is_scoped_to_its_own_metric_key(self):
+        state = TargetState()
+        state = set_target(state, "vde_total", 1.2)
+        self.assertEqual(get_target(state, "vde_total"), 1.2)
+        self.assertIsNone(get_target(state, "fuel_l_per_100km"))
+
+    def test_switching_metric_never_reinterprets_a_stored_target(self):
+        state = TargetState()
+        state = set_target(state, "vde_total", 1.2)
+        state = set_target(state, "fuel_l_per_100km", 6.0)
+        self.assertEqual(get_target(state, "vde_total"), 1.2)
+        self.assertEqual(get_target(state, "fuel_l_per_100km"), 6.0)
+
+    def test_clearing_target_with_none_removes_it(self):
+        state = TargetState()
+        state = set_target(state, "vde_total", 1.2)
+        state = set_target(state, "vde_total", None)
+        self.assertIsNone(get_target(state, "vde_total"))
+
+    def test_gap_is_none_without_actual_or_target(self):
+        self.assertIsNone(evaluate_target_gap("vde_total", None, 1.2))
+        self.assertIsNone(evaluate_target_gap("vde_total", 1.3, None))
+
+    def test_lower_is_better_gap_semantics(self):
+        # vde_total is LOWER_IS_BETTER: actual below target is BETTER.
+        better = evaluate_target_gap("vde_total", 1.1, 1.2)
+        worse = evaluate_target_gap("vde_total", 1.3, 1.2)
+        same = evaluate_target_gap("vde_total", 1.2, 1.2)
+        self.assertEqual(better.absolute_gap, 1.1 - 1.2)
+        self.assertEqual(better.semantic, "BETTER")
+        self.assertEqual(worse.semantic, "WORSE")
+        self.assertEqual(same.semantic, "SAME")
+
+    def test_higher_is_better_gap_semantics(self):
+        # fuel_km_per_l is HIGHER_IS_BETTER: actual above target is BETTER.
+        better = evaluate_target_gap("fuel_km_per_l", 16.0, 15.0)
+        worse = evaluate_target_gap("fuel_km_per_l", 14.0, 15.0)
+        self.assertEqual(better.absolute_gap, 1.0)
+        self.assertEqual(better.semantic, "BETTER")
+        self.assertEqual(worse.semantic, "WORSE")
+
+    def test_percent_gap_guards_against_zero_target(self):
+        gap = evaluate_target_gap("vde_total", 1.0, 0.0)
+        self.assertIsNone(gap.percent_gap)
+        self.assertEqual(gap.absolute_gap, 1.0)
+
+    def test_unknown_metric_key_returns_none(self):
+        self.assertIsNone(evaluate_target_gap("not_a_real_metric", 1.0, 1.0))
+
+
+class VersatileWalkTests(unittest.TestCase):
+    """Package 8F Increment 4 -- mandatory semantic cases A-E from the 8F spec.
+    Every delta must route through compare_metric() (never recomputed), the
+    walk never reads vde_id_parent/DB lineage, and only advances_anchor=True
+    steps change what PREVIOUS_WALK_STATE compares against.
+    """
+
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "walk.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+        with sqlite3.connect(self.db_path) as con:
+            rows = [
+                (1, 900001, "ICE", "Gasoline", "HOMOLOGATED", 6.0, 140.0),
+                (2, 900002, "ICE", "Gasoline", "ESTIMATED", 5.6, 130.0),
+                (3, 900003, "ICE", "Gasoline", "ESTIMATED", 5.4, 125.0),
+                (4, 900001, "ICE", "Gasoline", "SCENARIO", 5.9, 138.0),
+                (5, 900002, "ICE", "Gasoline", "HOMOLOGATED", 5.8, 135.0),
+            ]
+            con.executemany(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, "
+                "fuel_l_per_100km, gco2_per_km) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            con.commit()
+        # Reference, Proposal A, Proposal B, Current, Benchmark
+        self.reference = build_scenario_comparison_item(1, role=ComparisonRole.REFERENCE)
+        self.proposal_a = build_scenario_comparison_item(2)
+        self.proposal_b = build_scenario_comparison_item(3)
+        self.current = build_scenario_comparison_item(4)
+        self.benchmark = build_scenario_comparison_item(5)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def _dataset(self):
+        return ComparisonDataset(
+            reference=self.reference,
+            comparisons=(self.proposal_a, self.proposal_b, self.current, self.benchmark),
+        )
+
+    def _id(self, item):
+        return canonical_identity(item)
+
+    def test_a_sequential_development_walk(self):
+        dataset = self._dataset()
+        spec = WalkViewSpec(
+            metric_key="fuel_l_per_100km",
+            steps=(
+                WalkStep(self._id(self.reference), WalkDisplayMode.ABSOLUTE, advances_anchor=True),
+                WalkStep(self._id(self.proposal_a), WalkDisplayMode.DELTA, WalkDeltaBase.PREVIOUS_WALK_STATE, advances_anchor=True),
+                WalkStep(self._id(self.proposal_b), WalkDisplayMode.DELTA, WalkDeltaBase.PREVIOUS_WALK_STATE, advances_anchor=True),
+                WalkStep(self._id(self.current), WalkDisplayMode.ABSOLUTE, advances_anchor=True),
+                WalkStep(self._id(self.benchmark), WalkDisplayMode.ABSOLUTE, advances_anchor=False),
+            ),
+        )
+        result = build_walk_rows(dataset, spec)
+        self.assertEqual(result.warnings, ())
+        self.assertTrue(result.has_delta_semantics)
+        rows = {row.item_id: row for row in result.rows}
+        self.assertEqual(rows[self._id(self.reference)].status, "OK")
+        # Proposal A delta must be vs Reference (5.6 - 6.0)
+        self.assertAlmostEqual(rows[self._id(self.proposal_a)].delta_value, 5.6 - 6.0)
+        self.assertEqual(rows[self._id(self.proposal_a)].delta_base_item_id, self._id(self.reference))
+        # Proposal B delta must be vs Proposal A (5.4 - 5.6), NOT vs Reference
+        self.assertAlmostEqual(rows[self._id(self.proposal_b)].delta_value, 5.4 - 5.6)
+        self.assertEqual(rows[self._id(self.proposal_b)].delta_base_item_id, self._id(self.proposal_a))
+
+    def test_b_alternatives_vs_reference_no_accumulation(self):
+        dataset = self._dataset()
+        spec = WalkViewSpec(
+            metric_key="fuel_l_per_100km",
+            steps=(
+                WalkStep(self._id(self.reference), WalkDisplayMode.ABSOLUTE),
+                WalkStep(self._id(self.proposal_a), WalkDisplayMode.DELTA, WalkDeltaBase.REFERENCE, advances_anchor=False),
+                WalkStep(self._id(self.proposal_b), WalkDisplayMode.DELTA, WalkDeltaBase.REFERENCE, advances_anchor=False),
+                WalkStep(self._id(self.current), WalkDisplayMode.DELTA, WalkDeltaBase.REFERENCE, advances_anchor=False),
+            ),
+        )
+        result = build_walk_rows(dataset, spec)
+        self.assertEqual(result.warnings, ())
+        rows = {row.item_id: row for row in result.rows}
+        # Every delta is independently vs Reference (6.0) -- never chained.
+        self.assertAlmostEqual(rows[self._id(self.proposal_a)].delta_value, 5.6 - 6.0)
+        self.assertAlmostEqual(rows[self._id(self.proposal_b)].delta_value, 5.4 - 6.0)
+        self.assertAlmostEqual(rows[self._id(self.current)].delta_value, 5.9 - 6.0)
+        for item_id in (self._id(self.proposal_a), self._id(self.proposal_b), self._id(self.current)):
+            self.assertEqual(rows[item_id].delta_base_item_id, self._id(self.reference))
+
+    def test_c_mixed_walk_benchmark_context_only_does_not_become_anchor(self):
+        dataset = self._dataset()
+        spec = WalkViewSpec(
+            metric_key="fuel_l_per_100km",
+            steps=(
+                WalkStep(self._id(self.reference), WalkDisplayMode.ABSOLUTE, advances_anchor=True),
+                WalkStep(self._id(self.proposal_a), WalkDisplayMode.DELTA, WalkDeltaBase.PREVIOUS_WALK_STATE, advances_anchor=True),
+                WalkStep(self._id(self.benchmark), WalkDisplayMode.ABSOLUTE, advances_anchor=False),
+                WalkStep(self._id(self.proposal_b), WalkDisplayMode.DELTA, WalkDeltaBase.PREVIOUS_WALK_STATE, advances_anchor=True),
+                WalkStep(self._id(self.current), WalkDisplayMode.ABSOLUTE, advances_anchor=True),
+            ),
+        )
+        result = build_walk_rows(dataset, spec)
+        self.assertEqual(result.warnings, ())
+        rows = {row.item_id: row for row in result.rows}
+        # CRITICAL: Proposal B must compare to Proposal A, NOT Benchmark.
+        self.assertEqual(rows[self._id(self.proposal_b)].delta_base_item_id, self._id(self.proposal_a))
+        self.assertAlmostEqual(rows[self._id(self.proposal_b)].delta_value, 5.4 - 5.6)
+
+    def test_d_benchmark_only_no_reference_no_fake_delta_no_exception(self):
+        dataset = ComparisonDataset(reference=None, comparisons=(self.proposal_a, self.proposal_b, self.benchmark))
+        spec = WalkViewSpec(
+            metric_key="fuel_l_per_100km",
+            steps=(
+                WalkStep(self._id(self.proposal_a), WalkDisplayMode.ABSOLUTE),
+                WalkStep(self._id(self.proposal_b), WalkDisplayMode.ABSOLUTE),
+                WalkStep(self._id(self.benchmark), WalkDisplayMode.ABSOLUTE),
+            ),
+        )
+        result = build_walk_rows(dataset, spec)
+        self.assertEqual(result.warnings, ())
+        self.assertFalse(result.has_delta_semantics)
+        self.assertTrue(all(row.status == "OK" for row in result.rows))
+        self.assertTrue(all(row.delta_value is None for row in result.rows))
+
+    def test_d_benchmark_only_delta_vs_reference_is_invalid_config_not_fabricated(self):
+        dataset = ComparisonDataset(reference=None, comparisons=(self.proposal_a, self.proposal_b))
+        spec = WalkViewSpec(
+            metric_key="fuel_l_per_100km",
+            steps=(
+                WalkStep(self._id(self.proposal_a), WalkDisplayMode.ABSOLUTE),
+                WalkStep(self._id(self.proposal_b), WalkDisplayMode.DELTA, WalkDeltaBase.REFERENCE),
+            ),
+        )
+        result = build_walk_rows(dataset, spec)
+        rows = {row.item_id: row for row in result.rows}
+        self.assertEqual(rows[self._id(self.proposal_b)].status, "INVALID_CONFIG")
+        self.assertIsNone(rows[self._id(self.proposal_b)].delta_value)
+        self.assertEqual(len(result.warnings), 1)
+
+    def test_e_explicit_item_delta(self):
+        dataset = self._dataset()
+        spec = WalkViewSpec(
+            metric_key="fuel_l_per_100km",
+            steps=(
+                WalkStep(self._id(self.proposal_a), WalkDisplayMode.ABSOLUTE),
+                WalkStep(
+                    self._id(self.proposal_b),
+                    WalkDisplayMode.DELTA,
+                    WalkDeltaBase.EXPLICIT_ITEM,
+                    explicit_item_id=self._id(self.proposal_a),
+                ),
+            ),
+        )
+        result = build_walk_rows(dataset, spec)
+        self.assertEqual(result.warnings, ())
+        rows = {row.item_id: row for row in result.rows}
+        self.assertEqual(rows[self._id(self.proposal_b)].delta_base_item_id, self._id(self.proposal_a))
+        self.assertAlmostEqual(rows[self._id(self.proposal_b)].delta_value, 5.4 - 5.6)
+
+    def test_previous_walk_state_with_no_prior_anchor_is_invalid_config(self):
+        dataset = self._dataset()
+        spec = WalkViewSpec(
+            metric_key="fuel_l_per_100km",
+            steps=(
+                WalkStep(self._id(self.reference), WalkDisplayMode.ABSOLUTE, advances_anchor=False),
+                WalkStep(self._id(self.proposal_a), WalkDisplayMode.DELTA, WalkDeltaBase.PREVIOUS_WALK_STATE),
+            ),
+        )
+        result = build_walk_rows(dataset, spec)
+        rows = {row.item_id: row for row in result.rows}
+        self.assertEqual(rows[self._id(self.proposal_a)].status, "INVALID_CONFIG")
+
+    def test_unresolvable_item_id_is_reported_never_fabricated(self):
+        dataset = self._dataset()
+        spec = WalkViewSpec(
+            metric_key="fuel_l_per_100km",
+            steps=(WalkStep("fc:999999", WalkDisplayMode.ABSOLUTE),),
+        )
+        result = build_walk_rows(dataset, spec)
+        self.assertEqual(result.rows, ())
+        self.assertEqual(len(result.warnings), 1)
+
+    def test_target_gap_is_attached_per_row_when_target_set(self):
+        dataset = self._dataset()
+        spec = WalkViewSpec(
+            metric_key="fuel_l_per_100km",
+            steps=(WalkStep(self._id(self.reference), WalkDisplayMode.ABSOLUTE),),
+            target_value=5.5,
+        )
+        result = build_walk_rows(dataset, spec)
+        row = result.rows[0]
+        self.assertIsNotNone(row.target_gap)
+        self.assertAlmostEqual(row.target_gap.absolute_gap, 6.0 - 5.5)
+
+    def test_no_target_means_no_gap(self):
+        dataset = self._dataset()
+        spec = WalkViewSpec(metric_key="fuel_l_per_100km", steps=(WalkStep(self._id(self.reference), WalkDisplayMode.ABSOLUTE),))
+        result = build_walk_rows(dataset, spec)
+        self.assertIsNone(result.rows[0].target_gap)
+
+    def test_default_walk_steps_is_all_absolute_advancing_anchor(self):
+        dataset = self._dataset()
+        steps = default_walk_steps(dataset)
+        self.assertEqual(len(steps), 5)
+        self.assertTrue(all(step.display_mode is WalkDisplayMode.ABSOLUTE for step in steps))
+        self.assertTrue(all(step.advances_anchor for step in steps))
+        result = build_walk_rows(dataset, WalkViewSpec(metric_key="fuel_l_per_100km", steps=steps))
+        self.assertFalse(result.has_delta_semantics)
+        self.assertTrue(all(row.delta_value is None for row in result.rows))
+
+    def test_sequential_walk_preset_chains_deltas(self):
+        dataset = self._dataset()
+        steps = sequential_walk_steps(dataset)
+        result = build_walk_rows(dataset, WalkViewSpec(metric_key="fuel_l_per_100km", steps=steps))
+        self.assertEqual(result.warnings, ())
+        self.assertTrue(result.has_delta_semantics)
+        rows = {row.item_id: row for row in result.rows}
+        self.assertEqual(rows[self._id(self.reference)].display_mode, "ABSOLUTE")
+        self.assertEqual(rows[self._id(self.proposal_a)].delta_base_item_id, self._id(self.reference))
+
+    def test_delta_vs_reference_preset_never_accumulates(self):
+        dataset = self._dataset()
+        steps = delta_vs_reference_walk_steps(dataset)
+        result = build_walk_rows(dataset, WalkViewSpec(metric_key="fuel_l_per_100km", steps=steps))
+        self.assertEqual(result.warnings, ())
+        rows = {row.item_id: row for row in result.rows}
+        for item_id in (self._id(self.proposal_a), self._id(self.proposal_b), self._id(self.current), self._id(self.benchmark)):
+            self.assertEqual(rows[item_id].delta_base_item_id, self._id(self.reference))
+
+    def test_never_reads_vde_id_parent_walk_is_selection_order_only(self):
+        # Walk order is exactly the caller's steps order, regardless of any
+        # vde_id_parent lineage relationship between the underlying VDEs.
+        dataset = self._dataset()
+        spec = WalkViewSpec(
+            metric_key="fuel_l_per_100km",
+            steps=(
+                WalkStep(self._id(self.proposal_b), WalkDisplayMode.ABSOLUTE),
+                WalkStep(self._id(self.reference), WalkDisplayMode.ABSOLUTE),
+            ),
+        )
+        result = build_walk_rows(dataset, spec)
+        self.assertEqual([row.item_id for row in result.rows], [self._id(self.proposal_b), self._id(self.reference)])
+
+
+class CyclePhaseTests(unittest.TestCase):
+    """Package 8F Increment 7 -- true per-phase VDE, reading
+    VDEBoundaryResult.by_phase directly. EPA and WLTP items are never merged
+    into one chart family, and nothing is zero-filled or guessed.
+    """
+
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "cycle_phase.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+        self.epa_item = build_vde_comparison_item(900001, vde_row=_qa_row(900001))
+        wltp_row = _qa_row(900002)
+        wltp_row["legislation"] = "WLTP"
+        self.wltp_item = build_vde_comparison_item(900002, vde_row=wltp_row)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def _dataset(self, comparisons):
+        return ComparisonDataset(reference=None, comparisons=tuple(comparisons))
+
+    def test_epa_item_produces_city_highway_family(self):
+        dataset = self._dataset([self.epa_item])
+        result = build_cycle_phase_rows(dataset, "TOTAL")
+        self.assertEqual(len(result["families"]), 1)
+        self.assertEqual(result["families"][0]["family"], "EPA")
+        groups = {row["group"] for row in result["families"][0]["rows"]}
+        self.assertEqual(groups, {"City", "Highway"})
+
+    def test_wltp_item_produces_low_mid_high_xhigh_family(self):
+        dataset = self._dataset([self.wltp_item])
+        result = build_cycle_phase_rows(dataset, "TOTAL")
+        self.assertEqual(len(result["families"]), 1)
+        self.assertEqual(result["families"][0]["family"], "WLTP")
+        groups = {row["group"] for row in result["families"][0]["rows"]}
+        self.assertEqual(groups, {"Low", "Mid", "High", "Extra High"})
+
+    def test_epa_and_wltp_never_merged_into_one_family(self):
+        dataset = self._dataset([self.epa_item, self.wltp_item])
+        result = build_cycle_phase_rows(dataset, "TOTAL")
+        self.assertEqual(len(result["families"]), 2)
+        family_names = {block["family"] for block in result["families"]}
+        self.assertEqual(family_names, {"EPA", "WLTP"})
+        # Each family's rows only contain that family's own items -- no
+        # cross-contamination between EPA and WLTP labels within one family.
+        epa_block = next(b for b in result["families"] if b["family"] == "EPA")
+        wltp_block = next(b for b in result["families"] if b["family"] == "WLTP")
+        self.assertTrue(all(row["label"] == self.epa_item.label for row in epa_block["rows"]))
+        self.assertTrue(all(row["label"] == self.wltp_item.label for row in wltp_block["rows"]))
+
+    def test_item_with_no_phase_data_is_excluded_not_zero_filled(self):
+        no_cycle_item = build_vde_comparison_item(900006, vde_row=_qa_row(900006))
+        dataset = self._dataset([no_cycle_item])
+        result = build_cycle_phase_rows(dataset, "NET")  # 900006 has no transmission -> NET unavailable
+        self.assertEqual(result["families"], [])
+        self.assertEqual(len(result["excluded"]), 1)
+
+
+class EngineeringFilterTests(unittest.TestCase):
+    """Package 8F -- Comparison Engineering filters (displacement/power) over
+    catalog rows. A range is inactive unless explicitly supplied; when active,
+    a row missing the field is excluded (never coerced to 0), and only rows
+    genuinely outside the range are dropped.
+    """
+
+    def setUp(self):
+        self.rows = [
+            {"fuelcons_id": 1, "engine_size_l": 2.0, "engine_max_power_kw": 150.0},
+            {"fuelcons_id": 2, "engine_size_l": 3.5, "engine_max_power_kw": 300.0},
+            {"fuelcons_id": 3, "engine_size_l": None, "engine_max_power_kw": 90.0},
+            {"fuelcons_id": 4, "engine_size_l": 1.6, "engine_max_power_kw": None},
+        ]
+
+    def test_no_ranges_retains_every_row(self):
+        result = apply_engineering_filters(self.rows)
+        self.assertEqual(len(result), 4)
+
+    def test_displacement_range_excludes_missing_and_out_of_range(self):
+        result = apply_engineering_filters(self.rows, engine_size_l_range=(1.5, 3.0))
+        ids = {r["fuelcons_id"] for r in result}
+        self.assertEqual(ids, {1, 4})  # 2.0L and 1.6L match; 3.5L too high; None excluded
+
+    def test_power_range_excludes_missing_and_out_of_range(self):
+        result = apply_engineering_filters(self.rows, engine_max_power_kw_range=(100.0, 200.0))
+        ids = {r["fuelcons_id"] for r in result}
+        self.assertEqual(ids, {1})  # 150kW matches; 300/90 out of range; None excluded
+
+    def test_open_ended_range_only_bounds_one_side(self):
+        result = apply_engineering_filters(self.rows, engine_max_power_kw_range=(200.0, None))
+        ids = {r["fuelcons_id"] for r in result}
+        self.assertEqual(ids, {2})
+
+    def test_both_ranges_combine_as_and(self):
+        result = apply_engineering_filters(
+            self.rows, engine_size_l_range=(0.0, 5.0), engine_max_power_kw_range=(100.0, 400.0)
+        )
+        ids = {r["fuelcons_id"] for r in result}
+        self.assertEqual(ids, {1, 2})
+
+    def test_missing_field_never_treated_as_zero(self):
+        # A row with engine_size_l=None must not match a range that includes 0.
+        result = apply_engineering_filters(self.rows, engine_size_l_range=(0.0, 5.0))
+        self.assertNotIn(3, {r["fuelcons_id"] for r in result})
+
+    def test_hp_kw_roundtrip_uses_canonical_factor(self):
+        self.assertAlmostEqual(hp_to_kw(kw_to_hp(100.0)), 100.0, places=6)
+        self.assertAlmostEqual(kw_to_hp(1.0), HP_PER_KW, places=6)
+
+    def test_hp_kw_conversion_passes_through_none(self):
+        self.assertIsNone(hp_to_kw(None))
+        self.assertIsNone(kw_to_hp(None))
 
 
 class ScenarioOptionTests(unittest.TestCase):
@@ -352,6 +847,91 @@ class ScorecardConstructionTests(unittest.TestCase):
         self.assertIn("Mixed legislations", joined)
 
 
+class OptionalReferenceViewmodelTests(unittest.TestCase):
+    """Package 8F Increment 1 -- every dataset-consuming builder must degrade
+    gracefully (ABSOLUTE-only, no fabricated delta/anchor) when
+    dataset.reference is None. compare_metric() itself is never called with
+    None -- these builders route through a Reference-less branch instead.
+    """
+
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "optional_reference_vm.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+        with sqlite3.connect(self.db_path) as con:
+            con.execute(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, fuel_l_per_100km) "
+                "VALUES (1, 900001, 'ICE', 'Gasoline', 'ESTIMATED', 6.0)"
+            )
+            con.execute(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, fuel_l_per_100km) "
+                "VALUES (2, 900002, 'ICE', 'Gasoline', 'ESTIMATED', 6.5)"
+            )
+            con.commit()
+        self.benchmark_a = build_vde_comparison_item(900001, vde_row=_qa_row(900001))
+        self.benchmark_b = build_vde_comparison_item(900002, vde_row=_qa_row(900002))
+        self.benchmark_c = build_vde_comparison_item(900003, vde_row=_qa_row(900003))
+        self.fuel_a = build_scenario_comparison_item(1)
+        self.fuel_b = build_scenario_comparison_item(2)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def _dataset(self, comparisons):
+        return ComparisonDataset(reference=None, comparisons=tuple(comparisons))
+
+    def test_dataset_items_returns_comparisons_only_when_no_reference(self):
+        dataset = self._dataset([self.benchmark_a, self.benchmark_b])
+        self.assertEqual(dataset_items(dataset), (self.benchmark_a, self.benchmark_b))
+
+    def test_no_item_holds_reference_role_in_a_benchmark_only_dataset(self):
+        dataset = self._dataset([self.benchmark_a, self.benchmark_b, self.benchmark_c])
+        self.assertTrue(all(item.role is ComparisonRole.COMPARISON for item in dataset_items(dataset)))
+
+    def test_scorecard_sections_render_absolute_only_no_delta(self):
+        dataset = self._dataset([self.benchmark_a, self.benchmark_b, self.benchmark_c])
+        sections = build_scorecard_sections(dataset)
+        vde_section = next(s for s in sections if s.title == "Vehicle Demand")
+        row = next(r for r in vde_section.rows if r.metric_key == "vde_total")
+        for cell in (row.reference_cell, *row.comparison_cells):
+            self.assertIsNone(cell.absolute_delta)
+            self.assertIsNone(cell.semantic)
+            self.assertIsNone(cell.formatted_delta)
+
+    def test_metric_bar_rows_are_absolute_only_without_reference(self):
+        dataset = self._dataset([self.benchmark_a, self.benchmark_b])
+        result = build_metric_bar_rows(dataset, "vde_total")
+        self.assertEqual(len(result["rows"]), 2)
+        self.assertTrue(all(row.semantic is None for row in result["rows"]))
+
+    def test_competitor_delta_rows_empty_without_reference(self):
+        dataset = self._dataset([self.benchmark_a, self.benchmark_b])
+        result = build_competitor_delta_rows(dataset, "vde_total")
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["excluded"], [])
+
+    def test_abc_rows_work_without_reference(self):
+        dataset = self._dataset([self.benchmark_a, self.benchmark_b])
+        result = build_abc_rows(dataset, "TOTAL")
+        self.assertEqual(len(result["rows"]), 2)
+
+    def test_dataset_warnings_summary_works_without_reference(self):
+        no_net_item = build_vde_comparison_item(900006, vde_row=_qa_row(900006))
+        dataset = self._dataset([no_net_item, self.benchmark_a])
+        warnings = dataset_warnings_summary(dataset)
+        self.assertTrue(any("NET boundary" in w for w in warnings))
+
+    def test_fe_vde_points_volumetric_anchor_without_reference_role(self):
+        dataset = self._dataset([self.fuel_a, self.fuel_b])
+        result = build_fe_vde_points(dataset, boundary="TOTAL", mode="volumetric")
+        self.assertEqual(len(result["points"]), 2)
+        self.assertTrue(all(p["role"] != "REFERENCE" for p in result["points"]))
+
+
 class DashboardRoadloadViewModelTests(unittest.TestCase):
     def setUp(self):
         self._temp_dir = tempfile.TemporaryDirectory()
@@ -466,6 +1046,7 @@ class FeVdePseCompetitorDeltaTests(unittest.TestCase):
                 (3, 900003, "ICE", "Ethanol", "ESTIMATED", 8.5, None, 130.0),
                 (4, 900004, "ICE", "Flex", "ESTIMATED", 7.0, None, 145.0),
                 (5, 900006, "BEV", "Electric", "ESTIMATED", None, 150.0, 0.0),
+                (6, 900005, "ICE", "Tier 2 Cert Gasoline", "ESTIMATED", 6.8, None, 155.0),
             ]
             con.executemany(
                 "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, "
@@ -478,6 +1059,7 @@ class FeVdePseCompetitorDeltaTests(unittest.TestCase):
         self.ethanol = build_scenario_comparison_item(3)
         self.flex = build_scenario_comparison_item(4)
         self.bev = build_scenario_comparison_item(5)
+        self.tier2_gasoline = build_scenario_comparison_item(6)
 
     def tearDown(self):
         db_module.configure_db_path(self._original_path)
@@ -533,6 +1115,56 @@ class FeVdePseCompetitorDeltaTests(unittest.TestCase):
         electrical_lines = build_iso_pse_lines(0.5, 0.5, [0.3], mode="electrical")
         values = {vol_lines[0]["y"][0], energy_lines[0]["y"][0], electrical_lines[0]["y"][0]}
         self.assertEqual(len(values), 3)
+
+    def test_tier_2_cert_gasoline_scenario_compatible_with_plain_gasoline_reference(self):
+        # Package 8F fuel-normalization patch: "Tier 2 Cert Gasoline" must
+        # resolve to the same GASOLINE family as the plain "Gasoline"
+        # Reference -- compatibility is judged on the RESOLVED family, not
+        # raw string equality.
+        dataset = self._dataset([self.tier2_gasoline])
+        result = build_fe_vde_points(dataset, boundary="TOTAL", mode="volumetric")
+        point_labels = {p["label"] for p in result["points"]}
+        self.assertIn(self.tier2_gasoline.label, point_labels)
+        self.assertEqual(result["excluded"], [])
+
+    def test_tier_2_cert_gasoline_point_carries_assumption_fuel_basis_label(self):
+        dataset = self._dataset([self.tier2_gasoline])
+        result = build_fe_vde_points(dataset, boundary="TOTAL", mode="volumetric")
+        point = next(p for p in result["points"] if p["label"] == self.tier2_gasoline.label)
+        self.assertTrue(point["fuel_basis_label"])
+        self.assertIn("gasoline", point["fuel_basis_label"].lower())
+
+    def test_assumption_label_surfaced_when_anchor_uses_an_assumed_basis(self):
+        # Reference-less dataset so the Tier-2 item itself becomes the
+        # volumetric-mode anchor -- the discreet "PSE energy basis" caption
+        # only needs to appear when the ANCHOR is resolved via an assumption.
+        dataset = ComparisonDataset(reference=None, comparisons=(self.tier2_gasoline,))
+        result = build_fe_vde_points(dataset, boundary="TOTAL", mode="volumetric")
+        self.assertTrue(result["assumption_label"])
+        self.assertIn("gasoline", result["assumption_label"].lower())
+
+    def test_assumption_label_absent_for_plain_gasoline_anchor(self):
+        dataset = self._dataset([self.gasoline])
+        result = build_fe_vde_points(dataset, boundary="TOTAL", mode="volumetric")
+        self.assertIsNone(result["assumption_label"])
+
+    def test_flex_still_excluded_from_volumetric_mode_even_alongside_gasoline(self):
+        dataset = self._dataset([self.flex])
+        result = build_fe_vde_points(dataset, boundary="TOTAL", mode="volumetric")
+        point_labels = {p["label"] for p in result["points"]}
+        self.assertNotIn(self.flex.label, point_labels)
+        self.assertIn(self.reference.label, point_labels)  # the Gasoline Reference itself is unaffected
+        self.assertIn(self.flex.label, {e["label"] for e in result["excluded"]})
+
+    def test_iso_pse_lines_present_for_tier_2_cert_gasoline(self):
+        # Equi-PSE guides must render for the approved-assumption fuel label,
+        # not just an exact "Gasoline" match.
+        lines = build_iso_pse_lines(0.2, 1.2, [0.3], mode="volumetric", fuel_type="Tier 2 Cert Gasoline")
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["eta"], 0.3)
+
+    def test_iso_pse_lines_still_empty_for_flex(self):
+        self.assertEqual(build_iso_pse_lines(0.2, 1.2, [0.3], mode="volumetric", fuel_type="Flex"), [])
 
     def test_competitor_delta_reference_is_zero_no_verdict(self):
         dataset = self._dataset([self.gasoline])

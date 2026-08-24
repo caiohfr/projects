@@ -1,13 +1,20 @@
 # src/vde_app/components/comparison_report.py
 # -----------------------------------------------------------------------------
-# Package 8B-8E - dedicated Comparison Report UI owner (Scorecard, Dashboard,
-# Roadload & VDE, Explore). Replaces pwt_fuel_energy.py as the entry point for
-# the Comparison product. The old renderer's Scenario Compare tab is fully
-# superseded by the Scorecard above and is not linked from here; its other
-# three sub-tabs (Method Analysis, Peers & Outlook, Saved Estimates) are
-# Powertrain-Scenario-owned capabilities with no Comparison equivalent, and
-# stay reachable behind "Legacy comparison tools" (see _render_legacy_bridge)
-# indefinitely -- not as a placeholder pending a future package.
+# Package 8B-8F - dedicated "Program Energy & Fuel Economy Review" UI owner:
+# Program Review, Energy Drivers, Technical Scorecard, Explore. Replaces
+# pwt_fuel_energy.py as the entry point for the Comparison product. The old
+# renderer's Scenario Compare tab is fully superseded by Technical Scorecard
+# above and is not linked from here; its other three sub-tabs (Method
+# Analysis, Peers & Outlook, Saved Estimates) are Powertrain-Scenario-owned
+# capabilities with no Comparison equivalent, and stay reachable behind
+# "Powertrain Scenario Tools" (see _render_legacy_bridge) indefinitely -- not
+# as a placeholder pending a future package.
+#
+# Reference is optional (Package 8F): a dataset may hold only Comparison-role
+# items (e.g. a benchmark-only review). Analytical presentation role
+# (Proposal/Benchmark) and Current designation are a separate, session-only
+# overlay, independent of both the canonical ComparisonRole and of
+# provenance -- see PresentationState.
 #
 # This module never queries SQLite directly -- it only calls
 # comparison_report_service.py / comparison_report_viewmodels.py /
@@ -29,36 +36,55 @@ from src.vde_app.comparison_report_charts import (
     build_fe_vde_figure,
     build_grouped_bar_figure,
     build_lineage_waterfall_chart,
+    build_walk_chart,
 )
 from src.vde_app.comparison_report_viewmodels import (
-    MAX_COMPARISONS,
     ComparisonItem,
+    PresentationRole,
+    PresentationState,
     ScorecardSection,
     SelectionState,
-    build_abc_rows,
-    build_competitor_delta_rows,
+    TargetState,
+    WalkDeltaBase,
+    WalkDisplayMode,
+    WalkStep,
+    WalkViewSpec,
+    apply_engineering_filters,
     build_cycle_demand_rows,
+    build_cycle_phase_rows,
     build_explore_bar_rows,
     build_explore_line_rows,
     build_explore_scatter_points,
     build_fe_vde_points,
     build_iso_pse_lines,
     build_lineage_waterfall,
-    build_metric_bar_rows,
-    build_reference_summary,
     build_roadload_curve_rows,
     build_scenario_header,
     build_scenario_options,
     build_scorecard_sections,
+    build_walk_rows,
+    canonical_identity,
+    dataset_items,
     dataset_warnings_summary,
+    default_walk_steps,
+    delta_vs_reference_walk_steps,
+    evaluate_target_gap,
     format_value,
+    hp_to_kw,
+    kw_to_hp,
     list_available_explore_metrics,
     list_available_lineage_metrics,
     list_explore_dimension_values,
     list_explore_dimensions,
+    get_target,
     metric_axis_label,
+    presentation_role_for,
     resolve_lineage_context,
+    sequential_walk_steps,
+    set_current_item,
+    set_presentation_role,
     set_reference,
+    set_target,
     sync_comparisons_from_widget,
 )
 from src.vde_app.components.pwt_fuel_energy import (
@@ -67,11 +93,14 @@ from src.vde_app.components.pwt_fuel_energy import (
 )
 from src.vde_app.plots import roadload_curve_comparison_chart
 from src.vde_app.units import normalize_unit_system, quantity_input, unit_label
-from src.vde_core.comparison_metric_registry import get_metric
+from src.vde_core.comparison_metric_registry import MetricDirection, get_metric
 from src.vde_core.comparison_report_service import (
     ComparisonDataset,
+    ComparisonRole,
     LineageChainStatus,
     build_comparison_dataset,
+    compare_metric,
+    extract_metric_value,
     list_comparison_scenarios,
     list_vde_catalog,
     resolve_temporary_transmission_from_component,
@@ -88,6 +117,17 @@ _CELL_STYLE = {
 _SELECTION_KEY = "comparison_selection"
 _DIRECT_VDE_SELECTION_KEY = "comparison_direct_vde_selection"
 _TEMP_TRANSMISSION_KEY = "comparison_temporary_transmission_by_vde_id"
+_PRESENTATION_KEY = "comparison_presentation_state"
+_PRIMARY_KPI_KEY = "comparison_primary_kpi"
+_TARGET_KEY = "comparison_target_state"
+_WALK_ORDER_KEY = "comparison_walk_order"
+_WALK_CONFIG_KEY = "comparison_walk_config"
+
+_WALK_DELTA_BASE_LABELS = {
+    WalkDeltaBase.PREVIOUS_WALK_STATE.value: "Previous step",
+    WalkDeltaBase.REFERENCE.value: "Reference",
+    WalkDeltaBase.EXPLICIT_ITEM.value: "Choose item...",
+}
 
 _DEFAULT_ETA_LINES = {
     "volumetric": (0.20, 0.25, 0.30, 0.35),
@@ -159,10 +199,13 @@ def _index_of(value, ordered_values: list) -> int:
 def _no_reference_message(action: str, *, allow_direct_vde: bool = False) -> str:
     """Single wording source for the "nothing selected yet" empty state (Sec 13)
     -- every tab shares the same subject/verb pattern, only the action clause
-    (what this section needs the selection for) differs.
+    (what this section needs the selection for) differs. Reference is
+    optional (Package 8F): this message only ever appears when NOTHING at
+    all is selected, so it asks for "at least one scenario", not specifically
+    a Reference.
     """
-    subject = "reference scenario or VDE" if allow_direct_vde else "reference scenario"
-    return f"Select a {subject} to begin {action}."
+    subject = "scenario or VDE" if allow_direct_vde else "scenario"
+    return f"Select at least one {subject} to begin {action}."
 
 
 def _render_exclusions(excluded: list[dict]) -> None:
@@ -179,67 +222,137 @@ def _render_exclusions(excluded: list[dict]) -> None:
 
 
 def _render_filters(catalog_rows: list[dict]) -> list[dict]:
+    """One flat filter grid -- no expanders. Conceptual category (vehicle vs
+    engineering vs data) is not a reason to create a separate visual section
+    on its own; grouping is only introduced where it actually reduces
+    complexity, and a second row of controls next to the first doesn't need
+    one here. Displacement/Power are range sliders whose default spans the
+    full dataset -- that full span IS the "All" neutral state, so no
+    separate activation checkbox is needed; a scenario missing the field is
+    excluded only once the user narrows the slider off its default (Package 8F).
+    """
     makes = sorted({r["make"] for r in catalog_rows if r.get("make")})
+    categories = sorted({r["category"] for r in catalog_rows if r.get("category")})
     legislations = sorted({r["legislation"] for r in catalog_rows if r.get("legislation")})
     electrifications = sorted({r["electrification"] for r in catalog_rows if r.get("electrification")})
     origins = sorted({r["record_origin"] for r in catalog_rows if r.get("record_origin")})
 
     col1, col2, col3, col4 = st.columns(4)
     make = col1.selectbox("Make", ["All"] + makes, key="comparison_filter_make")
-    legislation = col2.selectbox("Legislation", ["All"] + legislations, key="comparison_filter_legislation")
-    electrification = col3.selectbox("Electrification", ["All"] + electrifications, key="comparison_filter_electrification")
-    record_origin = col4.selectbox("Provenance", ["All"] + origins, key="comparison_filter_record_origin")
+    category = col2.selectbox("Category", ["All"] + categories, key="comparison_filter_category")
+    legislation = col3.selectbox("Legislation", ["All"] + legislations, key="comparison_filter_legislation")
+    electrification = col4.selectbox("Electrification", ["All"] + electrifications, key="comparison_filter_electrification")
 
     rows = catalog_rows
     if make != "All":
         rows = [r for r in rows if r.get("make") == make]
+    if category != "All":
+        rows = [r for r in rows if r.get("category") == category]
     if legislation != "All":
         rows = [r for r in rows if r.get("legislation") == legislation]
     if electrification != "All":
         rows = [r for r in rows if r.get("electrification") == electrification]
+
+    size_col, power_col, origin_col = st.columns(3)
+
+    sizes = sorted({r["engine_size_l"] for r in catalog_rows if r.get("engine_size_l") is not None})
+    engine_size_l_range = None
+    if len(sizes) >= 1:
+        data_min, data_max = float(sizes[0]), float(sizes[-1])
+        if data_min < data_max:
+            size_min, size_max = size_col.slider(
+                "Displacement [L]",
+                min_value=data_min,
+                max_value=data_max,
+                value=(data_min, data_max),
+                step=0.1,
+                key="comparison_filter_engine_size_range",
+            )
+            if (size_min, size_max) != (data_min, data_max):
+                engine_size_l_range = (size_min, size_max)
+        else:
+            size_col.caption(f"Displacement [L]: {data_min:g} (all)")
+    else:
+        size_col.caption("Displacement [L]: no data")
+
+    powers_hp = sorted({kw_to_hp(r["engine_max_power_kw"]) for r in catalog_rows if r.get("engine_max_power_kw") is not None})
+    engine_max_power_kw_range = None
+    if len(powers_hp) >= 1:
+        data_min_hp, data_max_hp = float(powers_hp[0]), float(powers_hp[-1])
+        if data_min_hp < data_max_hp:
+            power_min_hp, power_max_hp = power_col.slider(
+                "Engine power [hp]",
+                min_value=data_min_hp,
+                max_value=data_max_hp,
+                value=(data_min_hp, data_max_hp),
+                step=5.0,
+                key="comparison_filter_power_range",
+            )
+            if (power_min_hp, power_max_hp) != (data_min_hp, data_max_hp):
+                engine_max_power_kw_range = (hp_to_kw(power_min_hp), hp_to_kw(power_max_hp))
+        else:
+            power_col.caption(f"Engine power [hp]: {data_min_hp:g} (all)")
+    else:
+        power_col.caption("Engine power [hp]: no data")
+
+    record_origin = origin_col.selectbox("Provenance", ["All"] + origins, key="comparison_filter_record_origin")
+
+    rows = apply_engineering_filters(
+        rows, engine_size_l_range=engine_size_l_range, engine_max_power_kw_range=engine_max_power_kw_range
+    )
     if record_origin != "All":
         rows = [r for r in rows if r.get("record_origin") == record_origin]
+
     return rows
 
 
+def _option_label(fid: int, all_options_by_id: dict) -> str:
+    option = all_options_by_id.get(fid)
+    return option.label if option is not None else f"Unknown scenario #{fid}"
+
+
 def _render_selection(catalog_rows: list[dict]) -> SelectionState:
+    """Filters are a candidate-SEARCH tool only (Package 8F) -- they control
+    what's newly offered for selection, never what's already selected. A
+    selected Reference or Comparison item remains fully selected and usable
+    even when it no longer matches the active filters; there is no
+    filter-mismatch warning, because "doesn't match the current search" is
+    not an error condition. Each picker's option list is therefore
+    `currently_selected UNION filtered_candidates` -- the filters still fully
+    control what's newly discoverable, just never what's already chosen.
+    """
     all_options_by_id = {opt.fuelcons_id: opt for opt in build_scenario_options(catalog_rows)}
     filtered_rows = _render_filters(catalog_rows)
-    options = build_scenario_options(filtered_rows)
-    options_by_id = {opt.fuelcons_id: opt for opt in options} or all_options_by_id
+    filtered_options = build_scenario_options(filtered_rows)
 
     state: SelectionState = st.session_state.setdefault(_SELECTION_KEY, SelectionState())
 
-    reference_ids = [None] + [opt.fuelcons_id for opt in options]
+    reference_ids = [None] + [opt.fuelcons_id for opt in filtered_options]
+    if state.reference_fuelcons_id is not None and state.reference_fuelcons_id not in reference_ids:
+        reference_ids.append(state.reference_fuelcons_id)
     reference_choice = st.selectbox(
         "Reference",
         options=reference_ids,
-        format_func=lambda fid: "Select a reference scenario..." if fid is None else all_options_by_id[fid].label,
+        format_func=lambda fid: "Select a reference scenario..." if fid is None else _option_label(fid, all_options_by_id),
         index=_index_of(state.reference_fuelcons_id, reference_ids),
         key="comparison_reference_select",
     )
     if reference_choice != state.reference_fuelcons_id:
         state = set_reference(state, reference_choice)
 
-    filtered_ids = {opt.fuelcons_id for opt in options}
-    visible_ids = [cid for cid in state.comparison_fuelcons_ids if cid in filtered_ids]
-    hidden_ids = tuple(cid for cid in state.comparison_fuelcons_ids if cid not in filtered_ids)
+    picker_ids = [opt.fuelcons_id for opt in filtered_options if opt.fuelcons_id != state.reference_fuelcons_id]
+    for cid in state.comparison_fuelcons_ids:
+        if cid != state.reference_fuelcons_id and cid not in picker_ids:
+            picker_ids.append(cid)
 
     comparison_choice_ids = st.multiselect(
         "Compare with (up to 10)",
-        options=[fid for fid in options_by_id if fid != state.reference_fuelcons_id],
-        default=[cid for cid in visible_ids if cid != state.reference_fuelcons_id],
-        format_func=lambda fid: all_options_by_id[fid].label,
+        options=picker_ids,
+        default=[cid for cid in state.comparison_fuelcons_ids if cid != state.reference_fuelcons_id],
+        format_func=lambda fid: _option_label(fid, all_options_by_id),
         key="comparison_compare_with_select",
     )
-    visible_state = SelectionState(state.reference_fuelcons_id, tuple(visible_ids))
-    new_visible_state, errors = sync_comparisons_from_widget(visible_state, comparison_choice_ids)
-    merged = hidden_ids + new_visible_state.comparison_fuelcons_ids
-    errors = list(errors)
-    if len(merged) > MAX_COMPARISONS:
-        errors.append(f"Maximum {MAX_COMPARISONS} comparison scenarios reached. Remove one before adding another.")
-        merged = merged[:MAX_COMPARISONS]
-    state = SelectionState(state.reference_fuelcons_id, merged)
+    state, errors = sync_comparisons_from_widget(state, comparison_choice_ids)
 
     st.session_state[_SELECTION_KEY] = state
     for error in errors:
@@ -248,15 +361,345 @@ def _render_selection(catalog_rows: list[dict]) -> SelectionState:
 
 
 def _build_scorecard_dataset(state: SelectionState) -> ComparisonDataset | None:
-    if state.reference_fuelcons_id is None:
+    """Reference is optional (Package 8F): a benchmark-only selection (no
+    Reference, one or more Comparison items) builds a dataset with
+    reference=None rather than being blocked outright. Nothing is ever
+    substituted into the Reference slot -- an empty selection still renders
+    the empty state.
+    """
+    if state.reference_fuelcons_id is None and not state.comparison_fuelcons_ids:
         return None
-    reference_spec = {"kind": "FUELCONS_SCENARIO", "fuelcons_id": state.reference_fuelcons_id}
+    reference_spec = (
+        {"kind": "FUELCONS_SCENARIO", "fuelcons_id": state.reference_fuelcons_id}
+        if state.reference_fuelcons_id is not None
+        else None
+    )
     comparison_specs = [{"kind": "FUELCONS_SCENARIO", "fuelcons_id": cid} for cid in state.comparison_fuelcons_ids]
     try:
         return build_comparison_dataset(reference_spec, comparison_specs)
     except ValueError as exc:
         st.error(str(exc))
         return None
+
+
+# -----------------------------------------------------------------------------
+# Presentation roles + Current designation (Package 8F Increment 2)
+#
+# Purely explicit, session-only overlay -- never inferred from provenance,
+# method, model version, timestamp, label, or lineage. Independent of the
+# canonical ComparisonRole (REFERENCE/COMPARISON) and of the optional
+# Reference selection above; Current is not mutually exclusive with a role.
+# -----------------------------------------------------------------------------
+
+
+def _presentation_display_label(item: ComparisonItem) -> str:
+    """Reference is a third, structurally distinct tag from role/Current --
+    it must stay visible here too, not just in the Scorecard header, since
+    this panel is exactly where a reader decides how each item is presented.
+    """
+    label = item.label or "Unknown vehicle"
+    return f"{label} (Reference)" if item.role is ComparisonRole.REFERENCE else label
+
+
+def _render_presentation_roles(dataset: ComparisonDataset) -> None:
+    items = dataset_items(dataset)
+    if not items:
+        return
+
+    state: PresentationState = st.session_state.setdefault(_PRESENTATION_KEY, PresentationState())
+    role_values = [r.value for r in PresentationRole]
+
+    with st.expander("Presentation roles", expanded=False):
+        st.caption(
+            "Optional labels for how each selected item is presented (Proposal / Benchmark) and which one "
+            "is Current -- never derived from provenance or record origin. Reference (if any) is shown for "
+            "context only; it is the canonical selection role, not a presentation tag."
+        )
+        current_ids = ["None"] + [canonical_identity(item) for item in items]
+        current_labels = {"None": "None", **{canonical_identity(item): _presentation_display_label(item) for item in items}}
+        current_choice = st.radio(
+            "Current",
+            current_ids,
+            index=_index_of(state.current_item_id or "None", current_ids),
+            format_func=lambda k: current_labels[k],
+            horizontal=True,
+            key="comparison_presentation_current",
+        )
+        new_current = None if current_choice == "None" else current_choice
+        if new_current != state.current_item_id:
+            state = set_current_item(state, new_current)
+
+        for item in items:
+            identity = canonical_identity(item)
+            current_role = presentation_role_for(state, identity)
+            role_choice = st.selectbox(
+                _presentation_display_label(item),
+                role_values,
+                index=role_values.index(current_role.value),
+                key=f"comparison_presentation_role_{identity}",
+            )
+            if role_choice != current_role.value:
+                state = set_presentation_role(state, identity, PresentationRole(role_choice))
+
+        st.session_state[_PRESENTATION_KEY] = state
+
+
+# -----------------------------------------------------------------------------
+# Primary KPI + Target (Package 8F Increment 3)
+#
+# Session-only, KPI-specific, optional. Target is never a scenario and never
+# fabricated -- it only ever appears where a real actual value exists to
+# compare it against.
+# -----------------------------------------------------------------------------
+
+
+def _render_primary_kpi_and_target() -> str:
+    """Renders the Primary KPI + Target controls; returns the selected
+    Primary KPI metric key so callers (Program Review, once assembled) can
+    drive the hero visualization from it.
+    """
+    with st.expander("Primary KPI & Target", expanded=False):
+        metric_key = st.selectbox(
+            "Primary KPI",
+            _DELTA_METRIC_OPTIONS,
+            format_func=lambda key: (get_metric(key).label if get_metric(key) else key),
+            key=_PRIMARY_KPI_KEY,
+        )
+        metric = get_metric(metric_key)
+        unit_system = normalize_unit_system(st.session_state.get("unit_system"))
+        target_state: TargetState = st.session_state.setdefault(_TARGET_KEY, TargetState())
+        current_target = get_target(target_state, metric_key)
+
+        col1, col2 = st.columns([1, 3])
+        has_target = col1.checkbox("Set a target", value=current_target is not None, key=f"comparison_target_enabled_{metric_key}")
+        new_value = col2.number_input(
+            f"Target value ({metric.label if metric else metric_key})",
+            value=float(current_target) if current_target is not None else 0.0,
+            key=f"comparison_target_value_{metric_key}",
+            disabled=not has_target,
+        )
+        new_target = new_value if has_target else None
+        if new_target != current_target:
+            target_state = set_target(target_state, metric_key, new_target)
+            st.session_state[_TARGET_KEY] = target_state
+
+        if current_target is not None and metric is not None:
+            st.caption(f"Target: {format_value(current_target, metric.unit_family, unit_system)}")
+    return metric_key
+
+
+# -----------------------------------------------------------------------------
+# Versatile KPI Walk (Package 8F Increment 4-6)
+#
+# Configuration is session-only, keyed by canonical identity. The safe
+# default (no configuration yet) is ALL items ABSOLUTE -- a delta is never
+# auto-created merely because an item is selected or tagged with a role.
+# -----------------------------------------------------------------------------
+
+
+def _steps_to_walk_state(steps: tuple) -> tuple[tuple[str, ...], dict[str, dict]]:
+    order = tuple(step.item_id for step in steps)
+    config = {
+        step.item_id: {
+            "display_mode": step.display_mode.value,
+            "delta_base": step.delta_base.value if step.delta_base else None,
+            "explicit_item_id": step.explicit_item_id,
+            "advances_anchor": step.advances_anchor,
+        }
+        for step in steps
+    }
+    return order, config
+
+
+def _render_walk_configuration(
+    dataset: ComparisonDataset, items_by_identity: dict[str, ComparisonItem], metric_key: str
+) -> WalkViewSpec:
+    target_state: TargetState = st.session_state.setdefault(_TARGET_KEY, TargetState())
+    target_value = get_target(target_state, metric_key)
+
+    current_ids = tuple(items_by_identity.keys())
+    stored_order = st.session_state.get(_WALK_ORDER_KEY, ())
+    order = tuple(i for i in stored_order if i in current_ids) + tuple(i for i in current_ids if i not in stored_order)
+    stored_config = st.session_state.get(_WALK_CONFIG_KEY, {})
+    config: dict[str, dict] = {
+        identity: dict(
+            stored_config.get(
+                identity, {"display_mode": "ABSOLUTE", "delta_base": None, "explicit_item_id": None, "advances_anchor": True}
+            )
+        )
+        for identity in order
+    }
+
+    with st.expander("Configure Walk", expanded=False):
+        st.caption("Every item renders ABSOLUTE unless you choose Delta below -- nothing is inferred automatically.")
+        preset_cols = st.columns(3)
+        if preset_cols[0].button("All Absolute", key="walk_preset_absolute"):
+            new_order, new_config = _steps_to_walk_state(default_walk_steps(dataset))
+            st.session_state[_WALK_ORDER_KEY] = new_order
+            st.session_state[_WALK_CONFIG_KEY] = new_config
+            st.rerun()
+        if preset_cols[1].button("Sequential Walk", key="walk_preset_sequential"):
+            new_order, new_config = _steps_to_walk_state(sequential_walk_steps(dataset))
+            st.session_state[_WALK_ORDER_KEY] = new_order
+            st.session_state[_WALK_CONFIG_KEY] = new_config
+            st.rerun()
+        if preset_cols[2].button("Delta vs Reference", key="walk_preset_delta_ref", disabled=dataset.reference is None):
+            new_order, new_config = _steps_to_walk_state(delta_vs_reference_walk_steps(dataset))
+            st.session_state[_WALK_ORDER_KEY] = new_order
+            st.session_state[_WALK_CONFIG_KEY] = new_config
+            st.rerun()
+
+        for position, identity in enumerate(order):
+            item = items_by_identity[identity]
+            row_cfg = config[identity]
+            cols = st.columns([0.4, 0.4, 2.2, 1.3, 1.6, 1])
+            if cols[0].button("↑", key=f"walk_up_{identity}", disabled=position == 0):
+                new_order = order[: position - 1] + (order[position], order[position - 1]) + order[position + 1 :]
+                st.session_state[_WALK_ORDER_KEY] = new_order
+                st.rerun()
+            if cols[1].button("↓", key=f"walk_down_{identity}", disabled=position == len(order) - 1):
+                new_order = order[:position] + (order[position + 1], order[position]) + order[position + 2 :]
+                st.session_state[_WALK_ORDER_KEY] = new_order
+                st.rerun()
+            cols[2].markdown(item.label or "Unknown vehicle")
+            mode_choice = cols[3].selectbox(
+                "Mode",
+                ["ABSOLUTE", "DELTA"],
+                index=["ABSOLUTE", "DELTA"].index(row_cfg["display_mode"]),
+                key=f"walk_mode_{identity}",
+                label_visibility="collapsed",
+            )
+            row_cfg["display_mode"] = mode_choice
+            if mode_choice == "DELTA":
+                base_options = ["PREVIOUS_WALK_STATE", "EXPLICIT_ITEM"] + (
+                    ["REFERENCE"] if dataset.reference is not None else []
+                )
+                current_base = row_cfg.get("delta_base") or base_options[0]
+                if current_base not in base_options:
+                    current_base = base_options[0]
+                base_choice = cols[4].selectbox(
+                    "vs",
+                    base_options,
+                    index=base_options.index(current_base),
+                    format_func=lambda v: _WALK_DELTA_BASE_LABELS[v],
+                    key=f"walk_base_{identity}",
+                    label_visibility="collapsed",
+                )
+                row_cfg["delta_base"] = base_choice
+                if base_choice == "EXPLICIT_ITEM":
+                    other_ids = [i for i in order if i != identity]
+                    if other_ids:
+                        default_explicit = row_cfg.get("explicit_item_id")
+                        if default_explicit not in other_ids:
+                            default_explicit = other_ids[0]
+                        explicit_choice = cols[5].selectbox(
+                            "base item",
+                            other_ids,
+                            index=other_ids.index(default_explicit),
+                            format_func=lambda i: items_by_identity[i].label or i,
+                            key=f"walk_explicit_{identity}",
+                            label_visibility="collapsed",
+                        )
+                        row_cfg["explicit_item_id"] = explicit_choice
+                    else:
+                        row_cfg["explicit_item_id"] = None
+                    row_cfg["advances_anchor"] = row_cfg.get("advances_anchor", True)
+                else:
+                    row_cfg["explicit_item_id"] = None
+                    row_cfg["advances_anchor"] = cols[5].checkbox(
+                        "Anchor", value=row_cfg.get("advances_anchor", True), key=f"walk_anchor_{identity}"
+                    )
+            else:
+                row_cfg["delta_base"] = None
+                row_cfg["explicit_item_id"] = None
+                row_cfg["advances_anchor"] = cols[5].checkbox(
+                    "Anchor", value=row_cfg.get("advances_anchor", True), key=f"walk_anchor_{identity}"
+                )
+            config[identity] = row_cfg
+
+        st.session_state[_WALK_ORDER_KEY] = order
+        st.session_state[_WALK_CONFIG_KEY] = config
+
+    steps = tuple(
+        WalkStep(
+            item_id=identity,
+            display_mode=WalkDisplayMode(config[identity]["display_mode"]),
+            delta_base=(WalkDeltaBase(config[identity]["delta_base"]) if config[identity]["delta_base"] else None),
+            explicit_item_id=config[identity]["explicit_item_id"],
+            advances_anchor=config[identity]["advances_anchor"],
+        )
+        for identity in order
+    )
+    return WalkViewSpec(metric_key=metric_key, steps=steps, target_value=target_value)
+
+
+def _render_walk_callouts(result, items_by_identity: dict, dataset: ComparisonDataset, metric, unit_system: str) -> None:
+    if metric is None:
+        return
+    current_row = next((row for row in result.rows if row.is_current), None)
+    if current_row is None:
+        return
+
+    callouts: list[tuple[str, str]] = [("Current KPI", current_row.formatted_absolute_value)]
+    if dataset.reference is not None and current_row.item_id != canonical_identity(dataset.reference):
+        current_item = items_by_identity.get(current_row.item_id)
+        if current_item is not None:
+            ref_result = compare_metric(dataset.reference, current_item, metric.key)
+            if ref_result["available"] and ref_result["compatible"]:
+                callouts.append(
+                    ("Δ vs Reference", format_value(ref_result["absolute_delta"], metric.unit_family, unit_system, signed=True))
+                )
+    if current_row.target_gap is not None:
+        callouts.append(
+            ("Gap vs Target", format_value(current_row.target_gap.absolute_gap, metric.unit_family, unit_system, signed=True))
+        )
+    if current_row.provenance:
+        callouts.append(("Provenance", current_row.provenance))
+
+    cols = st.columns(len(callouts))
+    for col, (label, value) in zip(cols, callouts):
+        col.metric(label, value)
+
+
+def _render_walk_hero(dataset: ComparisonDataset, metric_key: str, unit_system: str) -> None:
+    items = dataset_items(dataset)
+    items_by_identity = {canonical_identity(item): item for item in items}
+    presentation: PresentationState = st.session_state.setdefault(_PRESENTATION_KEY, PresentationState())
+
+    spec = _render_walk_configuration(dataset, items_by_identity, metric_key)
+    result = build_walk_rows(dataset, spec, presentation=presentation, unit_system=unit_system)
+    metric = get_metric(metric_key)
+
+    title = "KPI Walk" if result.has_delta_semantics else "KPI Comparison"
+    st.markdown(f"**{title}**")
+    for warning in result.warnings:
+        st.warning(warning)
+
+    if result.rows:
+        y_title = metric_axis_label(metric, unit_system) if metric else metric_key
+        fig = build_walk_chart(result.rows, y_title=y_title, target_value=result.target_value)
+        st.plotly_chart(fig, width="stretch")
+    else:
+        st.info("No compatible data for this Primary KPI.")
+
+    _render_walk_callouts(result, items_by_identity, dataset, metric, unit_system)
+
+    if result.rows:
+        with st.expander("Walk detail", expanded=False):
+            table_rows = [
+                {
+                    "Scenario": row.label,
+                    "Mode": row.display_mode,
+                    "Value": row.formatted_absolute_value,
+                    "Δ": row.formatted_delta or "-",
+                    "vs": row.delta_base_label or "-",
+                    "Status": row.status,
+                    "Role": row.presentation_role or "UNSPECIFIED",
+                    "Current": "Yes" if row.is_current else "",
+                }
+                for row in result.rows
+            ]
+            st.dataframe(pd.DataFrame(table_rows), hide_index=True, width="stretch")
 
 
 # -----------------------------------------------------------------------------
@@ -312,7 +755,7 @@ def _render_scorecard_tab(dataset: ComparisonDataset | None) -> None:
             for warning in warnings:
                 st.warning(warning)
 
-    items = (dataset.reference, *dataset.comparisons)
+    items = dataset_items(dataset)
     header_titles = _dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
 
     unit_system = normalize_unit_system(st.session_state.get("unit_system"))
@@ -321,71 +764,95 @@ def _render_scorecard_tab(dataset: ComparisonDataset | None) -> None:
 
 
 # -----------------------------------------------------------------------------
-# Dashboard tab (Package 8C)
+# Program Review tab (Package 8F Increment 6)
+#
+# Story: (A) Are we on target? (B) Is the gap vehicle demand or powertrain
+# efficiency? (C) How much vehicle demand remains? One Primary-KPI-driven
+# hero drives the narrative -- Fuel Consumption/Economy/Energy/CO2 are never
+# rendered here as four mandatory charts (that data remains in Technical
+# Scorecard's evidence table).
 # -----------------------------------------------------------------------------
 
 
-def _render_reference_summary(dataset: ComparisonDataset, unit_system: str) -> None:
-    summary = build_reference_summary(dataset.reference)
-    st.markdown("**Reference summary**")
-    cols = st.columns(4)
-    cols[0].metric("Vehicle", summary["label"])
-    cols[1].metric("Legislation", summary["legislation"] or "–")
-    cols[2].metric("Provenance", summary["record_origin"] or "–")
-    cols[3].metric("VDE TOTAL", format_value(summary["vde_total"], "energy_mj_per_km", unit_system))
-    caption_parts = []
-    if summary["vde_net"] is not None:
-        caption_parts.append(f"VDE NET: {format_value(summary['vde_net'], 'energy_mj_per_km', unit_system)}")
-    if summary["fuel_l_per_100km"] is not None:
-        caption_parts.append(f"Fuel: {format_value(summary['fuel_l_per_100km'], 'l_per_100km', unit_system)}")
-    if summary["gco2_per_km"] is not None:
-        caption_parts.append(f"CO2: {format_value(summary['gco2_per_km'], 'gco2_per_km', unit_system)}")
-    if summary["eta_pt_est"] is not None:
-        caption_parts.append(f"Efficiency: {format_value(summary['eta_pt_est'], 'ratio', unit_system)}")
-    if caption_parts:
-        st.caption(" · ".join(caption_parts))
+_DELTA_COLOR_BY_DIRECTION = {
+    MetricDirection.LOWER_IS_BETTER: "inverse",  # a decrease is good -> negative delta shows green
+    MetricDirection.HIGHER_IS_BETTER: "normal",  # an increase is good -> positive delta shows green
+}
 
 
-def _render_vde_comparison(dataset: ComparisonDataset, unit_system: str) -> None:
-    st.markdown("**Vehicle Demand**")
-    boundary_choice = st.radio("Boundary", ["TOTAL", "NET", "Both"], horizontal=True, key="dashboard_vde_boundary")
-    boundaries = {"TOTAL": ["vde_total"], "NET": ["vde_net"], "Both": ["vde_total", "vde_net"]}[boundary_choice]
-    rows = []
-    excluded = []
-    for metric_key in boundaries:
-        result = build_metric_bar_rows(dataset, metric_key, unit_system=unit_system)
-        group = "TOTAL" if metric_key == "vde_total" else "NET"
-        rows += [{"label": r.label, "value": r.value, "group": group} for r in result["rows"]]
-        excluded += result["excluded"]
-    _render_exclusions(excluded)
-    if rows:
-        y_title = f"VDE [{unit_label('energy_per_distance', unit_system)}]"
-        st.plotly_chart(build_grouped_bar_figure(rows, y_title=y_title), width="stretch")
+def _summary_metric_cell(
+    col, metric, item: ComparisonItem, reference: ComparisonItem | None, unit_system: str
+) -> None:
+    """One compact st.metric cell: absolute value is the primary number,
+    %-delta vs Reference is the secondary/colored figure -- never
+    concatenated into one equal-weight string. Absolute delta is available
+    via the hover tooltip. Reuses compare_metric()/extract_metric_value()
+    and the Registry's own direction for BETTER/WORSE color; no comparison
+    semantics are recomputed here.
+    """
+    value = extract_metric_value(item, metric.key)
+    if value is None:
+        col.metric(metric.label, "unavailable")
+        return
+    formatted = format_value(value, metric.unit_family, unit_system)
+    if reference is None or item is reference:
+        col.metric(metric.label, formatted)
+        return
+
+    result = compare_metric(reference, item, metric.key)
+    if not result["compatible"] or not result["available"]:
+        col.metric(metric.label, formatted, help="Not comparable to Reference (different cycle/basis).")
+        return
+
+    abs_delta_text = format_value(result["absolute_delta"], metric.unit_family, unit_system, signed=True)
+    if result["percent_delta"] is not None:
+        sign = "+" if result["percent_delta"] > 0 else ""
+        delta_text = f"{sign}{result['percent_delta']:.1f}% vs Ref"
+    else:
+        delta_text = f"{abs_delta_text} vs Ref"
+    col.metric(
+        metric.label,
+        formatted,
+        delta=delta_text,
+        delta_color=_DELTA_COLOR_BY_DIRECTION.get(metric.direction, "off"),
+        help=f"Δ {abs_delta_text}",
+    )
 
 
-def _render_fuel_energy_co2(dataset: ComparisonDataset, unit_system: str) -> None:
-    st.markdown("**Fuel / Energy / Emissions**")
-    any_rendered = False
-    for metric_key, label in (
-        ("fuel_l_per_100km", "Fuel consumption"),
-        ("fuel_km_per_l", "Fuel economy"),
-        ("energy_wh_per_km", "Energy consumption"),
-        ("gco2_per_km", "CO2"),
-    ):
-        result = build_metric_bar_rows(dataset, metric_key, unit_system=unit_system)
-        if not result["rows"]:
-            continue  # dataset-aware: omit entirely rather than showing an empty chart (Sec 44)
-        any_rendered = True
-        st.caption(label)
-        rows = [{"label": r.label, "value": r.value} for r in result["rows"]]
-        st.plotly_chart(build_grouped_bar_figure(rows, y_title=label), width="stretch")
-        _render_exclusions(result["excluded"])
-    if not any_rendered:
-        st.caption("No fuel/energy/CO2 data available for the selected scenarios.")
+def _render_energy_demand_summary(dataset: ComparisonDataset, metric_key: str, unit_system: str) -> None:
+    """"Who is better, by how much, and does the gap look more like demand or
+    efficiency" -- a few state KPIs per item, never a mini Technical
+    Scorecard. Mass/RRC/CdA/ABC/phase/power stay in Energy Drivers; this is
+    Primary KPI + selected VDE boundary + PSE (when available) + Target gap
+    (when set) only.
+    """
+    boundary_choice = st.radio("VDE boundary", ["TOTAL", "NET"], horizontal=True, key="dashboard_vde_boundary")
+    vde_metric = get_metric(f"vde_{boundary_choice.lower()}")
+    primary_metric = get_metric(metric_key)
+    pse_metric = get_metric("eta_pt_est")
+    target_state: TargetState = st.session_state.setdefault(_TARGET_KEY, TargetState())
+    target_value = get_target(target_state, metric_key)
+
+    items = dataset_items(dataset)
+    reference = dataset.reference
+
+    cols = st.columns(len(items))
+    for col, item in zip(cols, items):
+        col.caption(_presentation_display_label(item))
+        if primary_metric is not None:
+            _summary_metric_cell(col, primary_metric, item, reference, unit_system)
+        if vde_metric is not None and vde_metric.key != metric_key:
+            _summary_metric_cell(col, vde_metric, item, reference, unit_system)
+        if pse_metric is not None and extract_metric_value(item, pse_metric.key) is not None:
+            _summary_metric_cell(col, pse_metric, item, reference, unit_system)
+        if target_value is not None and primary_metric is not None:
+            gap = evaluate_target_gap(metric_key, extract_metric_value(item, metric_key), target_value)
+            if gap is not None:
+                col.metric("Gap to Target", format_value(gap.absolute_gap, primary_metric.unit_family, unit_system, signed=True))
 
 
 def _render_fe_vde(dataset: ComparisonDataset, unit_system: str) -> None:
-    st.markdown("**FE × VDE**")
+    st.markdown("**Demand vs Efficiency**")
     mode_label = st.selectbox("Mode", ["Volumetric", "Energy-normalized", "Electrical"], key="dashboard_fe_vde_mode")
     mode = {"Volumetric": "volumetric", "Energy-normalized": "energy_normalized", "Electrical": "electrical"}[mode_label]
     boundary = st.radio("VDE boundary", ["TOTAL", "NET"], horizontal=True, key="dashboard_fe_vde_boundary")
@@ -394,8 +861,10 @@ def _render_fe_vde(dataset: ComparisonDataset, unit_system: str) -> None:
     _render_exclusions(points_result["excluded"])
     points = points_result["points"]
     if not points:
-        st.info("No scenarios are compatible with this FE × VDE mode/boundary.")
+        st.info("No scenarios are compatible with this Demand vs Efficiency mode/boundary.")
         return
+    if points_result.get("assumption_label"):
+        st.caption(f"PSE energy basis: {points_result['assumption_label']}")
 
     xs = [p["x"] for p in points]
     x_min, x_max = min(xs), max(xs)
@@ -404,56 +873,37 @@ def _render_fe_vde(dataset: ComparisonDataset, unit_system: str) -> None:
     else:
         span = x_max - x_min
         x_min, x_max = x_min - span * 0.2, x_max + span * 0.2
-    fuel_type = (dataset.reference.fuel_energy or {}).get("fuel_type") if mode == "volumetric" else None
+    fuel_type = points_result.get("anchor_fuel_type") if mode == "volumetric" else None
     lines = build_iso_pse_lines(x_min, x_max, _DEFAULT_ETA_LINES[mode], mode=mode, fuel_type=fuel_type)
+    if not lines and mode == "volumetric":
+        st.caption(
+            "Equi-PSE guides aren't available in Volumetric mode for this fuel family "
+            f"({fuel_type or 'unknown'}) -- LHV is never guessed. Try Energy-normalized mode."
+        )
 
     x_title = metric_axis_label(get_metric(f"vde_{boundary.lower()}"), unit_system)
     fig = build_fe_vde_figure(points, lines, x_title=x_title, y_title=_FE_VDE_Y_TITLE[mode])
     st.plotly_chart(fig, width="stretch")
 
 
-def _render_competitor_delta(dataset: ComparisonDataset) -> None:
-    st.markdown("**Reference-relative KPI delta**")
-    metric_key = st.selectbox(
-        "KPI",
-        _DELTA_METRIC_OPTIONS,
-        format_func=lambda key: (get_metric(key).label if get_metric(key) else key),
-        key="dashboard_delta_metric",
-    )
-    result = build_competitor_delta_rows(dataset, metric_key)
-    _render_exclusions(result["excluded"])
-    rows = [
-        {"label": r["label"], "value": r["percent_delta"], "semantic": r["semantic"]}
-        for r in result["rows"]
-        if r["percent_delta"] is not None
-    ]
-    if not rows:
-        st.info("No compatible numeric data for this KPI.")
-        return
-    st.plotly_chart(build_grouped_bar_figure(rows, y_title="% vs Reference", color_by_semantic=True), width="stretch")
-
-
-def _render_dashboard_tab(dataset: ComparisonDataset | None) -> None:
+def _render_program_review_tab(dataset: ComparisonDataset | None, metric_key: str) -> None:
     if dataset is None:
-        st.info(_no_reference_message("comparison"))
+        st.info(_no_reference_message("the Program Review"))
         return
 
     unit_system = normalize_unit_system(st.session_state.get("unit_system"))
-    _render_reference_summary(dataset, unit_system)
     warnings = dataset_warnings_summary(dataset)
     if warnings:
         with st.expander(f"{len(warnings)} dataset warning(s)", expanded=False):
             for warning in warnings:
                 st.warning(warning)
 
-    st.divider()
-    _render_vde_comparison(dataset, unit_system)
-    st.divider()
-    _render_fuel_energy_co2(dataset, unit_system)
+    _render_walk_hero(dataset, metric_key, unit_system)
     st.divider()
     _render_fe_vde(dataset, unit_system)
     st.divider()
-    _render_competitor_delta(dataset)
+    st.markdown("**Energy & Demand Summary**")
+    _render_energy_demand_summary(dataset, metric_key, unit_system)
 
 
 # -----------------------------------------------------------------------------
@@ -469,7 +919,7 @@ def _vde_option_label(row: dict) -> str:
     return f"{base} · {meta}" if meta else base
 
 
-def _render_direct_vde_selection() -> tuple[dict, list[dict]] | None:
+def _render_direct_vde_selection() -> tuple[dict | None, list[dict]] | None:
     catalog_rows = _load_vde_catalog()
     if not catalog_rows:
         st.info("No VDE records are available yet.")
@@ -491,9 +941,14 @@ def _render_direct_vde_selection() -> tuple[dict, list[dict]] | None:
 
     # Reuses SelectionState/set_reference/sync_comparisons_from_widget from 8B --
     # those helpers are generic over "an int id", not FuelCons-specific, despite
-    # the field name.
+    # the field name. Filters are a candidate-search tool only (Package 8F): a
+    # selected Reference/Comparison VDE stays selected and usable even when it
+    # no longer matches Make/Legislation -- the picker option list is
+    # currently_selected UNION filtered_candidates, never filtered-only.
     state: SelectionState = st.session_state.setdefault(_DIRECT_VDE_SELECTION_KEY, SelectionState())
-    reference_ids = [None] + visible_ids
+    reference_ids = [None] + list(visible_ids)
+    if state.reference_fuelcons_id is not None and state.reference_fuelcons_id not in reference_ids:
+        reference_ids.append(state.reference_fuelcons_id)
     reference_choice = st.selectbox(
         "Reference VDE",
         options=reference_ids,
@@ -504,10 +959,15 @@ def _render_direct_vde_selection() -> tuple[dict, list[dict]] | None:
     if reference_choice != state.reference_fuelcons_id:
         state = set_reference(state, reference_choice)
 
+    picker_ids = [vid for vid in visible_ids if vid != state.reference_fuelcons_id]
+    for vid in state.comparison_fuelcons_ids:
+        if vid != state.reference_fuelcons_id and vid not in picker_ids:
+            picker_ids.append(vid)
+
     comparison_choice_ids = st.multiselect(
         "Compare with (up to 10)",
-        options=[vid for vid in visible_ids if vid != state.reference_fuelcons_id],
-        default=[vid for vid in state.comparison_fuelcons_ids if vid in visible_ids and vid != state.reference_fuelcons_id],
+        options=picker_ids,
+        default=[vid for vid in state.comparison_fuelcons_ids if vid != state.reference_fuelcons_id],
         format_func=lambda vid: options_by_id.get(vid, f"VDE #{vid}"),
         key="roadload_direct_compare_with_select",
     )
@@ -516,24 +976,32 @@ def _render_direct_vde_selection() -> tuple[dict, list[dict]] | None:
     for error in errors:
         st.warning(error)
 
-    if state.reference_fuelcons_id is None:
+    if state.reference_fuelcons_id is None and not state.comparison_fuelcons_ids:
         return None
-    reference_spec = {"kind": "VDE_ONLY", "vde_id": state.reference_fuelcons_id}
+    reference_spec = (
+        {"kind": "VDE_ONLY", "vde_id": state.reference_fuelcons_id} if state.reference_fuelcons_id is not None else None
+    )
     comparison_specs = [{"kind": "VDE_ONLY", "vde_id": vde_id} for vde_id in state.comparison_fuelcons_ids]
     return reference_spec, comparison_specs
 
 
-def _linked_vde_specs(scorecard_dataset: ComparisonDataset | None) -> tuple[dict, list[dict]] | None:
-    if scorecard_dataset is None or scorecard_dataset.reference.vde_id is None:
+def _linked_vde_specs(scorecard_dataset: ComparisonDataset | None) -> tuple[dict | None, list[dict]] | None:
+    if scorecard_dataset is None:
         return None
-    seen = {scorecard_dataset.reference.vde_id}
+    seen: set[int] = set()
+    reference_spec: dict | None = None
+    if scorecard_dataset.reference is not None and scorecard_dataset.reference.vde_id is not None:
+        seen.add(scorecard_dataset.reference.vde_id)
+        reference_spec = {"kind": "VDE_ONLY", "vde_id": scorecard_dataset.reference.vde_id}
     comparison_specs = []
     for item in scorecard_dataset.comparisons:
         if item.vde_id is None or item.vde_id in seen:
             continue
         seen.add(item.vde_id)
         comparison_specs.append({"kind": "VDE_ONLY", "vde_id": item.vde_id})
-    return {"kind": "VDE_ONLY", "vde_id": scorecard_dataset.reference.vde_id}, comparison_specs
+    if reference_spec is None and not comparison_specs:
+        return None
+    return reference_spec, comparison_specs
 
 
 def _transmission_component_options() -> list[tuple[str, str]]:
@@ -551,17 +1019,17 @@ def _transmission_component_options() -> list[tuple[str, str]]:
 def _render_temporary_transmission_controls(dataset: ComparisonDataset, temp_by_vde: dict) -> None:
     items_missing_net = [
         item
-        for item in (dataset.reference, *dataset.comparisons)
+        for item in dataset_items(dataset)
         if item.vde_id is not None and not item.roadload["net"].available and item.vde_id not in temp_by_vde
     ]
     active_ids = [
         item.vde_id
-        for item in (dataset.reference, *dataset.comparisons)
+        for item in dataset_items(dataset)
         if item.vde_id is not None and item.vde_id in temp_by_vde
     ]
 
     for vde_id in dict.fromkeys(active_ids):
-        item = next(i for i in (dataset.reference, *dataset.comparisons) if i.vde_id == vde_id)
+        item = next(i for i in dataset_items(dataset) if i.vde_id == vde_id)
         with st.expander(f"NET · TEMPORARY for {item.label}", expanded=False):
             st.caption(f"Source: {temp_by_vde[vde_id].get('source')}")
             if st.button("Clear temporary assumption", key=f"clear_temp_trans_{vde_id}"):
@@ -607,17 +1075,46 @@ def _render_temporary_transmission_controls(dataset: ComparisonDataset, temp_by_
                     st.rerun()
 
 
-def _render_abc_section(dataset: ComparisonDataset, boundaries: list[str]) -> None:
-    st.markdown("**Roadload ABC**")
-    for boundary in boundaries:
-        result = build_abc_rows(dataset, boundary)
-        _render_exclusions(result["excluded"])
-        if not result["rows"]:
-            continue
-        cols = st.columns(3)
-        for coefficient, col in zip("ABC", cols):
-            rows = [{"label": row["label"], "value": row[coefficient]} for row in result["rows"]]
-            col.plotly_chart(build_grouped_bar_figure(rows, y_title=f"{coefficient} ({boundary})"), width="stretch")
+_ROADLOAD_METRIC_SUFFIX = {"TOTAL": "_total", "NET": "_net"}
+
+
+def _render_physical_setup_section(dataset: ComparisonDataset, unit_system: str) -> None:
+    """Table, not bar charts (product feedback after reviewing the rendered
+    8F build): Mass/RRC/CdA are single scalars per item, and a compact
+    evidence-style table with Δ vs Reference carries more information per
+    pixel than three separate bar-chart panels -- reuses the exact same
+    ScorecardCell/_render_section machinery Technical Scorecard already uses,
+    including its Reference-less absolute-only degrade.
+    """
+    items = dataset_items(dataset)
+    header_titles = _dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
+    physical_section = next(
+        (s for s in build_scorecard_sections(dataset, unit_system=unit_system) if s.title == "Physical Setup"), None
+    )
+    if physical_section is None or not physical_section.rows:
+        return
+    _render_section(physical_section, header_titles)
+
+
+def _render_abc_section(dataset: ComparisonDataset, boundaries: list[str], unit_system: str) -> None:
+    """Table, not three bar-chart panels -- A/B/C are coefficients of the one
+    curve already plotted just above (roadload force vs speed); splitting
+    them into separate bars forces the reader to mentally reconstruct that
+    curve instead of reading it. Reuses the Scorecard's Roadload section,
+    filtered to the boundaries currently selected above.
+    """
+    items = dataset_items(dataset)
+    header_titles = _dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
+    roadload_section = next(
+        (s for s in build_scorecard_sections(dataset, unit_system=unit_system) if s.title == "Roadload"), None
+    )
+    if roadload_section is None:
+        return
+    suffixes = tuple(_ROADLOAD_METRIC_SUFFIX[b] for b in boundaries)
+    filtered_rows = tuple(row for row in roadload_section.rows if row.metric_key.endswith(suffixes))
+    if not filtered_rows:
+        return
+    _render_section(ScorecardSection(title="Roadload ABC", rows=filtered_rows), header_titles)
 
 
 def _render_roadload_curve_section(dataset: ComparisonDataset, boundaries: list[str]) -> None:
@@ -640,25 +1137,24 @@ def _render_roadload_curve_section(dataset: ComparisonDataset, boundaries: list[
 
 
 def _render_cycle_phase_section(dataset: ComparisonDataset, boundaries: list[str], unit_system: str) -> None:
-    st.markdown("**Cycle / phase VDE**")
-    reference_legislation = dataset.reference.vehicle.get("legislation")
-    rows = []
-    excluded = []
-    for item in (dataset.reference, *dataset.comparisons):
-        if item.vehicle.get("legislation") != reference_legislation:
-            excluded.append({"label": item.label, "reason": "Different cycle basis"})
-            continue
-        cycle_results = item.vde["cycle_results"]
-        for boundary in boundaries:
-            result = cycle_results[boundary.lower()]
-            if result.aggregate is None:
-                excluded.append({"label": item.label, "reason": f"Cycle {boundary} unavailable"})
-                continue
-            rows.append({"label": item.label, "value": result.aggregate, "group": boundary})
-    _render_exclusions(excluded)
-    if rows:
-        y_title = f"VDE [{unit_label('energy_per_distance', unit_system)}]"
-        st.plotly_chart(build_grouped_bar_figure(rows, y_title=y_title), width="stretch")
+    """Genuinely phase-aware (Package 8F Increment 7) -- reads
+    VDEBoundaryResult.by_phase directly (EPA: City/Highway; WLTP: Low/Mid/
+    High/Extra High). EPA and WLTP items are never merged into one chart;
+    the TOTAL/NET aggregate itself is shown elsewhere (Program Review's
+    Vehicle Demand Status), not duplicated here.
+    """
+    st.markdown("**VDE by Cycle / Phase**")
+    y_title = f"VDE [{unit_label('energy_per_distance', unit_system)}]"
+    any_rendered = False
+    for boundary in boundaries:
+        result = build_cycle_phase_rows(dataset, boundary)
+        _render_exclusions(result["excluded"])
+        for family_block in result["families"]:
+            any_rendered = True
+            st.caption(f"{family_block['family']} · {boundary}")
+            st.plotly_chart(build_grouped_bar_figure(family_block["rows"], y_title=y_title), width="stretch")
+    if not any_rendered:
+        st.caption("No recognized phase breakdown (EPA City/Highway or WLTP Low/Mid/High/Extra High) is available for the selected items.")
 
 
 def _render_cycle_demand_section(dataset: ComparisonDataset, boundaries: list[str]) -> None:
@@ -667,7 +1163,7 @@ def _render_cycle_demand_section(dataset: ComparisonDataset, boundaries: list[st
         st.caption("Calculates cycle-integrated power traces on demand -- opt in above.")
         return
 
-    legislation = dataset.reference.vehicle.get("legislation")
+    legislation = dataset_items(dataset)[0].vehicle.get("legislation")
     cycle = use_standard_cycle(legislation)
     if cycle is None:
         st.info("No standard cycle trace available for this legislation.")
@@ -684,7 +1180,13 @@ def _render_cycle_demand_section(dataset: ComparisonDataset, boundaries: list[st
         st.plotly_chart(build_cycle_demand_figure(result["series"], result["time_s"]), width="stretch")
 
 
-def _render_roadload_tab(scorecard_dataset: ComparisonDataset | None) -> None:
+def _render_energy_drivers_tab(scorecard_dataset: ComparisonDataset | None) -> None:
+    """"Why is vehicle demand different?" (Package 8F). Storytelling order:
+    physical setup -> roadload force curve -> ABC coefficients -> VDE by
+    cycle/phase -> demanded power (lower priority/expandable). Mass/RRC/CdA
+    stay visually coupled with roadload/VDE rather than split into a
+    separate overview.
+    """
     source = st.radio(
         "Source",
         ["VDEs linked to selected complete scenarios", "Select physical VDEs directly"],
@@ -715,9 +1217,11 @@ def _render_roadload_tab(scorecard_dataset: ComparisonDataset | None) -> None:
 
     unit_system = normalize_unit_system(st.session_state.get("unit_system"))
     st.divider()
-    _render_abc_section(dataset, boundaries)
+    _render_physical_setup_section(dataset, unit_system)
     st.divider()
     _render_roadload_curve_section(dataset, boundaries)
+    st.divider()
+    _render_abc_section(dataset, boundaries, unit_system)
     st.divider()
     _render_cycle_phase_section(dataset, boundaries, unit_system)
     st.divider()
@@ -739,7 +1243,7 @@ def _explore_source_options(scorecard_dataset: ComparisonDataset | None) -> list
     if scorecard_dataset is not None:
         options.append("Selected complete scenarios")
     direct_state: SelectionState | None = st.session_state.get(_DIRECT_VDE_SELECTION_KEY)
-    if direct_state is not None and direct_state.reference_fuelcons_id is not None:
+    if direct_state is not None and (direct_state.reference_fuelcons_id is not None or direct_state.comparison_fuelcons_ids):
         options.append("Selected physical VDEs")
     return options
 
@@ -755,9 +1259,13 @@ def _build_explore_dataset(
         return scorecard_dataset
     if source == "Selected physical VDEs":
         direct_state: SelectionState | None = st.session_state.get(_DIRECT_VDE_SELECTION_KEY)
-        if direct_state is None or direct_state.reference_fuelcons_id is None:
+        if direct_state is None or (direct_state.reference_fuelcons_id is None and not direct_state.comparison_fuelcons_ids):
             return None
-        reference_spec = {"kind": "VDE_ONLY", "vde_id": direct_state.reference_fuelcons_id}
+        reference_spec = (
+            {"kind": "VDE_ONLY", "vde_id": direct_state.reference_fuelcons_id}
+            if direct_state.reference_fuelcons_id is not None
+            else None
+        )
         comparison_specs = [{"kind": "VDE_ONLY", "vde_id": vde_id} for vde_id in direct_state.comparison_fuelcons_ids]
         try:
             return build_comparison_dataset(reference_spec, comparison_specs, temporary_transmission_by_vde_id=temp_by_vde)
@@ -861,7 +1369,7 @@ def _render_explore_line(dataset: ComparisonDataset, items: tuple, unit_system: 
 
 
 def _render_explore_custom_chart(dataset: ComparisonDataset, unit_system: str) -> None:
-    items = (dataset.reference, *dataset.comparisons)
+    items = dataset_items(dataset)
     chart_type = st.selectbox("Chart type", ["Bar", "Scatter", "Line"], key="explore_chart_type")
 
     col1, col2 = st.columns(2)
@@ -897,7 +1405,7 @@ def _lineage_item_key(item: ComparisonItem) -> str:
 
 
 def _render_lineage_tab(dataset: ComparisonDataset, temp_by_vde: dict, unit_system: str) -> None:
-    items = [item for item in (dataset.reference, *dataset.comparisons) if item.vde_id is not None]
+    items = [item for item in dataset_items(dataset) if item.vde_id is not None]
     if not items:
         st.info("No scenarios with a resolvable VDE are available to analyze lineage for.")
         return
@@ -965,7 +1473,7 @@ def _render_lineage_tab(dataset: ComparisonDataset, temp_by_vde: dict, unit_syst
 def _render_explore_tab(scorecard_dataset: ComparisonDataset | None) -> None:
     source_options = _explore_source_options(scorecard_dataset)
     if not source_options:
-        st.info("Select scenarios in Scorecard to explore them here.")
+        st.info("Select scenarios above to explore them here.")
         return
 
     source = (
@@ -1000,12 +1508,12 @@ def _render_explore_tab(scorecard_dataset: ComparisonDataset | None) -> None:
 
 def _render_legacy_bridge() -> None:
     st.divider()
-    with st.expander("Legacy comparison tools", expanded=False):
+    with st.expander("Powertrain Scenario Tools", expanded=False):
         st.caption(
-            "Method Analysis, Peers & Outlook, and Saved Estimates from the previous Comparison Report remain "
-            "here -- they are Powertrain Scenario capabilities (ML method explanation, DB-wide peer "
-            "benchmarking, saved-estimate management) with no equivalent above. The Scenario Compare tab below "
-            "is superseded by the Scorecard tab above; prefer that one for Reference-relative comparison."
+            "Method Analysis, Peers & Outlook, and Saved Estimates remain here -- they are Powertrain Scenario "
+            "capabilities (ML method explanation, DB-wide peer benchmarking, saved-estimate management) with no "
+            "equivalent above. The Scenario Compare tab below is superseded by Technical Scorecard above; prefer "
+            "that one for engineering comparison."
         )
         vde_id, vde_row = resolve_comparison_report_anchor()
         if not vde_id:
@@ -1015,8 +1523,8 @@ def _render_legacy_bridge() -> None:
 
 
 def render_comparison_report() -> None:
-    st.title("Comparison Report")
-    st.caption("Reference-relative engineering comparison across complete FuelCons scenarios.")
+    st.title("Program Energy & Fuel Economy Review")
+    st.caption("Reference-optional engineering comparison across FuelCons scenarios and physical VDEs.")
 
     catalog_rows = _load_catalog()
     if not catalog_rows:
@@ -1026,16 +1534,20 @@ def render_comparison_report() -> None:
 
     state = _render_selection(catalog_rows)
     dataset = _build_scorecard_dataset(state)
+    primary_kpi = _DELTA_METRIC_OPTIONS[0]
+    if dataset is not None:
+        _render_presentation_roles(dataset)
+        primary_kpi = _render_primary_kpi_and_target()
 
-    scorecard_tab, dashboard_tab, roadload_tab, explore_tab = st.tabs(
-        ["Scorecard", "Dashboard", "Roadload & VDE", "Explore"]
+    program_review_tab, energy_drivers_tab, scorecard_tab, explore_tab = st.tabs(
+        ["Program Review", "Energy Drivers", "Technical Scorecard", "Explore"]
     )
+    with program_review_tab:
+        _render_program_review_tab(dataset, primary_kpi)
+    with energy_drivers_tab:
+        _render_energy_drivers_tab(dataset)
     with scorecard_tab:
         _render_scorecard_tab(dataset)
-    with dashboard_tab:
-        _render_dashboard_tab(dataset)
-    with roadload_tab:
-        _render_roadload_tab(dataset)
     with explore_tab:
         _render_explore_tab(dataset)
 

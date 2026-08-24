@@ -12,8 +12,15 @@ from src.vde_app.comparison_report_charts import (
     build_fe_vde_figure,
     build_grouped_bar_figure,
     build_lineage_waterfall_chart,
+    build_walk_chart,
 )
-from src.vde_app.comparison_report_viewmodels import ExploreBarRow, ExploreLineRow, ExploreScatterPoint, LineageStep
+from src.vde_app.comparison_report_viewmodels import (
+    ExploreBarRow,
+    ExploreLineRow,
+    ExploreScatterPoint,
+    LineageStep,
+    WalkRow,
+)
 
 
 class GroupedBarFigureTests(unittest.TestCase):
@@ -78,6 +85,31 @@ class FeVdeFigureTests(unittest.TestCase):
     def test_no_lines_no_points_returns_empty_figure(self):
         fig = build_fe_vde_figure([], [], x_title="x", y_title="y")
         self.assertEqual(len(fig.data), 0)
+
+    def test_guide_lines_are_restrained_and_not_in_legend(self):
+        # Package 8F polish: guides are visually secondary to scenario points
+        # -- muted color, no legend entry (a direct end-of-line label is used
+        # instead of a legend, per the approved presentation requirements).
+        points = [{"label": "Reference", "role": "REFERENCE", "x": 1.24, "y": 6.0, "provenance": "HOMOLOGATED", "is_temporary_net": False, "revision_status": None}]
+        lines = [{"eta": 0.3, "x": [0.2, 1.2], "y": [0.6, 3.6]}]
+        fig = build_fe_vde_figure(points, lines, x_title="x", y_title="y")
+        line_trace = fig.data[0]
+        self.assertFalse(line_trace.showlegend)
+        self.assertIn("rgba", line_trace.line.color)
+        marker_trace = fig.data[-1]
+        self.assertNotEqual(marker_trace.showlegend, False)  # scenario markers stay visible/dominant
+
+    def test_guide_lines_get_a_direct_eta_label_annotation(self):
+        lines = [{"eta": 0.3, "x": [0.2, 1.2], "y": [0.6, 3.6]}, {"eta": 0.35, "x": [0.2, 1.2], "y": [0.5, 3.1]}]
+        fig = build_fe_vde_figure([], lines, x_title="x", y_title="y")
+        self.assertEqual(len(fig.layout.annotations), 2)
+        labels = {a.text for a in fig.layout.annotations}
+        self.assertEqual(labels, {"η=0.30", "η=0.35"})
+
+    def test_no_lines_produces_no_annotations(self):
+        points = [{"label": "Reference", "role": "REFERENCE", "x": 1.24, "y": 6.0, "provenance": "HOMOLOGATED", "is_temporary_net": False, "revision_status": None}]
+        fig = build_fe_vde_figure(points, [], x_title="x", y_title="y")
+        self.assertEqual(len(fig.layout.annotations), 0)
 
 
 class CycleDemandFigureTests(unittest.TestCase):
@@ -235,6 +267,59 @@ class LineageWaterfallChartTests(unittest.TestCase):
         fig = build_lineage_waterfall_chart(steps, y_title="VDE TOTAL [MJ/km]")
         waterfall_trace = fig.data[0]
         self.assertEqual(len(waterfall_trace.x), 1)  # only the baseline is plotted
+
+
+class WalkChartTests(unittest.TestCase):
+    """Package 8F Increment 5 -- ABSOLUTE rows are full bars from 0; DELTA
+    rows are floating bars whose base is derived exactly from
+    absolute_value - delta_value, never from a running cumulative total
+    (this builder is not a Waterfall)."""
+
+    def _row(self, item_id, label, display_mode, status, absolute_value, delta_value=None, semantic=None, target_gap=None):
+        formatted_abs = "-" if absolute_value is None else f"{absolute_value:.3f}"
+        formatted_delta = None if delta_value is None else f"{delta_value:+.3f}"
+        return WalkRow(
+            item_id=item_id, label=label, display_mode=display_mode, status=status,
+            absolute_value=absolute_value, formatted_absolute_value=formatted_abs,
+            delta_value=delta_value, formatted_delta=formatted_delta,
+            delta_base_item_id=None, delta_base_label=None, semantic=semantic,
+            advances_anchor=True, target_gap=target_gap, provenance="ESTIMATED",
+            role="COMPARISON", presentation_role=None, is_current=False,
+        )
+
+    def test_no_ok_rows_returns_empty_figure_without_crash(self):
+        rows = [self._row("fc:1", "A", "ABSOLUTE", "UNAVAILABLE", None)]
+        fig = build_walk_chart(rows, y_title="Fuel [L/100km]")
+        self.assertIsInstance(fig, go.Figure)
+        self.assertEqual(len(fig.data), 0)
+
+    def test_absolute_row_bases_at_zero(self):
+        rows = [self._row("fc:1", "Reference", "ABSOLUTE", "OK", 6.0)]
+        fig = build_walk_chart(rows, y_title="Fuel [L/100km]")
+        self.assertEqual(list(fig.data[0].base), [0.0])
+        self.assertEqual(list(fig.data[0].y), [6.0])
+
+    def test_delta_row_floats_between_base_and_absolute_value(self):
+        # absolute_value=5.6, delta_value=-0.4 -> base value must be 6.0
+        rows = [self._row("fc:2", "Proposal A", "DELTA", "OK", 5.6, delta_value=-0.4, semantic="BETTER")]
+        fig = build_walk_chart(rows, y_title="Fuel [L/100km]")
+        self.assertAlmostEqual(fig.data[0].base[0], 6.0, places=6)
+        self.assertAlmostEqual(fig.data[0].y[0], -0.4, places=6)
+
+    def test_non_ok_rows_excluded_from_plotted_bars(self):
+        rows = [
+            self._row("fc:1", "A", "ABSOLUTE", "OK", 6.0),
+            self._row("fc:2", "B", "DELTA", "INVALID_CONFIG", None),
+        ]
+        fig = build_walk_chart(rows, y_title="Fuel [L/100km]")
+        self.assertEqual(len(fig.data[0].x), 1)
+
+    def test_target_line_added_only_when_target_value_given(self):
+        rows = [self._row("fc:1", "A", "ABSOLUTE", "OK", 6.0)]
+        fig_no_target = build_walk_chart(rows, y_title="Fuel [L/100km]")
+        fig_with_target = build_walk_chart(rows, y_title="Fuel [L/100km]", target_value=5.5)
+        self.assertEqual(len(fig_no_target.layout.shapes), 0)
+        self.assertEqual(len(fig_with_target.layout.shapes), 1)
 
 
 if __name__ == "__main__":

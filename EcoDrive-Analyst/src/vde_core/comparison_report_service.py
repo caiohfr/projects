@@ -192,7 +192,15 @@ class ComparisonItem:
 
 @dataclass(frozen=True)
 class ComparisonDataset:
-    reference: ComparisonItem
+    """`reference` is optional (Package 8F) -- a dataset may legitimately hold
+    only Comparison-role items (e.g. a benchmark-only review with no
+    Reference). Nothing here ever fabricates a Reference when one wasn't
+    selected; callers that need a Reference-relative delta must guard on
+    `reference is not None` themselves (compare_metric still requires two
+    real ComparisonItems -- it is a pairwise primitive, not dataset state).
+    """
+
+    reference: ComparisonItem | None
     comparisons: tuple[ComparisonItem, ...]
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
@@ -633,7 +641,7 @@ def build_scenario_comparison_item(
 
 
 def build_comparison_dataset(
-    reference_spec: dict[str, Any],
+    reference_spec: dict[str, Any] | None,
     comparison_specs: list[dict[str, Any]],
     *,
     temporary_transmission_by_vde_id: dict[int, dict[str, Any]] | None = None,
@@ -643,8 +651,17 @@ def build_comparison_dataset(
     (Sec 6 -- no N+1, including when several scenarios share one VDE). Each
     distinct fuelcons_id is still fetched once (selecting specific,
     individually-chosen scenarios is not a batchable relation).
+
+    reference_spec is optional (Package 8F): pass None for a Reference-less
+    dataset (e.g. a benchmark-only review). At least one of reference_spec /
+    comparison_specs must resolve to an item -- this never silently produces
+    an empty dataset, and it never promotes a comparison_specs entry into the
+    Reference slot.
     """
-    all_specs = [reference_spec, *comparison_specs]
+    if reference_spec is None and not comparison_specs:
+        raise ValueError("At least one scenario or VDE must be selected.")
+
+    all_specs = ([reference_spec] if reference_spec is not None else []) + list(comparison_specs)
     temp_by_vde = temporary_transmission_by_vde_id or {}
 
     fuelcons_rows: dict[int, dict[str, Any]] = {}
@@ -686,9 +703,10 @@ def build_comparison_dataset(
             )
         raise ValueError(f"Unknown comparison spec kind: {kind!r}")
 
-    reference = build_one(reference_spec, ComparisonRole.REFERENCE)
+    reference = build_one(reference_spec, ComparisonRole.REFERENCE) if reference_spec is not None else None
     comparisons = tuple(build_one(spec, ComparisonRole.COMPARISON) for spec in comparison_specs)
-    warnings = tuple(dict.fromkeys(w for item in (reference, *comparisons) for w in item.warnings))
+    all_items = ((reference,) if reference is not None else ()) + comparisons
+    warnings = tuple(dict.fromkeys(w for item in all_items for w in item.warnings))
     return ComparisonDataset(reference=reference, comparisons=comparisons, warnings=warnings)
 
 
@@ -800,8 +818,8 @@ def list_comparison_scenarios(filters: Mapping[str, Any] | None = None) -> list[
     filters = filters or {}
     sql = (
         "SELECT f.id AS fuelcons_id, f.vde_id, f.electrification, f.fuel_type, "
-        "f.record_origin, f.created_at, "
-        "v.make, v.model, v.year, v.category, v.legislation "
+        "f.record_origin, f.created_at, f.engine_max_power_kw, "
+        "v.make, v.model, v.year, v.category, v.legislation, v.engine_size_l "
         "FROM fuelcons_db f JOIN vde_db v ON v.id = f.vde_id WHERE 1=1"
     )
     params: list[Any] = []
@@ -899,7 +917,12 @@ def _check_metric_compatibility(
     return True, False
 
 
-def _semantic_for(direction: MetricDirection, absolute_delta: float) -> str | None:
+def semantic_for_delta(direction: MetricDirection, absolute_delta: float) -> str | None:
+    """The single canonical BETTER/WORSE/SAME rule, derived purely from a
+    metric's Registry direction and a signed delta (actual - base). Shared by
+    compare_metric() and, since Package 8F, Target gap evaluation -- neither
+    duplicates this sign logic.
+    """
     if direction not in (MetricDirection.LOWER_IS_BETTER, MetricDirection.HIGHER_IS_BETTER):
         return None
     if absolute_delta == 0:
@@ -966,7 +989,7 @@ def compare_metric(reference_item: ComparisonItem, comparison_item: ComparisonIt
     result.update(
         absolute_delta=absolute_delta,
         percent_delta=percent_delta,
-        semantic=_semantic_for(metric.direction, absolute_delta),
+        semantic=semantic_for_delta(metric.direction, absolute_delta),
     )
     return result
 
@@ -998,6 +1021,7 @@ __all__ = [
     "list_comparison_scenarios",
     "list_vde_catalog",
     "compare_metric",
+    "semantic_for_delta",
     "extract_metric_value",
     "LineageChainStatus",
     "LineageChainNode",

@@ -121,7 +121,7 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
     def test_roadload_direct_vde_mode_works_without_fuelcons(self):
         app = AppTest.from_file(str(PAGE_PATH))
         app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
-        app.session_state["roadload_source_mode"] = "Select VDEs directly"
+        app.session_state["roadload_source_mode"] = "Select physical VDEs directly"
         app.session_state["comparison_direct_vde_selection"] = SelectionState(
             reference_fuelcons_id=900001, comparison_fuelcons_ids=(900002,)
         )

@@ -1,10 +1,13 @@
 # src/vde_app/components/comparison_report.py
 # -----------------------------------------------------------------------------
-# Package 8B/8C - dedicated Comparison Report UI owner. Replaces
-# pwt_fuel_energy.py as the entry point for the Comparison product; the old
-# renderer (Scenario Compare / Method Analysis / Peers & Outlook / Saved
-# Estimates) stays intact and reachable behind "Legacy comparison tools"
-# until 8D absorbs its remaining useful capabilities.
+# Package 8B-8E - dedicated Comparison Report UI owner (Scorecard, Dashboard,
+# Roadload & VDE, Explore). Replaces pwt_fuel_energy.py as the entry point for
+# the Comparison product. The old renderer's Scenario Compare tab is fully
+# superseded by the Scorecard above and is not linked from here; its other
+# three sub-tabs (Method Analysis, Peers & Outlook, Saved Estimates) are
+# Powertrain-Scenario-owned capabilities with no Comparison equivalent, and
+# stay reachable behind "Legacy comparison tools" (see _render_legacy_bridge)
+# indefinitely -- not as a placeholder pending a future package.
 #
 # This module never queries SQLite directly -- it only calls
 # comparison_report_service.py / comparison_report_viewmodels.py /
@@ -153,6 +156,15 @@ def _index_of(value, ordered_values: list) -> int:
         return 0
 
 
+def _no_reference_message(action: str, *, allow_direct_vde: bool = False) -> str:
+    """Single wording source for the "nothing selected yet" empty state (Sec 13)
+    -- every tab shares the same subject/verb pattern, only the action clause
+    (what this section needs the selection for) differs.
+    """
+    subject = "reference scenario or VDE" if allow_direct_vde else "reference scenario"
+    return f"Select a {subject} to begin {action}."
+
+
 def _render_exclusions(excluded: list[dict]) -> None:
     if not excluded:
         return
@@ -291,7 +303,7 @@ def _render_section(section: ScorecardSection, header_titles: list[str]) -> None
 
 def _render_scorecard_tab(dataset: ComparisonDataset | None) -> None:
     if dataset is None:
-        st.info("Select a reference scenario to begin comparison.")
+        st.info(_no_reference_message("comparison"))
         return
 
     warnings = dataset_warnings_summary(dataset)
@@ -395,7 +407,7 @@ def _render_fe_vde(dataset: ComparisonDataset, unit_system: str) -> None:
     fuel_type = (dataset.reference.fuel_energy or {}).get("fuel_type") if mode == "volumetric" else None
     lines = build_iso_pse_lines(x_min, x_max, _DEFAULT_ETA_LINES[mode], mode=mode, fuel_type=fuel_type)
 
-    x_title = f"VDE {boundary} [{unit_label('energy_per_distance', unit_system)}]"
+    x_title = metric_axis_label(get_metric(f"vde_{boundary.lower()}"), unit_system)
     fig = build_fe_vde_figure(points, lines, x_title=x_title, y_title=_FE_VDE_Y_TITLE[mode])
     st.plotly_chart(fig, width="stretch")
 
@@ -423,7 +435,7 @@ def _render_competitor_delta(dataset: ComparisonDataset) -> None:
 
 def _render_dashboard_tab(dataset: ComparisonDataset | None) -> None:
     if dataset is None:
-        st.info("Select a reference scenario to begin comparison.")
+        st.info(_no_reference_message("comparison"))
         return
 
     unit_system = normalize_unit_system(st.session_state.get("unit_system"))
@@ -674,15 +686,17 @@ def _render_cycle_demand_section(dataset: ComparisonDataset, boundaries: list[st
 
 def _render_roadload_tab(scorecard_dataset: ComparisonDataset | None) -> None:
     source = st.radio(
-        "Source", ["VDEs linked to selected scenarios", "Select VDEs directly"], key="roadload_source_mode"
+        "Source",
+        ["VDEs linked to selected complete scenarios", "Select physical VDEs directly"],
+        key="roadload_source_mode",
     )
     specs = (
         _render_direct_vde_selection()
-        if source == "Select VDEs directly"
+        if source == "Select physical VDEs directly"
         else _linked_vde_specs(scorecard_dataset)
     )
     if specs is None:
-        st.info("Select a reference scenario/VDE to begin physical analysis.")
+        st.info(_no_reference_message("physical analysis", allow_direct_vde=True))
         return
 
     temp_by_vde = st.session_state.setdefault(_TEMP_TRANSMISSION_KEY, {})
@@ -962,7 +976,7 @@ def _render_explore_tab(scorecard_dataset: ComparisonDataset | None) -> None:
     temp_by_vde = st.session_state.setdefault(_TEMP_TRANSMISSION_KEY, {})
     dataset = _build_explore_dataset(source, scorecard_dataset, temp_by_vde)
     if dataset is None:
-        st.info("Select a reference scenario/VDE to begin exploring.")
+        st.info(_no_reference_message("exploring", allow_direct_vde=True))
         return
 
     warnings = dataset_warnings_summary(dataset)
@@ -988,9 +1002,10 @@ def _render_legacy_bridge() -> None:
     st.divider()
     with st.expander("Legacy comparison tools", expanded=False):
         st.caption(
-            "Scenario Compare, Method Analysis, Peers & Outlook, and Saved Estimates from the previous "
-            "Comparison Report. Kept temporarily; capabilities move into Scorecard, Dashboard, and "
-            "Roadload & VDE as those packages land, and this section will be retired."
+            "Method Analysis, Peers & Outlook, and Saved Estimates from the previous Comparison Report remain "
+            "here -- they are Powertrain Scenario capabilities (ML method explanation, DB-wide peer "
+            "benchmarking, saved-estimate management) with no equivalent above. The Scenario Compare tab below "
+            "is superseded by the Scorecard tab above; prefer that one for Reference-relative comparison."
         )
         vde_id, vde_row = resolve_comparison_report_anchor()
         if not vde_id:

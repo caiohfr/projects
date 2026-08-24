@@ -58,6 +58,94 @@ Lineage, and the Metric Registry are unchanged.
    missing field is never coerced to 0, and a range only excludes rows once
    the caller actually narrows it off its default.
 
+## Final accepted state (reference checklist)
+
+**Product identity:** Program Energy & Fuel Economy Review.
+
+**Tabs:**
+1. Program Review
+2. Energy Drivers
+3. Technical Scorecard
+4. Explore
+
+**Selection semantics:**
+- Reference is optional.
+- Comparison selection can contain up to the UI limit (`MAX_COMPARISONS`).
+- Filters are candidate-search tools only.
+- Changing Make / Category / Legislation / Electrification / Displacement /
+  Power / Provenance does NOT invalidate or remove already-selected
+  scenarios.
+- Selected scenarios may legitimately span different current filter values.
+
+**Presentation semantics:**
+- Proposal and Benchmark are presentation roles (`PresentationRole`).
+- Current is a designation, not a mutually exclusive scenario role.
+- Target is a KPI-specific session overlay, not a scenario.
+- No role is inferred from timestamp, provenance, or lineage.
+
+**KPI Walk:**
+- Underlying KPI values remain absolute.
+- Presentation can be ABSOLUTE or DELTA (`WalkDisplayMode`).
+- Delta base can be previous walk state, Reference, or an explicit item
+  (`WalkDeltaBase`).
+- Context bars do not need to advance the walk anchor.
+- The safe default with no walk configuration is absolute comparison
+  (`default_walk_steps`).
+- Physical VDE lineage is independent from presentation walk order.
+
+**Program Review tab:** Primary KPI, KPI Walk / KPI Comparison (hero chart),
+Demand vs Efficiency, equi-PSE guides, compact Energy & Demand Summary.
+
+**Energy Drivers tab:** compact Physical Setup evidence, Roadload Force
+Curve, compact ABC evidence, real VDE by regulatory phase, Demanded Power.
+
+**Technical Scorecard tab:** audit/evidence-oriented metric view.
+
+**Explore tab:** custom analysis, explicit physical VDE lineage.
+
+## Sprint 8 final micro-polish - adaptive equi-PSE guides
+
+After the fuel-normalization/PSE mini-package acceptance (below), one small
+presentation-only correction was made to Demand vs Efficiency: the equi-PSE
+guide lines were hard-coded at fixed values (20/25/30/35% for
+volumetric/energy-normalized, 85/90/95% for electrical) regardless of what
+was actually plotted, which could visually misrepresent the selected
+scenarios' real PSE range. `compute_adaptive_pse_guides()` (new, pure, in
+`comparison_report_viewmodels.py`) now sizes the guide set to the PSE values
+of the currently plotted points: it snaps the plotted [min, max] PSE span to
+a clean 2.5/5/10/20 percentage-point grid, padding by one grid step on each
+side so a single or narrow-range point still gets surrounding context, and
+keeps the result to 3-5 guides. `_render_fe_vde()` uses this as the primary
+source and falls back to the old fixed set only in the (currently
+unobserved) case where no plotted point yields a computable PSE -- that
+fallback is safe because `build_iso_pse_lines()` remains the sole authority
+on whether a line is defensible at all for a given mode/fuel_type and
+independently returns no lines for an unmappable basis regardless of which
+eta values were passed in.
+
+No PSE physics changed: the adaptive guide values are computed with the
+exact same inverted PSE ratio `build_iso_pse_lines()` already draws lines
+from (`pse = demand_mj_per_km / consumed_mj_per_km`, per point). All prior
+Sprint 8/8F semantics are unchanged by this polish: Tier 2 Cert Gasoline
+normalization, canonical/assumed LHV provenance, volumetric fuel-family
+compatibility, `established_family` affecting point inclusion only, the
+equi-PSE energy basis staying anchor-specific, TOTAL/NET behavior (no
+TOTAL/NET fallback), and unresolved/incompatible fuel handling are all
+untouched -- an unmappable anchor fuel type still yields zero guides (`()`),
+never a fabricated adaptive set, matching `build_iso_pse_lines()`'s existing
+"no defensible line" rule.
+
+New tests (`AdaptivePseGuideTests` in `test_comparison_report_viewmodels.py`)
+cover: guides adapting to a low-PSE and a high-PSE plotted range, a narrow/
+single-point range producing useful surrounding guides, guide count staying
+in [3, 5] across ranges, generated line labels matching the computed guide
+values, an unresolved/unmappable volumetric fuel type producing zero
+fabricated guides, a degenerate non-positive x/y point producing zero
+guides rather than a division artifact, and the volumetric-mode guides
+reusing the exact same resolved LHV basis as Tier 2 Cert Gasoline vs plain
+Gasoline (identical family -> identical guides). Focused Comparison suite
+after this change: 289 tests, OK.
+
 ## Fuel-normalization / PSE mini-package (final acceptance round)
 
 Scope: the Demand vs Efficiency chart's volumetric-mode fuel-family
@@ -150,15 +238,47 @@ Carried forward from 8C/8E, still true, not addressed in 8F:
 - **Browser-level visual regression testing is not automated** - still true,
   no browser tool available in this environment.
 
+## Known limitations / future work (explicitly outside Sprint 8)
+
+**Engineering / next physical analysis:**
+- Rolling Energy, Aero Energy, Positive Inertial Energy, and Other/Residual
+  as distinct decomposed energy terms; a richer VDE physical decomposition
+  in general.
+- Decomposition invariant that any future work in this area must preserve:
+  the measured/resolved total roadload remains authoritative. Known
+  component contributions must NOT be presented as a complete physical
+  decomposition unless they reconcile with that total, and a residual/
+  unknown contribution must remain representable rather than silently
+  absorbed into a named term.
+
+**Future Powertrain:**
+- A richer Powertrain Scenario architecture.
+- Operating-point analysis (gear / RPM / torque).
+- BSFC / efficiency maps.
+- Hybrid supervisory logic at later fidelity levels.
+
+**Future product:**
+- Quick Proposal.
+- Agent/copilot workflows.
+- RAG.
+- ML-assisted analytics.
+- Automated benchmark / peer analytics.
+
+None of the above is part of Sprint 8's delivered scope; they are recorded
+here only so the closure document doesn't imply they were considered and
+rejected.
+
 ## Regression
 
 Focused (`test_comparison_report_viewmodels`, `test_comparison_report_page_smoke`,
 `test_comparison_report_charts`, `test_fuel_energy`, `test_comparison_report_service`):
-**280 tests, OK.**
+**289 tests, OK** (includes the 9 new `AdaptivePseGuideTests`).
 
-Full suite (`python -m unittest discover -s tests`): **1140 tests, 1138 pass,
-2 known pre-existing failures** in `test_vde_request_resolver.py`
+Full suite (`python -m unittest discover -s tests`), run after the adaptive
+equi-PSE guide micro-polish: **1149 tests, 1147 pass, 2 known pre-existing
+failures** in `test_vde_request_resolver.py`
 (`test_component_lookup_provenance_does_not_change_parasitic_math`,
 `test_axle_hubs_lookup_snapshot_preserves_boundary_metadata`) - unrelated to
-Comparison, unchanged from the pre-8F baseline. Zero new failures introduced
-by 8F.
+Comparison, unchanged from the pre-8F baseline (1140 tests, same 2 failures,
+before the 9 adaptive-guide tests were added). Zero new failures introduced
+by 8F or its micro-polish.

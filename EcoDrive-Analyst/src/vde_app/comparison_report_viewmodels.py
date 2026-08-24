@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Mapping, Sequence
@@ -1333,6 +1334,92 @@ def build_iso_pse_lines(
     return lines
 
 
+# -----------------------------------------------------------------------------
+# Adaptive equi-PSE guide values (Sprint 8 micro-polish)
+#
+# Presentation-only sizing of which PSE contours to draw -- reuses the exact
+# same PSE ratio build_iso_pse_lines() already draws from (never a new
+# physics definition), and the same anchor-specific fuel basis rule: no
+# adaptive guides are fabricated when that basis isn't defensible for the
+# mode/fuel_type, matching build_iso_pse_lines()'s own empty-list behavior.
+# -----------------------------------------------------------------------------
+
+
+def _pse_for_point(x: Any, y: Any, *, mode: str, lhv: float | None) -> float | None:
+    if x is None or y is None:
+        return None
+    x = float(x)
+    y = float(y)
+    if x <= 0 or y <= 0:
+        return None
+    if mode == "volumetric":
+        if lhv is None or lhv <= 0:
+            return None
+        consumed_mj_per_km = (y / 100.0) * lhv
+        return x / consumed_mj_per_km if consumed_mj_per_km > 0 else None
+    if mode == "energy_normalized":
+        return x / y
+    if mode == "electrical":
+        return x * MJ_TO_Wh / y
+    return None
+
+
+def _nice_pse_guides(pse_values: Sequence[float]) -> tuple[float, ...]:
+    """Snaps the actual [min, max] PSE span to a clean 2.5/5/10/20
+    percentage-point grid, padding by one grid step on each side so a
+    single/narrow point still gets surrounding context rather than sitting
+    exactly on the chart edge, and keeps the result to 3-5 guides.
+    """
+    lo, hi = min(pse_values), max(pse_values)
+    for step_pct in (2.5, 5.0, 10.0, 20.0):
+        step = step_pct / 100.0
+        first = math.floor(lo / step) * step
+        last = math.ceil(hi / step) * step
+        if first >= lo:
+            first -= step
+        if last <= hi:
+            last += step
+        count = round((last - first) / step) + 1
+        while count < 3:
+            first -= step
+            last += step
+            count = round((last - first) / step) + 1
+        if count <= 5:
+            return tuple(round(first + i * step, 6) for i in range(count))
+    step = 0.20
+    first = math.floor(lo / step) * step
+    return tuple(round(first + i * step, 6) for i in range(5))
+
+
+def compute_adaptive_pse_guides(
+    points: Sequence[Mapping[str, Any]], *, mode: str, fuel_type: str | None = None
+) -> tuple[float, ...]:
+    """Equi-PSE guide values sized to what's actually plotted, replacing a
+    fixed guide set with one centered on the plotted scenarios' own PSE
+    range. Returns () -- no fabricated guides -- when the mode/fuel_type
+    basis can't support a defensible line at all (mirrors
+    build_iso_pse_lines()'s own rule) or when no plotted point yields a
+    computable PSE.
+    """
+    lhv = None
+    if mode == "volumetric":
+        basis = resolve_fuel_energy_basis(fuel_type)
+        if not basis.available:
+            return ()
+        lhv = basis.lhv_mj_per_l
+    elif mode not in ("energy_normalized", "electrical"):
+        return ()
+
+    pse_values = [
+        pse
+        for pse in (_pse_for_point(p.get("x"), p.get("y"), mode=mode, lhv=lhv) for p in points)
+        if pse is not None
+    ]
+    if not pse_values:
+        return ()
+    return _nice_pse_guides(pse_values)
+
+
 def build_competitor_delta_rows(
     dataset: ComparisonDataset, metric_key: str
 ) -> dict[str, list]:
@@ -1971,6 +2058,7 @@ __all__ = [
     "is_temporary_net",
     "build_fe_vde_points",
     "build_iso_pse_lines",
+    "compute_adaptive_pse_guides",
     "build_competitor_delta_rows",
     "ExploreDimension",
     "list_explore_dimensions",

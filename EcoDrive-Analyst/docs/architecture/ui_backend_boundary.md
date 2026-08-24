@@ -110,12 +110,20 @@ components/vde_setup.py
 
 ### Comparison Report
 
-Page flow:
+Page flow (current since the Sprint 8 Comparison Report closure -- see
+`docs/sprints/PACKAGE_8E_COMPARISON_FREEZE.md` and
+`docs/sprints/PACKAGE_8F_PROGRAM_REVIEW_REDESIGN.md`):
 
 ```text
 pages/Comparison_Report.py
-    -> comparison_report_service.py
-    -> cycles / phase aggregation helpers
+    -> components/comparison_report.py       (Streamlit UI: Program Review /
+                                               Energy Drivers / Technical
+                                               Scorecard / Explore)
+    -> comparison_report_charts.py           (pure Plotly figure builders)
+    -> comparison_report_viewmodels.py       (vde_app, pure, no Streamlit import)
+    -> comparison_metric_registry.py         (single KPI/dimension source)
+    -> comparison_report_service.py          (vde_core, canonical, Streamlit-free)
+    -> fuelcons_db / vde_db (SQLite)
 ```
 
 ## Why This Boundary Matters

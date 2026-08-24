@@ -57,6 +57,7 @@ from src.vde_app.comparison_report_viewmodels import (
     build_explore_scatter_points,
     build_fe_vde_points,
     build_iso_pse_lines,
+    compute_adaptive_pse_guides,
     build_lineage_waterfall,
     build_roadload_curve_rows,
     build_scenario_header,
@@ -874,7 +875,15 @@ def _render_fe_vde(dataset: ComparisonDataset, unit_system: str) -> None:
         span = x_max - x_min
         x_min, x_max = x_min - span * 0.2, x_max + span * 0.2
     fuel_type = points_result.get("anchor_fuel_type") if mode == "volumetric" else None
-    lines = build_iso_pse_lines(x_min, x_max, _DEFAULT_ETA_LINES[mode], mode=mode, fuel_type=fuel_type)
+    # Guide values are sized to what's actually plotted (Sprint 8 micro-polish)
+    # rather than a fixed 20/25/30/35 set; the fixed set is only a fallback
+    # for the rare case no plotted point yields a computable PSE. Either way
+    # build_iso_pse_lines() is the sole authority on whether a line is
+    # defensible at all for this mode/fuel_type -- it independently returns
+    # [] for an unmappable basis regardless of which eta_values were passed,
+    # so this fallback never risks fabricating a guide.
+    eta_values = compute_adaptive_pse_guides(points, mode=mode, fuel_type=fuel_type) or _DEFAULT_ETA_LINES[mode]
+    lines = build_iso_pse_lines(x_min, x_max, eta_values, mode=mode, fuel_type=fuel_type)
     if not lines and mode == "volumetric":
         st.caption(
             "Equi-PSE guides aren't available in Volumetric mode for this fuel family "

@@ -156,9 +156,10 @@ implementation.
 
 - Sprint 9 start (post-8E, pre-9A): 1149 tests, 1147 passing, 2 known
   pre-existing failures.
-- Sprint 9 close (post-9E): see "Full test count/result" in the 9E
-  completion report -- same 2 known pre-existing failures throughout,
-  zero Sprint 9 regressions at any package boundary.
+- Sprint 9 close (post-9E): **1268 tests, 1266 passing**, the same 2 known
+  pre-existing failures throughout, zero Sprint 9 regressions at any
+  package boundary (9A: 1172/1170; 9B: 1196/1194; 9C: 1238/1236;
+  9D: 1262/1260; 9E: 1268/1266).
 - Known pre-existing failures (unrelated to Sprint 9, not touched by any
   Sprint 9 package): `tests/test_vde_request_resolver.py`, 2 failures
   (component-snapshot/axle-hubs).
@@ -400,17 +401,24 @@ environment, consistent with every prior Comparison package):
 ### Full test count/result
 
 Full suite (`python -m unittest discover -s tests`) after all 9E changes:
-see the completion report posted at the end of this package for the exact
-final count; expected and confirmed: **same 2 known pre-existing
-failures, zero new regressions** (all Sprint 9A-9D regression baselines
-were already zero-regression at their own checkpoints, and this package
-adds only new, additive tests plus two small presentation-layer edits
-already covered by dedicated new tests above).
+**1268 tests, 1266 passing** (1262 post-9D + 6 new: 5 breakdown-chart
+tests + 1 AppTest Smoke F), the same 2 known pre-existing failures, **zero
+new regressions** (all Sprint 9A-9D regression baselines were already
+zero-regression at their own checkpoints, and this package adds only new,
+additive tests plus two small presentation-layer edits already covered by
+dedicated new tests above).
 
 ### Known pre-existing failures
 
 Unchanged: `tests/test_vde_request_resolver.py`, 2 failures (component-
 snapshot/axle-hubs). Not touched by Sprint 9 at any point.
+
+### Commit(s)
+
+`600143cb` on branch `sprint-9a-vehicle-demand-contracts` - "docs(vehicle-demand):
+polish, document, and freeze Sprint 9". Sprint 9's full commit sequence on
+this branch: `cae884c0`/`91913320` (9A), `66f1bc7a`/`1b3dd9cf` (9B),
+`d35b994a`/`9f474ac5` (9C), `409902af`/`3f359d85` (9D), `600143cb` (9E).
 
 ### Freeze statement
 

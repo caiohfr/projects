@@ -44,6 +44,7 @@ from src.vde_app.comparison_report_viewmodels import (
     build_reference_summary,
     build_roadload_curve_rows,
     build_scenario_header,
+    build_scenario_browse_rows,
     build_scenario_options,
     build_scorecard_sections,
     dataset_items,
@@ -648,6 +649,112 @@ class ScenarioOptionTests(unittest.TestCase):
         self.assertFalse(option.label.startswith("1"))
         self.assertFalse(option.label.startswith("#"))
         self.assertIn("QA Baseline", option.label)
+
+    def test_label_includes_vde_id_and_fuelcons_id_to_disambiguate_identical_vehicle_names(self):
+        rows = [
+            {"fuelcons_id": 10, "vde_id": 900001, "make": "HYUNDAI", "model": "G80", "year": 2020, "legislation": "EPA", "electrification": "ICE", "record_origin": "HOMOLOGATED"},
+            {"fuelcons_id": 11, "vde_id": 900002, "make": "HYUNDAI", "model": "G80", "year": 2020, "legislation": "EPA", "electrification": "ICE", "record_origin": "ESTIMATED"},
+        ]
+        first, second = build_scenario_options(rows)
+        self.assertIn("VDE 900001", first.label)
+        self.assertIn("FC 10", first.label)
+        self.assertIn("VDE 900002", second.label)
+        self.assertIn("FC 11", second.label)
+        self.assertNotEqual(first.label, second.label)
+
+    def test_label_falls_back_to_fuelcons_id_only_when_vde_id_missing(self):
+        rows = [{"fuelcons_id": 5, "vde_id": None, "make": "QA", "model": "Orphan", "year": 2026, "legislation": "EPA", "electrification": "ICE", "record_origin": "HOMOLOGATED"}]
+        option = build_scenario_options(rows)[0]
+        self.assertIn("FC 5", option.label)
+        self.assertNotIn("VDE", option.label)
+
+
+class ScenarioBrowseRowsTests(unittest.TestCase):
+    def test_maps_scorecard_equivalent_fields_into_display_columns(self):
+        rows = [
+            {
+                "fuelcons_id": 1,
+                "vde_id": 900001,
+                "make": "QA",
+                "model": "Nominal EPA baseline",
+                "year": 2026,
+                "legislation": "EPA",
+                "category": "Car",
+                "cycle_name": "EPA_FTP75_HWFET",
+                "electrification": "ICE",
+                "fuel_type": "Gasoline",
+                "engine_type": "ICE",
+                "drive_type": "FWD",
+                "transmission_type": "AUTOMATIC",
+                "transmission_status": "AVAILABLE",
+                "mass_kg": 1500.0,
+                "test_mass_kg": 1520.0,
+                "cda_m2": 0.65,
+                "rrc_N_per_kN": 8.5,
+                "coast_A_N": 100.0,
+                "coast_B_N_per_kph": 1.0,
+                "coast_C_N_per_kph2": 0.03,
+                "net_A_N": 80.0,
+                "net_B_N_per_kph": 0.8,
+                "net_C_N_per_kph2": 0.025,
+                "vde_total_mj_per_km": 2.5,
+                "vde_net_mj_per_km": 2.1,
+                "fuel_l_per_100km": 7.5,
+                "fuel_km_per_l": 13.3,
+                "energy_Wh_per_km": 650.0,
+                "gco2_per_km": 175.0,
+                "eta_pt_est": 0.32,
+                "gear_count": 8,
+                "final_drive_ratio": 3.5,
+                "record_origin": "HOMOLOGATED",
+                "vde_record_origin": "HOMOLOGATED",
+                "created_at": "2026-01-01T00:00:00",
+            }
+        ]
+
+        [row] = build_scenario_browse_rows(rows)
+
+        self.assertEqual(row["Fuelcons ID"], 1)
+        self.assertEqual(row["VDE ID"], 900001)
+        self.assertEqual(row["Make"], "QA")
+        self.assertEqual(row["Mass [kg]"], 1500.0)
+        self.assertEqual(row["CdA [m2]"], 0.65)
+        self.assertEqual(row["RRC [N/kN]"], 8.5)
+        self.assertEqual(row["Trans. status"], "AVAILABLE")
+        self.assertEqual(row["ABC TOTAL"], "100/1/0.03")
+        self.assertEqual(row["ABC NET"], "80/0.8/0.025")
+        self.assertEqual(row["VDE TOTAL [MJ/km]"], 2.5)
+        self.assertEqual(row["VDE NET [MJ/km]"], 2.1)
+        self.assertEqual(row["Fuel [L/100km]"], 7.5)
+        self.assertEqual(row["Scenario origin"], "HOMOLOGATED")
+        self.assertEqual(row["VDE origin"], "HOMOLOGATED")
+
+    def test_missing_net_abc_renders_as_dash_never_falls_back_to_total(self):
+        rows = [
+            {
+                "fuelcons_id": 2,
+                "vde_id": 900006,
+                "coast_A_N": 100.0,
+                "coast_B_N_per_kph": 1.0,
+                "coast_C_N_per_kph2": 0.03,
+                "net_A_N": None,
+                "net_B_N_per_kph": None,
+                "net_C_N_per_kph2": None,
+                "vde_total_mj_per_km": 2.5,
+                "vde_net_mj_per_km": None,
+                "transmission_status": "MISSING",
+            }
+        ]
+
+        [row] = build_scenario_browse_rows(rows)
+
+        self.assertEqual(row["ABC TOTAL"], "100/1/0.03")
+        self.assertEqual(row["ABC NET"], "-")
+        self.assertEqual(row["VDE NET [MJ/km]"], None)
+        self.assertNotEqual(row["ABC NET"], row["ABC TOTAL"])
+
+    def test_empty_catalog_yields_empty_rows(self):
+        self.assertEqual(build_scenario_browse_rows([]), [])
 
 
 # -----------------------------------------------------------------------------

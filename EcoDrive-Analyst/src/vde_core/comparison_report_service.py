@@ -865,6 +865,111 @@ def list_vde_catalog(filters: Mapping[str, Any] | None = None) -> list[dict[str,
     return db_module.fetchall(sql, tuple(params)) if params else db_module.fetchall(sql)
 
 
+_BROWSE_SELECT_SQL = (
+    # record_origin (unaliased, = f.record_origin) matches
+    # list_comparison_scenarios' own convention exactly, so this wider
+    # catalog is a drop-in superset callers already filtering/reading that
+    # field can reuse unchanged; vde_record_origin is the separate, new
+    # VDE-side origin this function additionally needs for canonical_vde_read.
+    "SELECT f.id AS fuelcons_id, f.vde_id, f.electrification, f.fuel_type, "
+    "f.record_origin, f.created_at, "
+    "f.gear_count, f.final_drive_ratio, f.engine_max_power_kw, f.battery_capacity_kwh, "
+    "f.fuel_l_per_100km, f.fuel_km_per_l, f.energy_Wh_per_km, f.gco2_per_km, f.eta_pt_est, "
+    "v.make, v.model, v.year, v.category, v.legislation, v.cycle_name, v.engine_size_l, "
+    "v.engine_type, v.transmission_type, v.drive_type, "
+    "v.record_origin AS vde_record_origin, "
+    "v.mass_kg, v.test_mass_kg, v.cda_m2, v.rrc_N_per_kN, "
+    "v.coast_A_N, v.coast_B_N_per_kph, v.coast_C_N_per_kph2, "
+    "v.trans_A_coef_N, v.trans_B_coef_Npkph, v.trans_C_coef_Npkph2, "
+    "v.vde_total_mj_per_km, v.vde_net_mj_per_km "
+    "FROM fuelcons_db f JOIN vde_db v ON v.id = f.vde_id WHERE 1=1"
+)
+
+
+def _apply_scenario_filters(sql: str, params: list[Any], filters: Mapping[str, Any]) -> str:
+    """The exact same 4 conditions list_comparison_scenarios applies,
+    factored out so this and list_comparison_scenarios_detailed can never
+    silently drift into filtering differently for the same filters dict.
+    """
+    if filters.get("make"):
+        sql += " AND v.make = ?"
+        params.append(filters["make"])
+    if filters.get("legislation"):
+        sql += " AND v.legislation = ?"
+        params.append(filters["legislation"])
+    if filters.get("electrification"):
+        sql += " AND f.electrification = ?"
+        params.append(filters["electrification"])
+    if filters.get("record_origin"):
+        sql += " AND f.record_origin = ?"
+        params.append(filters["record_origin"])
+    return sql
+
+
+def _enrich_browse_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Adds resolved NET ABC, transmission status, and canonical VDE TOTAL/
+    NET to one raw browse row. Reuses resolve_roadload_boundaries/
+    resolve_transmission_boundary/canonical_vde_read exactly as every other
+    Comparison path does -- pure, no DB access, no cycle work, so this is
+    safe to run per row even over the full catalog (unlike resolving a full
+    ComparisonItem, which also computes on-demand cycle/phase VDE).
+    """
+    row = dict(row)
+    vde_row = {
+        "coast_A_N": row.get("coast_A_N"),
+        "coast_B_N_per_kph": row.get("coast_B_N_per_kph"),
+        "coast_C_N_per_kph2": row.get("coast_C_N_per_kph2"),
+        "trans_A_coef_N": row.get("trans_A_coef_N"),
+        "trans_B_coef_Npkph": row.get("trans_B_coef_Npkph"),
+        "trans_C_coef_Npkph2": row.get("trans_C_coef_Npkph2"),
+        "vde_total_mj_per_km": row.get("vde_total_mj_per_km"),
+        "vde_net_mj_per_km": row.get("vde_net_mj_per_km"),
+        "record_origin": row.get("vde_record_origin"),
+    }
+    boundaries = resolve_roadload_boundaries(vde_row)
+    transmission = resolve_transmission_boundary(vde_row)
+    canonical_vde = canonical_vde_read(vde_row)
+
+    net_boundary = boundaries["net"]
+    row["net_A_N"] = net_boundary.A if net_boundary.available else None
+    row["net_B_N_per_kph"] = net_boundary.B if net_boundary.available else None
+    row["net_C_N_per_kph2"] = net_boundary.C if net_boundary.available else None
+    row["transmission_status"] = transmission.status.value
+    # Overwrite the raw stored columns with the canonical read -- a legacy/
+    # ambiguous row must never surface its raw vde_net_mj_per_km value here
+    # (Package 7G; same rule resolve_vde_aggregate applies for Comparison
+    # items).
+    row["vde_total_mj_per_km"] = canonical_vde.total_mj_per_km
+    row["vde_net_mj_per_km"] = canonical_vde.net_mj_per_km if canonical_vde.net_available else None
+    return row
+
+
+def list_comparison_scenarios_detailed(filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Wide fuelcons_db JOIN vde_db browse view for scenario discovery --
+    every field the Scorecard itself would show for a selected item (Mass,
+    CdA, RRC, ABC TOTAL/NET, transmission status, VDE TOTAL/NET, fuel
+    economy), so a user can spot which scenarios actually have usable data
+    before selecting one.
+
+    Deliberately a separate, heavier function from list_comparison_scenarios
+    (Sec 44's stated reason that one stays lightweight -- "never resolves ...
+    ABC work just to populate a selector" -- is exactly why this one exists
+    instead of extending it): the two serve different purposes and callers
+    should pick the one that matches their actual need, not the other way
+    around.
+
+    Same filters shape and matching rule as list_comparison_scenarios
+    (make/legislation/electrification/record_origin, matched against the
+    fuelcons scenario's own record_origin) -- see _apply_scenario_filters.
+    """
+    filters = filters or {}
+    params: list[Any] = []
+    sql = _apply_scenario_filters(_BROWSE_SELECT_SQL, params, filters)
+    sql += " ORDER BY f.created_at DESC"
+    rows = db_module.fetchall(sql, tuple(params)) if params else db_module.fetchall(sql)
+    return [_enrich_browse_row(row) for row in rows]
+
+
 # -----------------------------------------------------------------------------
 # Metric comparison (Sec 22-27)
 # -----------------------------------------------------------------------------
@@ -1019,6 +1124,7 @@ __all__ = [
     "build_scenario_comparison_item",
     "build_comparison_dataset",
     "list_comparison_scenarios",
+    "list_comparison_scenarios_detailed",
     "list_vde_catalog",
     "compare_metric",
     "semantic_for_delta",

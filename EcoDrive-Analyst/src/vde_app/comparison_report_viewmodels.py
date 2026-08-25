@@ -181,7 +181,10 @@ def build_scenario_options(catalog_rows: Sequence[dict[str, Any]]) -> list[Scena
         legislation = row.get("legislation")
         electrification = row.get("electrification")
         meta = " · ".join(str(x) for x in (year, legislation, electrification) if x)
-        label = f"{base_label} · {meta}" if meta else base_label
+        vehicle_label = f"{base_label} · {meta}" if meta else base_label
+        vde_id_value = row.get("vde_id")
+        id_suffix = f"(VDE {vde_id_value} · FC {row['fuelcons_id']})" if vde_id_value is not None else f"(FC {row['fuelcons_id']})"
+        label = f"{vehicle_label} {id_suffix}"
         options.append(
             ScenarioOption(
                 fuelcons_id=int(row["fuelcons_id"]),
@@ -197,6 +200,63 @@ def build_scenario_options(catalog_rows: Sequence[dict[str, Any]]) -> list[Scena
             )
         )
     return options
+
+
+def _abc_text(a: Any, b: Any, c: Any) -> str:
+    if a is None or b is None or c is None:
+        return "-"
+    return f"{float(a):.4g}/{float(b):.5g}/{float(c):.6g}"
+
+
+def build_scenario_browse_rows(catalog_rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Presentation rows for the scenario Browse table (Sec ~50s "Browse
+    Fuel Cons DB join VDE DB") -- every field the Scorecard itself would
+    show for a selected item, formatted for a plain st.dataframe (matches
+    VDE Setup's own "Browse VDE Database" table's style: a slash-joined
+    ABC string, plain numeric columns, no unit-system conversion). Input
+    rows come from comparison_report_service.list_comparison_scenarios_
+    detailed, already filtered by whatever candidate-search filters are
+    active -- this function only formats, it does not fetch or filter.
+    """
+    rows: list[dict[str, Any]] = []
+    for row in catalog_rows:
+        rows.append(
+            {
+                "Fuelcons ID": row.get("fuelcons_id"),
+                "VDE ID": row.get("vde_id"),
+                "Make": row.get("make"),
+                "Model": row.get("model"),
+                "Year": row.get("year"),
+                "Legislation": row.get("legislation"),
+                "Category": row.get("category"),
+                "Cycle": row.get("cycle_name"),
+                "Electrification": row.get("electrification"),
+                "Fuel type": row.get("fuel_type"),
+                "Engine": row.get("engine_type"),
+                "Drive": row.get("drive_type"),
+                "Transmission": row.get("transmission_type"),
+                "Trans. status": row.get("transmission_status"),
+                "Mass [kg]": row.get("mass_kg"),
+                "Test mass [kg]": row.get("test_mass_kg"),
+                "CdA [m2]": row.get("cda_m2"),
+                "RRC [N/kN]": row.get("rrc_N_per_kN"),
+                "ABC TOTAL": _abc_text(row.get("coast_A_N"), row.get("coast_B_N_per_kph"), row.get("coast_C_N_per_kph2")),
+                "ABC NET": _abc_text(row.get("net_A_N"), row.get("net_B_N_per_kph"), row.get("net_C_N_per_kph2")),
+                "VDE TOTAL [MJ/km]": row.get("vde_total_mj_per_km"),
+                "VDE NET [MJ/km]": row.get("vde_net_mj_per_km"),
+                "Fuel [L/100km]": row.get("fuel_l_per_100km"),
+                "Fuel [km/L]": row.get("fuel_km_per_l"),
+                "Energy [Wh/km]": row.get("energy_Wh_per_km"),
+                "CO2 [g/km]": row.get("gco2_per_km"),
+                "PSE": row.get("eta_pt_est"),
+                "Gears": row.get("gear_count"),
+                "Final drive": row.get("final_drive_ratio"),
+                "Scenario origin": row.get("record_origin"),
+                "VDE origin": row.get("vde_record_origin"),
+                "Created": row.get("created_at"),
+            }
+        )
+    return rows
 
 
 @dataclass(frozen=True)
@@ -2082,6 +2142,7 @@ __all__ = [
     "delta_vs_reference_walk_steps",
     "ScenarioOption",
     "build_scenario_options",
+    "build_scenario_browse_rows",
     "SelectionState",
     "set_reference",
     "add_comparison",

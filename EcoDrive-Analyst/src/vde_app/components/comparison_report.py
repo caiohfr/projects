@@ -68,6 +68,7 @@ from src.vde_app.comparison_report_viewmodels import (
     build_lineage_waterfall,
     build_roadload_curve_rows,
     build_scenario_header,
+    build_scenario_browse_rows,
     build_scenario_options,
     build_scorecard_sections,
     build_walk_rows,
@@ -110,7 +111,7 @@ from src.vde_core.comparison_report_service import (
     build_comparison_dataset,
     compare_metric,
     extract_metric_value,
-    list_comparison_scenarios,
+    list_comparison_scenarios_detailed,
     list_vde_catalog,
     resolve_temporary_transmission_from_component,
 )
@@ -169,7 +170,13 @@ _LINEAGE_WARNING_MESSAGES = {
 
 @st.cache_data(show_spinner=False)
 def _load_catalog_cached(db_path_signature: str) -> list[dict]:
-    return list_comparison_scenarios()
+    # list_comparison_scenarios_detailed is a drop-in superset of
+    # list_comparison_scenarios (same record_origin/make/legislation/
+    # electrification/engine_size_l/engine_max_power_kw fields, plus the
+    # wider Scorecard-equivalent set the Browse table needs) -- switching
+    # the shared catalog to it means _render_filters/build_scenario_options
+    # keep working unchanged, and the Browse table needs no separate fetch.
+    return list_comparison_scenarios_detailed()
 
 
 def _load_catalog() -> list[dict]:
@@ -321,6 +328,22 @@ def _option_label(fid: int, all_options_by_id: dict) -> str:
     return option.label if option is not None else f"Unknown scenario #{fid}"
 
 
+def _render_scenario_browse(filtered_rows: list[dict]) -> None:
+    """Discovery aid: every field the Scorecard itself would show (Mass,
+    CdA, RRC, ABC TOTAL/NET, transmission status, VDE TOTAL/NET, fuel
+    economy), for whichever scenarios currently match the filters above --
+    makes it easy to spot which candidates actually have usable data
+    before picking one, in the same spirit as VDE Setup's own "Browse VDE
+    Database" table. Read-only; never touches selection state.
+    """
+    with st.expander(f"Browse Comparison Scenarios ({len(filtered_rows)})", expanded=False):
+        if not filtered_rows:
+            st.info("No scenarios match the current filters.")
+            return
+        browse_df = pd.DataFrame(build_scenario_browse_rows(filtered_rows))
+        st.dataframe(browse_df, hide_index=True, width="stretch")
+
+
 def _render_selection(catalog_rows: list[dict]) -> SelectionState:
     """Filters are a candidate-SEARCH tool only (Package 8F) -- they control
     what's newly offered for selection, never what's already selected. A
@@ -333,6 +356,7 @@ def _render_selection(catalog_rows: list[dict]) -> SelectionState:
     """
     all_options_by_id = {opt.fuelcons_id: opt for opt in build_scenario_options(catalog_rows)}
     filtered_rows = _render_filters(catalog_rows)
+    _render_scenario_browse(filtered_rows)
     filtered_options = build_scenario_options(filtered_rows)
 
     state: SelectionState = st.session_state.setdefault(_SELECTION_KEY, SelectionState())

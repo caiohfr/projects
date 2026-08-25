@@ -83,6 +83,15 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         self.assertTrue(any("Select at least one scenario" in info.value for info in app.info))
 
+    def test_browse_scenarios_expander_lists_the_currently_filtered_candidates(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        labels = [exp.label for exp in app.expander]
+        self.assertTrue(any(label.startswith("Browse Comparison Scenarios (") for label in labels))
+        browse_label = next(label for label in labels if label.startswith("Browse Comparison Scenarios ("))
+        self.assertIn("2", browse_label)
+
     def test_reference_selection_builds_dataset_and_renders_scorecard(self):
         app = AppTest.from_file(str(PAGE_PATH))
         app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))

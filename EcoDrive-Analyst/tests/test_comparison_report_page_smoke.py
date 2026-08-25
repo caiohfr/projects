@@ -10,7 +10,12 @@ from streamlit.testing.v1 import AppTest
 
 from src.vde_app.comparison_report_viewmodels import PresentationState, SelectionState, TargetState
 from src.vde_core import db as db_module
-from src.vde_core.qa_mock_data import DEFAULT_QA_DB_PATH, seed_qa_database, seed_qa_fuelcons_mock_rows
+from src.vde_core.qa_mock_data import (
+    DEFAULT_QA_DB_PATH,
+    build_fuelcons_seed_rows,
+    seed_qa_database,
+    seed_qa_fuelcons_mock_rows,
+)
 
 PAGE_PATH = Path(__file__).resolve().parents[1] / "pages" / "Comparison_Report.py"
 
@@ -740,16 +745,42 @@ class ComparisonReportDbPathSelectorTests(unittest.TestCase):
         db_path_input = app.text_input(key="comparison_report_runtime_db_path")
         self.assertEqual(db_path_input.value, str(DEFAULT_QA_DB_PATH))
 
-    def test_switch_to_qa_button_does_not_error_when_qa_fixture_already_exists(self):
-        # seed_qa_database raises FileExistsError with overwrite=False -- the
-        # button must guard against that, since the QA fixture normally
-        # already exists on disk from a prior run.
-        self.assertTrue(Path(DEFAULT_QA_DB_PATH).exists())
+    def test_switch_to_qa_button_also_seeds_the_fuelcons_mock_rows(self):
+        # seed_qa_database() alone leaves fuelcons_db empty (by design --
+        # most QA consumers control their own scenarios), so without also
+        # calling seed_qa_fuelcons_mock_rows() the Comparison Browse table
+        # would show "No scenarios match the current filters" even after
+        # switching to QA data. Regression test for that exact gap.
         app = AppTest.from_file(str(PAGE_PATH))
         app.run(timeout=90)
         qa_button = next(b for b in app.button if b.label == "Switch to QA data")
         qa_button.click().run(timeout=90)
         self.assertEqual(len(app.exception), 0)
+        with sqlite3.connect(str(DEFAULT_QA_DB_PATH)) as con:
+            stored_ids = {row[0] for row in con.execute("SELECT id FROM fuelcons_db").fetchall()}
+        self.assertEqual(stored_ids, {row["id"] for row in build_fuelcons_seed_rows()})
+
+    def test_switch_to_qa_button_refreshes_the_fixture_even_when_it_already_exists_and_is_stale(self):
+        # The button always reseeds with overwrite=True rather than only
+        # when the file is missing -- a QA db file left over from an older
+        # version of the fixture code (fewer/different baselines) must not
+        # sit there stale forever, since seed_qa_fuelcons_mock_rows()
+        # assumes today's exact baselines exist (a stale file caused a
+        # FOREIGN KEY failure here once already). Simulate that staleness
+        # directly: seed once, then delete one of the baselines the mock
+        # FuelCons rows depend on before clicking the button.
+        seed_qa_database(DEFAULT_QA_DB_PATH, overwrite=True)
+        with sqlite3.connect(str(DEFAULT_QA_DB_PATH)) as con:
+            con.execute("DELETE FROM vde_db WHERE id=900008")
+            con.commit()
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        qa_button = next(b for b in app.button if b.label == "Switch to QA data")
+        qa_button.click().run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        with sqlite3.connect(str(DEFAULT_QA_DB_PATH)) as con:
+            restored = con.execute("SELECT COUNT(*) FROM vde_db WHERE id=900008").fetchone()[0]
+        self.assertEqual(restored, 1)
 
     def test_switch_to_default_button_restores_the_default_db_path(self):
         app = AppTest.from_file(str(PAGE_PATH))

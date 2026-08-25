@@ -205,7 +205,8 @@ a contracts-only package.
 
 ## Commit
 
-See the Sprint 9A closing commit on branch `sprint-9a-vehicle-demand-contracts`.
+`cae884c0` on branch `sprint-9a-vehicle-demand-contracts` - "feat(vehicle-demand):
+add Sprint 9A canonical Vehicle Demand contracts".
 
 ## Safe to freeze and proceed to 9B?
 

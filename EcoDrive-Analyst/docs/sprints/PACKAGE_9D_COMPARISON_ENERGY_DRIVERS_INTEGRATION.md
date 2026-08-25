@@ -374,8 +374,9 @@ snapshot/axle-hubs), not touched by this package.
 
 ## Commit(s)
 
-Recorded below once committed, on branch `sprint-9a-vehicle-demand-contracts`
-(not renamed, per Sec 1).
+`409902af` on branch `sprint-9a-vehicle-demand-contracts` (not renamed, per
+Sec 1) - "feat(comparison): add Sprint 9D Vehicle Demand Summary to Energy
+Drivers".
 
 ## Known architectural note (not a stop condition)
 

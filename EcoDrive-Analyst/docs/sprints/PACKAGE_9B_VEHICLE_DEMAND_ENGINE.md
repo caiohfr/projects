@@ -278,10 +278,10 @@ default, or `__post_init__` validation changed.
 
 ## Commit(s)
 
-See branch `sprint-9a-vehicle-demand-contracts` (Sprint 9B continues on the
-same branch; no new branch was created since 9B is additive on top of the
-frozen 9A contracts with no conflicting concerns). Commit hash recorded
-below once committed.
+`66f1bc7a` on branch `sprint-9a-vehicle-demand-contracts` - "feat(vehicle-demand):
+add Sprint 9B Vehicle Demand physics engine". Sprint 9B continues on the same
+branch as 9A; no new branch was created since 9B is additive on top of the
+frozen 9A contracts with no conflicting concerns.
 
 ## Safe to freeze and proceed to 9C?
 

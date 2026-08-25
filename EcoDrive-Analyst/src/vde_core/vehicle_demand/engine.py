@@ -30,7 +30,7 @@ from .contracts import (
     VehicleDemandResult,
     VehicleDemandSummary,
 )
-from .physics import classify_energy_mode, known_aero_force_N, known_rolling_force_N, resolve_air_density
+from .physics import _require_finite, classify_energy_mode, known_aero_force_N, known_rolling_force_N, resolve_air_density
 
 VEHICLE_DEMAND_ENGINE_VERSION = "0.1"
 
@@ -50,17 +50,26 @@ def build_vehicle_demand_profile(
 
     Returns None when the requested basis (or the effective test mass every
     Profile needs for its inertial term) is not available on the request --
-    never a fabricated substitute (e.g. NET from TOTAL). A structurally
-    invalid cycle_frame still raises ValueError, via
-    vde_calc.extract_cycle_arrays -- the same validation compute_vde_net has
-    always applied.
+    never a fabricated substitute (e.g. NET from TOTAL). This is "missing",
+    a soft/expected outcome. A structurally invalid cycle_frame still raises
+    ValueError via vde_calc.extract_cycle_arrays -- the same validation
+    compute_vde_net has always applied -- and a present-but-physically-
+    impossible test_mass_kg (<= 0) or non-finite roadload coefficient also
+    raises ValueError (Sprint 9C Sec 19/24): that is "invalid", not
+    "missing", and must not silently produce a nonsense result.
     """
     coefficients = _select_roadload(request, roadload_basis)
     if coefficients is None or request.test_mass_kg is None:
         return None
 
+    mass_kg = _require_finite(float(request.test_mass_kg), "test_mass_kg")
+    if mass_kg <= 0:
+        raise ValueError(f"test_mass_kg must be positive, got {mass_kg!r}.")
+    _require_finite(float(coefficients.A_N), "roadload.A_N")
+    _require_finite(float(coefficients.B_N_per_kph), "roadload.B_N_per_kph")
+    _require_finite(float(coefficients.C_N_per_kph2), "roadload.C_N_per_kph2")
+
     t, v = extract_cycle_arrays(cycle_frame)
-    mass_kg = float(request.test_mass_kg)
 
     series = compute_vde_series(
         t,

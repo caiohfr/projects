@@ -11,11 +11,15 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from src.vde_core.roadload.tire_model import G_MPS2
 
 from .contracts import AmbientState, EnergyMode, Provenance
+
+ABSOLUTE_ZERO_C = -273.15
 
 # Dry-air specific gas constant, J/(kg*K) -- ISO 2533 standard atmosphere
 # value. Repo-wide search found no existing constant for this (Sprint 9A/9B
@@ -40,6 +44,18 @@ SPEED_EPSILON_MPS = 0.05
 POWER_EPSILON_W = 5.0
 
 
+def _require_finite(value: float, field_name: str) -> float:
+    """Fail fast on NaN/inf rather than let it silently propagate to a
+    result that only reveals the problem once it reaches the JSON boundary
+    as a None (Sprint 9C Sec 24). Missing (None) stays a soft "unavailable"
+    everywhere in this module -- this only guards values that are PRESENT
+    but not physically representable.
+    """
+    if not math.isfinite(value):
+        raise ValueError(f"{field_name} must be a finite number, got {value!r}.")
+    return value
+
+
 def resolve_air_density(ambient: AmbientState) -> tuple[float | None, Provenance | None, tuple[str, ...]]:
     """Resolve air density from AmbientState alone -- never invents a value.
 
@@ -50,16 +66,29 @@ def resolve_air_density(ambient: AmbientState) -> tuple[float | None, Provenance
     Sprint 9B Sec 10 explicitly allows Aero Known to stay unavailable rather
     than fabricate one ("Aero Known = unavailable is acceptable, do not
     block Vehicle Demand for it").
+
+    A value that is PRESENT but physically impossible (temperature at/below
+    absolute zero, non-positive pressure, non-positive density) raises
+    ValueError (Sprint 9C Sec 22) rather than silently producing a
+    nonsensical or negative density -- this is distinct from a value that is
+    simply absent, which stays a soft "unavailable" as above.
     """
     if ambient.air_density_kg_m3 is not None:
+        density = _require_finite(float(ambient.air_density_kg_m3), "AmbientState.air_density_kg_m3")
+        if density <= 0:
+            raise ValueError(f"AmbientState.air_density_kg_m3 must be positive, got {density!r}.")
         basis = ambient.density_basis or Provenance.SOURCE
-        return float(ambient.air_density_kg_m3), basis, ()
+        return density, basis, ()
 
     if ambient.temperature_C is not None and ambient.pressure_kPa is not None:
-        temperature_kelvin = ambient.temperature_C + 273.15
-        if temperature_kelvin <= 0:
-            return None, None, ("Ambient temperature is at or below absolute zero; cannot calculate air density.",)
-        pressure_pa = ambient.pressure_kPa * 1000.0
+        temperature_C = _require_finite(float(ambient.temperature_C), "AmbientState.temperature_C")
+        pressure_kPa = _require_finite(float(ambient.pressure_kPa), "AmbientState.pressure_kPa")
+        if temperature_C <= ABSOLUTE_ZERO_C:
+            raise ValueError(f"AmbientState.temperature_C must be above absolute zero, got {temperature_C!r}.")
+        if pressure_kPa <= 0:
+            raise ValueError(f"AmbientState.pressure_kPa must be positive, got {pressure_kPa!r}.")
+        temperature_kelvin = temperature_C + 273.15
+        pressure_pa = pressure_kPa * 1000.0
         rho = pressure_pa / (R_AIR_J_PER_KG_K * temperature_kelvin)
         return rho, Provenance.CALCULATED, ()
 
@@ -80,20 +109,34 @@ def known_rolling_force_N(rrc_n_per_kn: float | None, mass_kg: float | None) -> 
     one RRC applies vehicle-wide (axle loads always sum to the full vehicle
     weight), which is the only form VehicleDemandRequest.rrc_n_per_kn (a
     single scalar, no axle split) can represent.
+
+    RRC = 0 is a valid known-zero rolling force. RRC < 0 raises ValueError
+    (Sprint 9C Sec 20) rather than silently producing a negative rolling
+    force -- the project has no defined upper bound for RRC, so only the
+    physically-impossible negative case is rejected here.
     """
     if rrc_n_per_kn is None or mass_kg is None:
         return None
-    load_kN = mass_kg * G_MPS2 / 1000.0
-    return float(rrc_n_per_kn) * load_kN
+    rrc = _require_finite(float(rrc_n_per_kn), "rrc_n_per_kn")
+    if rrc < 0:
+        raise ValueError(f"rrc_n_per_kn must be non-negative, got {rrc!r}.")
+    load_kN = _require_finite(float(mass_kg), "mass_kg") * G_MPS2 / 1000.0
+    return rrc * load_kN
 
 
 def known_aero_force_N(cda_m2: float | None, air_density_kg_m3: float | None, speed_mps: np.ndarray) -> np.ndarray | None:
     """F_aero(t) = 0.5 * rho * CdA * v(t)^2. CdA = 0 is a valid known zero;
     a missing CdA or unresolved rho makes the whole series unavailable.
+    CdA < 0 raises ValueError (Sprint 9C Sec 21) rather than silently
+    producing a negative aero force.
     """
     if cda_m2 is None or air_density_kg_m3 is None:
         return None
-    return 0.5 * float(air_density_kg_m3) * float(cda_m2) * np.square(speed_mps)
+    cda = _require_finite(float(cda_m2), "cda_m2")
+    if cda < 0:
+        raise ValueError(f"cda_m2 must be non-negative, got {cda!r}.")
+    rho = _require_finite(float(air_density_kg_m3), "air_density_kg_m3")
+    return 0.5 * rho * cda * np.square(speed_mps)
 
 
 def classify_energy_mode(speed_mps: np.ndarray, tractive_power_W: np.ndarray) -> tuple[EnergyMode, ...]:
@@ -119,6 +162,7 @@ def classify_energy_mode(speed_mps: np.ndarray, tractive_power_W: np.ndarray) ->
 
 __all__ = [
     "R_AIR_J_PER_KG_K",
+    "ABSOLUTE_ZERO_C",
     "SPEED_EPSILON_MPS",
     "POWER_EPSILON_W",
     "resolve_air_density",

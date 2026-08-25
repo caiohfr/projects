@@ -66,8 +66,14 @@ from src.vde_app.comparison_report_viewmodels import (
     set_presentation_role,
     set_reference,
     sync_comparisons_from_widget,
+    RowVisibility,
+    ScorecardCell,
+    ScorecardRow,
+    ScorecardSection,
+    visible_rows,
 )
 from src.vde_core import db as db_module
+from src.vde_core.comparison_metric_registry import get_metric, list_metrics
 from src.vde_core.comparison_report_service import (
     ComparisonDataset,
     ComparisonRole,
@@ -846,6 +852,114 @@ class ScorecardConstructionTests(unittest.TestCase):
         self.assertIn("stale", joined.lower())
         self.assertIn("NET boundary", joined)
         self.assertIn("Mixed legislations", joined)
+
+
+class RowVisibilityPolicyTests(unittest.TestCase):
+    """Sprint 9 post-freeze hotfix -- "unavailable is information" for
+    basic/canonical engineering audit rows; the legacy AUTO behavior
+    (disappear when nothing is available) is unchanged for everything else.
+    """
+
+    def _dataset_missing(self, field_names: list[str], *, reference_less: bool = False):
+        row_a = _qa_row(900001)
+        row_b = _qa_row(900004)
+        for field_name in field_names:
+            row_a[field_name] = None
+            row_b[field_name] = None
+        item_a = build_vde_comparison_item(900001, role=ComparisonRole.COMPARISON, vde_row=row_a)
+        item_b = build_vde_comparison_item(900004, role=ComparisonRole.COMPARISON, vde_row=row_b)
+        if reference_less:
+            return ComparisonDataset(reference=None, comparisons=(item_a, item_b))
+        item_a = build_vde_comparison_item(900001, role=ComparisonRole.REFERENCE, vde_row=row_a)
+        return ComparisonDataset(reference=item_a, comparisons=(item_b,))
+
+    def test_1_canonical_row_unavailable_for_all_scenarios_still_renders(self):
+        dataset = self._dataset_missing(["cda_m2"])
+        section = next(s for s in build_scorecard_sections(dataset) if s.title == "Physical Setup")
+        cda_row = next(r for r in section.rows if r.metric_key == "cda_m2")
+        self.assertIs(cda_row.visibility, RowVisibility.ALWAYS)
+        self.assertFalse(cda_row.reference_cell.available)
+        visible = visible_rows(section)
+        self.assertIn(cda_row, visible)
+
+    def test_2_optional_auto_row_unavailable_for_all_scenarios_keeps_legacy_hidden_behavior(self):
+        dataset = self._dataset_missing(["gear_count"])
+        section = next(s for s in build_scorecard_sections(dataset) if s.title == "Powertrain")
+        gear_row = next(r for r in section.rows if r.metric_key == "gear_count")
+        self.assertIs(gear_row.visibility, RowVisibility.AUTO)
+        self.assertFalse(gear_row.reference_cell.available)
+        visible = visible_rows(section)
+        self.assertNotIn(gear_row, visible)
+
+    def test_basic_scorecard_canonical_metrics_are_exactly_the_expected_set(self):
+        expected_always_visible = {
+            "mass_kg", "cda_m2", "rrc_n_per_kn",
+            "roadload_a_total", "roadload_b_total", "roadload_c_total",
+            "roadload_a_net", "roadload_b_net", "roadload_c_net",
+            "vde_total", "vde_net",
+        }
+        actual_always_visible = {m.key for m in list_metrics() if m.always_visible}
+        self.assertEqual(actual_always_visible, expected_always_visible)
+
+    def test_6_net_roadload_metric_stays_auditable_with_no_total_fallback(self):
+        # VDE-QA-006 has no resolved transmission -> NET roadload/VDE unavailable.
+        dataset = ComparisonDataset(
+            reference=build_vde_comparison_item(900006, role=ComparisonRole.REFERENCE, vde_row=_qa_row(900006)),
+            comparisons=(),
+        )
+        section = next(s for s in build_scorecard_sections(dataset) if s.title == "Roadload")
+        net_a_row = next(r for r in section.rows if r.metric_key == "roadload_a_net")
+        total_a_row = next(r for r in section.rows if r.metric_key == "roadload_a_total")
+
+        self.assertIn(net_a_row, visible_rows(section))
+        self.assertFalse(net_a_row.reference_cell.available)
+        self.assertTrue(total_a_row.reference_cell.available)
+        self.assertNotEqual(net_a_row.reference_cell.raw_value, total_a_row.reference_cell.raw_value)
+
+    def test_7_reference_less_dataset_uses_the_same_visibility_policy(self):
+        dataset = self._dataset_missing(["cda_m2"], reference_less=True)
+        section = next(s for s in build_scorecard_sections(dataset) if s.title == "Physical Setup")
+        cda_row = next(r for r in section.rows if r.metric_key == "cda_m2")
+        self.assertIn(cda_row, visible_rows(section))
+        self.assertFalse(cda_row.reference_cell.available)
+
+    def test_8_zero_value_on_an_always_visible_row_is_available_not_missing(self):
+        row = _qa_row(900001)
+        row["rrc_N_per_kN"] = 0.0
+        dataset = ComparisonDataset(
+            reference=build_vde_comparison_item(900001, role=ComparisonRole.REFERENCE, vde_row=row), comparisons=()
+        )
+        section = next(s for s in build_scorecard_sections(dataset) if s.title == "Physical Setup")
+        rrc_row = next(r for r in section.rows if r.metric_key == "rrc_n_per_kn")
+
+        self.assertIn(rrc_row, visible_rows(section))
+        self.assertTrue(rrc_row.reference_cell.available)
+        self.assertEqual(rrc_row.reference_cell.raw_value, 0.0)
+        self.assertNotEqual(rrc_row.reference_cell.formatted_value, "-")
+
+    def test_visible_rows_preserves_row_order(self):
+        section = ScorecardSection(
+            title="X",
+            rows=(
+                ScorecardRow(
+                    metric_key="a",
+                    label="A",
+                    reference_cell=ScorecardCell(None, "-", None, None, None, None, True, False, False, None),
+                    visibility=RowVisibility.ALWAYS,
+                ),
+                ScorecardRow(
+                    metric_key="b",
+                    label="B",
+                    reference_cell=ScorecardCell(1.0, "1", None, None, None, None, True, True, False, None),
+                ),
+                ScorecardRow(
+                    metric_key="c",
+                    label="C",
+                    reference_cell=ScorecardCell(None, "-", None, None, None, None, True, False, False, None),
+                ),
+            ),
+        )
+        self.assertEqual([r.metric_key for r in visible_rows(section)], ["a", "b"])
 
 
 class OptionalReferenceViewmodelTests(unittest.TestCase):

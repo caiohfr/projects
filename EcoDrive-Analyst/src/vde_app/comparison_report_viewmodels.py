@@ -695,6 +695,25 @@ def _format_delta(absolute_delta: float | None, percent_delta: float | None, uni
 # -----------------------------------------------------------------------------
 
 
+class RowVisibility(str, Enum):
+    """Sprint 9 post-freeze hotfix: _render_section's legacy behavior (a row
+    disappears entirely when no cell in it is available) is right for
+    optional/contextual metrics, but wrong for basic/canonical engineering
+    audit information -- for those, "unavailable is information" and the
+    row must stay visible with an auditable reason. AUTO preserves the
+    legacy behavior exactly (the default for every row unless explicitly
+    marked); ALWAYS opts a specific row into staying visible regardless of
+    per-cell availability. This is a per-row flag, not a global toggle --
+    no section-wide or dataset-wide "show everything" mode exists.
+    """
+
+    AUTO = "AUTO"
+    ALWAYS = "ALWAYS"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 @dataclass(frozen=True)
 class ScorecardCell:
     raw_value: Any
@@ -715,6 +734,7 @@ class ScorecardRow:
     label: str
     reference_cell: ScorecardCell
     comparison_cells: tuple[ScorecardCell, ...] = field(default_factory=tuple)
+    visibility: RowVisibility = RowVisibility.AUTO
 
 
 @dataclass(frozen=True)
@@ -747,7 +767,10 @@ def _absolute_cell(item: ComparisonItem, metric_key: str, unit_family: str, unit
     )
 
 
-def _metric_row(dataset: ComparisonDataset, metric_key: str, label: str, unit_family: str, unit_system: str) -> ScorecardRow:
+def _metric_row(
+    dataset: ComparisonDataset, metric_key: str, label: str, unit_family: str, unit_system: str, *, always_visible: bool = False
+) -> ScorecardRow:
+    visibility = RowVisibility.ALWAYS if always_visible else RowVisibility.AUTO
     if dataset.reference is None:
         # No Reference selected: every item is ABSOLUTE only, never a
         # fabricated delta. The first item fills ScorecardRow's mandatory
@@ -755,7 +778,9 @@ def _metric_row(dataset: ComparisonDataset, metric_key: str, label: str, unit_fa
         # meaning; build_scenario_header only marks a column REFERENCE from
         # item.role, and no item holds ComparisonRole.REFERENCE here.
         cells = [_absolute_cell(item, metric_key, unit_family, unit_system) for item in dataset.comparisons]
-        return ScorecardRow(metric_key=metric_key, label=label, reference_cell=cells[0], comparison_cells=tuple(cells[1:]))
+        return ScorecardRow(
+            metric_key=metric_key, label=label, reference_cell=cells[0], comparison_cells=tuple(cells[1:]), visibility=visibility
+        )
 
     self_result = compare_metric(dataset.reference, dataset.reference, metric_key)
     reference_cell = ScorecardCell(
@@ -791,7 +816,9 @@ def _metric_row(dataset: ComparisonDataset, metric_key: str, label: str, unit_fa
                 warning=warning,
             )
         )
-    return ScorecardRow(metric_key=metric_key, label=label, reference_cell=reference_cell, comparison_cells=tuple(comparison_cells))
+    return ScorecardRow(
+        metric_key=metric_key, label=label, reference_cell=reference_cell, comparison_cells=tuple(comparison_cells), visibility=visibility
+    )
 
 
 def _provenance_value(item: ComparisonItem, field_name: str) -> Any:
@@ -831,11 +858,32 @@ def _provenance_section(dataset: ComparisonDataset) -> ScorecardSection:
     return ScorecardSection(title=_PROVENANCE_SECTION_TITLE, rows=tuple(rows))
 
 
+def visible_rows(section: ScorecardSection) -> tuple[ScorecardRow, ...]:
+    """The single row-visibility policy every Scorecard-style table renderer
+    uses (Sprint 9 post-freeze hotfix). A row is visible when:
+
+    - it is marked RowVisibility.ALWAYS (basic/canonical engineering audit
+      information -- "unavailable is information" for these, never hidden
+      even when unavailable for every selected item), or
+    - at least one cell (reference or any comparison) is available (legacy
+      AUTO behavior, unchanged: an optional/contextual row with nothing
+      available anywhere simply doesn't clutter the table).
+
+    Extracted as a pure, Streamlit-free function specifically so this policy
+    is unit-testable without an AppTest/Streamlit render pass.
+    """
+    return tuple(
+        row
+        for row in section.rows
+        if row.visibility is RowVisibility.ALWAYS or row.reference_cell.available or any(c.available for c in row.comparison_cells)
+    )
+
+
 def build_scorecard_sections(dataset: ComparisonDataset, *, unit_system: str = "Metric") -> list[ScorecardSection]:
     sections: list[ScorecardSection] = []
     for group_key, title in _SCORECARD_SECTIONS:
         rows = tuple(
-            _metric_row(dataset, metric.key, metric.label, metric.unit_family, unit_system)
+            _metric_row(dataset, metric.key, metric.label, metric.unit_family, unit_system, always_visible=metric.always_visible)
             for metric in list_metrics(group_key)
         )
         sections.append(ScorecardSection(title=title, rows=rows))
@@ -2041,9 +2089,11 @@ __all__ = [
     "sync_comparisons_from_widget",
     "format_value",
     "metric_axis_label",
+    "RowVisibility",
     "ScorecardCell",
     "ScorecardRow",
     "ScorecardSection",
+    "visible_rows",
     "build_scorecard_sections",
     "build_scenario_header",
     "dataset_warnings_summary",

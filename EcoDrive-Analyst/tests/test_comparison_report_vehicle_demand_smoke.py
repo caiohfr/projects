@@ -146,6 +146,22 @@ class VehicleDemandSummarySmokeTests(unittest.TestCase):
         self.assertTrue(any("RRC" in t or "unavailable" in t.lower() for t in texts))
 
 
+    # -- Post-freeze hotfix: canonical rows stay visible when unavailable ----
+
+    def test_hotfix_known_aero_row_stays_visible_though_unavailable_for_every_scenario(self):
+        # No Comparison-sourced request ever supplies ambient data, so
+        # Known Aero Energy is unavailable for every scenario in this
+        # dataset -- exactly the case that used to make _render_section
+        # drop the row entirely.
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2, 3))
+        self._open_energy_drivers(app)
+
+        texts = _dataframe_texts(app)
+        self.assertIn("Known Aero Energy", texts)
+        joined = " ".join(texts)
+        self.assertTrue("air density" in joined.lower() or "cda_m2" in joined)
+
     # -- Smoke F: scenario failure isolation ---------------------------------
 
     def test_smoke_f_invalid_scenario_does_not_take_down_valid_ones(self):

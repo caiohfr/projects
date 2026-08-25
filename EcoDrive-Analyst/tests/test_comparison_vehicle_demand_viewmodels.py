@@ -5,6 +5,7 @@ from src.vde_core.comparison_report_service import ComparisonDataset, Comparison
 from src.vde_core.qa_mock_data import build_vde_seed_rows
 from src.vde_core.vehicle_demand import RoadloadBasis
 from src.vde_core.vehicle_demand import calculate_vehicle_demand as _real_calculate_vehicle_demand
+from src.vde_app.comparison_report_viewmodels import RowVisibility, visible_rows
 from src.vde_app.comparison_vehicle_demand_viewmodels import (
     VEHICLE_DEMAND_SECTION_TITLE,
     build_vehicle_demand_breakdown_rows,
@@ -116,7 +117,10 @@ class PartialAvailabilityTests(unittest.TestCase):
     def test_aero_unavailable_without_ambient_but_other_kpis_valid(self):
         # No Comparison-sourced request supplies ambient data yet (Sprint 9D
         # Sec 23/55) -- Known Aero Energy is always unavailable via this path,
-        # while VDE/Roadload/Rolling stay valid.
+        # while VDE/Roadload/Rolling stay valid. VDE-QA-001 DOES have a CdA
+        # value, so the specific reason is air density, not CdA itself (post-
+        # freeze hotfix: the engine's own distinct reason is surfaced, not a
+        # flat "CdA/air density unavailable").
         reference = _item("VDE-QA-001", ComparisonRole.REFERENCE)
         dataset = ComparisonDataset(reference=reference, comparisons=())
         section = build_vehicle_demand_comparison_rows(dataset, RoadloadBasis.TOTAL, "Metric")
@@ -127,7 +131,8 @@ class PartialAvailabilityTests(unittest.TestCase):
 
         self.assertFalse(aero_row.reference_cell.available)
         self.assertEqual(aero_row.reference_cell.formatted_value, "-")
-        self.assertIn("CdA", aero_row.reference_cell.warning)
+        self.assertIn("air density", aero_row.reference_cell.warning.lower())
+        self.assertNotIn("cda_m2 missing", aero_row.reference_cell.warning.lower())
         self.assertTrue(rolling_row.reference_cell.available)
         self.assertTrue(vde_row.reference_cell.available)
 
@@ -150,7 +155,7 @@ class PartialAvailabilityTests(unittest.TestCase):
         self.assertTrue(vde_row.comparison_cells[0].available)
         self.assertTrue(rolling_row.reference_cell.available)
         self.assertFalse(rolling_row.comparison_cells[0].available)
-        self.assertIn("RRC", rolling_row.comparison_cells[0].warning)
+        self.assertIn("rrc_n_per_kn", rolling_row.comparison_cells[0].warning)
 
 
 class ResidualPresentationTests(unittest.TestCase):
@@ -339,6 +344,110 @@ class RealComparisonScenarioEndToEndTests(unittest.TestCase):
         known_aero = row["known_aero_MJ"] or 0.0
         residual = row["residual_MJ"]
         self.assertAlmostEqual(known_rolling + known_aero + residual, roadload_energy, places=6)
+
+
+class VisibilityPolicyHotfixTests(unittest.TestCase):
+    """Post-freeze hotfix regression list (all 8 numbered cases), scoped to
+    the Vehicle Demand Summary table specifically. Every one of its 8 rows
+    is marked RowVisibility.ALWAYS -- "unavailable is information" applies
+    to all of them, not just Known Aero.
+    """
+
+    def test_1_all_eight_rows_are_marked_always_visible(self):
+        reference = _item("VDE-QA-001", ComparisonRole.REFERENCE)
+        dataset = ComparisonDataset(reference=reference, comparisons=())
+        section = build_vehicle_demand_comparison_rows(dataset, RoadloadBasis.TOTAL, "Metric")
+        self.assertEqual(len(section.rows), 8)
+        for row in section.rows:
+            self.assertIs(row.visibility, RowVisibility.ALWAYS)
+
+    def test_1_canonical_row_survives_even_when_unavailable_for_every_scenario(self):
+        # No Comparison-sourced request ever supplies ambient data (Sec 55),
+        # so Known Aero Energy is unavailable for literally every scenario
+        # today -- exactly the case that motivated this hotfix.
+        reference = _item("VDE-QA-001", ComparisonRole.REFERENCE)
+        comparison = _item("VDE-QA-004")
+        dataset = ComparisonDataset(reference=reference, comparisons=(comparison,))
+        section = build_vehicle_demand_comparison_rows(dataset, RoadloadBasis.TOTAL, "Metric")
+
+        aero_row = _row_by_label(section, "Known Aero Energy")
+        self.assertFalse(aero_row.reference_cell.available)
+        self.assertFalse(aero_row.comparison_cells[0].available)
+        self.assertIn(aero_row, visible_rows(section))
+
+    def test_3_cda_available_rho_unavailable_shows_air_density_reason(self):
+        reference = _item("VDE-QA-001", ComparisonRole.REFERENCE)  # has cda_m2, no ambient ever supplied
+        dataset = ComparisonDataset(reference=reference, comparisons=())
+        section = build_vehicle_demand_comparison_rows(dataset, RoadloadBasis.TOTAL, "Metric")
+        aero_row = _row_by_label(section, "Known Aero Energy")
+
+        self.assertIn(aero_row, visible_rows(section))
+        self.assertEqual(aero_row.reference_cell.formatted_value, "-")
+        self.assertIn("air density", aero_row.reference_cell.warning.lower())
+
+    def test_4_cda_unavailable_shows_a_distinct_reason_from_case_3(self):
+        row = dict(_qa_rows()["VDE-QA-001"])
+        row["cda_m2"] = None
+        reference = build_vde_comparison_item(row["id"], role=ComparisonRole.REFERENCE, vde_row=row)
+        dataset = ComparisonDataset(reference=reference, comparisons=())
+        section = build_vehicle_demand_comparison_rows(dataset, RoadloadBasis.TOTAL, "Metric")
+        aero_row = _row_by_label(section, "Known Aero Energy")
+
+        self.assertIn(aero_row, visible_rows(section))
+        self.assertIn("cda_m2", aero_row.reference_cell.warning)
+        self.assertNotIn("air density could not be resolved", aero_row.reference_cell.warning)
+
+    def test_5_rrc_unavailable_shows_rolling_reason_and_stays_visible(self):
+        row = dict(_qa_rows()["VDE-QA-001"])
+        row["rrc_N_per_kN"] = None
+        reference = build_vde_comparison_item(row["id"], role=ComparisonRole.REFERENCE, vde_row=row)
+        dataset = ComparisonDataset(reference=reference, comparisons=())
+        section = build_vehicle_demand_comparison_rows(dataset, RoadloadBasis.TOTAL, "Metric")
+        rolling_row = _row_by_label(section, "Known Rolling Energy")
+
+        self.assertIn(rolling_row, visible_rows(section))
+        self.assertFalse(rolling_row.reference_cell.available)
+        self.assertIn("rrc_n_per_kn", rolling_row.reference_cell.warning)
+
+    def test_6_net_unavailable_for_every_scenario_stays_auditable_no_total_fallback(self):
+        # VDE-QA-006 has no resolved transmission -> NET unavailable.
+        reference = _item("VDE-QA-006", ComparisonRole.REFERENCE)
+        dataset = ComparisonDataset(reference=reference, comparisons=())
+
+        total_section = build_vehicle_demand_comparison_rows(dataset, RoadloadBasis.TOTAL, "Metric")
+        net_section = build_vehicle_demand_comparison_rows(dataset, RoadloadBasis.NET, "Metric")
+        total_vde_row = _row_by_label(total_section, "VDE")
+        net_vde_row = _row_by_label(net_section, "VDE")
+
+        self.assertIn(net_vde_row, visible_rows(net_section))
+        self.assertTrue(total_vde_row.reference_cell.available)
+        self.assertFalse(net_vde_row.reference_cell.available)
+        self.assertEqual(net_vde_row.reference_cell.formatted_value, "-")
+        self.assertIn("NET", net_vde_row.reference_cell.warning)
+
+    def test_7_reference_less_dataset_uses_the_same_always_visible_policy(self):
+        a = _item("VDE-QA-001")
+        b = _item("VDE-QA-004")
+        dataset = ComparisonDataset(reference=None, comparisons=(a, b))
+        section = build_vehicle_demand_comparison_rows(dataset, RoadloadBasis.TOTAL, "Metric")
+        aero_row = _row_by_label(section, "Known Aero Energy")
+
+        self.assertIn(aero_row, visible_rows(section))
+        self.assertFalse(aero_row.reference_cell.available)
+        self.assertFalse(any(c.available for c in aero_row.comparison_cells))
+
+    def test_8_zero_rrc_remains_available_not_missing_on_an_always_visible_row(self):
+        row = dict(_qa_rows()["VDE-QA-001"])
+        row["rrc_N_per_kN"] = 0.0
+        reference = build_vde_comparison_item(row["id"], role=ComparisonRole.REFERENCE, vde_row=row)
+        dataset = ComparisonDataset(reference=reference, comparisons=())
+        section = build_vehicle_demand_comparison_rows(dataset, RoadloadBasis.TOTAL, "Metric")
+        rolling_row = _row_by_label(section, "Known Rolling Energy")
+
+        self.assertIn(rolling_row, visible_rows(section))
+        self.assertTrue(rolling_row.reference_cell.available)
+        self.assertEqual(rolling_row.reference_cell.raw_value, 0.0)
+        self.assertNotEqual(rolling_row.reference_cell.formatted_value, "-")
 
 
 if __name__ == "__main__":

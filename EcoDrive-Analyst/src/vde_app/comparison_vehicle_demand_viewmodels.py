@@ -43,13 +43,37 @@ from src.vde_core.vehicle_demand import (
 )
 from src.vde_core.vehicle_demand.adapters import resolve_vehicle_demand_cycle
 
-from .comparison_report_viewmodels import ScorecardCell, ScorecardRow, ScorecardSection, _format_delta, dataset_items, format_value
+from .comparison_report_viewmodels import (
+    RowVisibility,
+    ScorecardCell,
+    ScorecardRow,
+    ScorecardSection,
+    _format_delta,
+    dataset_items,
+    format_value,
+)
 
 VEHICLE_DEMAND_SECTION_TITLE = "Vehicle Demand Summary"
 
+# Fallback text only -- summarize_vehicle_demand (frozen Sprint 9B engine)
+# already distinguishes "cda_m2 missing" from "air density could not be
+# resolved" in VehicleDemandSummary.warnings; _kpi_cell below surfaces that
+# exact, more specific sentence when present and only falls back to this
+# flat text if the engine's warnings tuple doesn't contain a matching entry
+# (defensive -- should not normally happen).
 _UNAVAILABLE_REASON_TEXT = {
     "rolling": "RRC unavailable",
     "aero": "CdA/air density unavailable",
+}
+
+# Prefix of the frozen engine's own warning sentence for each KPI's
+# unavailable reason (see engine.py::summarize_vehicle_demand) -- reused
+# verbatim rather than re-derived, so "CdA missing" vs "CdA available but
+# air density unavailable" (Sprint 9 post-freeze hotfix) is always the
+# engine's own distinction, never a second one invented at this layer.
+_ENGINE_WARNING_PREFIX = {
+    "rolling": "Known rolling contribution unavailable",
+    "aero": "Known aero contribution unavailable",
 }
 
 
@@ -177,6 +201,18 @@ def _summary_for_basis(outcome: VehicleDemandOutcome, basis: RoadloadBasis) -> V
     return outcome.result.total_summary if basis is RoadloadBasis.TOTAL else outcome.result.net_summary
 
 
+def _engine_warning_for(summary: VehicleDemandSummary, unavailable_reason: str) -> str:
+    """The frozen engine's own, already-specific reason (e.g. distinguishing
+    "cda_m2 missing" from "air density could not be resolved") -- reused
+    verbatim from VehicleDemandSummary.warnings rather than re-derived here.
+    """
+    prefix = _ENGINE_WARNING_PREFIX[unavailable_reason]
+    for warning in summary.warnings:
+        if warning.startswith(prefix):
+            return warning
+    return _UNAVAILABLE_REASON_TEXT[unavailable_reason]
+
+
 def _kpi_cell(
     kpi: _VehicleDemandKpi, summary: VehicleDemandSummary | None, outcome: VehicleDemandOutcome, basis: RoadloadBasis, *, unit_system: str
 ) -> ScorecardCell:
@@ -203,7 +239,7 @@ def _kpi_cell(
     value = getattr(summary, kpi.field_name)
     warning = None
     if value is None and kpi.unavailable_reason is not None:
-        warning = _UNAVAILABLE_REASON_TEXT[kpi.unavailable_reason]
+        warning = _engine_warning_for(summary, kpi.unavailable_reason)
 
     formatted = format_value(value, kpi.unit_family, unit_system)
     # Residual is the one signed KPI (Sprint 9B Sec 27): a negative value is
@@ -309,6 +345,12 @@ def build_vehicle_demand_comparison_rows(
                 label=kpi.label,
                 reference_cell=reference_cell,
                 comparison_cells=tuple(comparison_cells),
+                # Sprint 9 post-freeze hotfix: every Vehicle Demand Summary
+                # row is basic/canonical engineering audit information --
+                # "unavailable is information" applies to all eight, not
+                # just Known Aero. Never hidden as a whole row, even when
+                # unavailable for every selected scenario.
+                visibility=RowVisibility.ALWAYS,
             )
         )
 

@@ -94,6 +94,7 @@ from src.vde_app.comparison_report_viewmodels import (
     set_reference,
     set_target,
     sync_comparisons_from_widget,
+    visible_rows,
 )
 from src.vde_app.components.pwt_fuel_energy import (
     render_comparison_report_page,
@@ -717,7 +718,7 @@ def _render_walk_hero(dataset: ComparisonDataset, metric_key: str, unit_system: 
 
 
 def _render_section(section: ScorecardSection, header_titles: list[str]) -> None:
-    rows = [row for row in section.rows if row.reference_cell.available or any(c.available for c in row.comparison_cells)]
+    rows = list(visible_rows(section))
     if not rows:
         return
 

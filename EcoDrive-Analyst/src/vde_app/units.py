@@ -62,6 +62,14 @@ REGISTRY: dict[str, QuantitySpec] = {
         metric=UnitSpec("MJ/km", 1.0, "%.4f"),
         us=UnitSpec("Wh/mi", 447.04, "%.1f"),
     ),
+    # Absolute cycle energy (Sprint 9D Vehicle Demand Summary), distinct from
+    # energy_per_distance's MJ/km rate. No existing project convention picks
+    # a US-customary absolute-energy unit, so this stays MJ in both systems
+    # rather than inventing one.
+    "energy_mj": QuantitySpec(
+        metric=UnitSpec("MJ", 1.0, "%.3f"),
+        us=UnitSpec("MJ", 1.0, "%.3f"),
+    ),
     "energy_wh_per_distance": QuantitySpec(
         metric=UnitSpec("Wh/km", 1.0, "%.1f"),
         us=UnitSpec("Wh/mi", 1.609344, "%.1f"),

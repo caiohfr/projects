@@ -21,6 +21,7 @@ from src.vde_core.comparison_report_service import (
     build_vde_comparison_item,
     extract_metric_value,
     list_comparison_scenarios,
+    list_comparison_scenarios_detailed,
     list_vde_catalog,
     resolve_cycle_vde_results,
     resolve_lineage_chain,
@@ -421,6 +422,78 @@ class ScenarioCatalogTests(unittest.TestCase):
         self.assertEqual(rows, [])
 
 
+class DetailedScenarioCatalogTests(unittest.TestCase):
+    """list_comparison_scenarios_detailed -- the Browse table's data source.
+    Deliberately a separate function/test class from ScenarioCatalogTests
+    above: the two catalogs serve different purposes (lightweight selector
+    vs wide audit browse) and must not be conflated.
+    """
+
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "detailed_catalog.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+        with sqlite3.connect(self.db_path) as con:
+            con.execute(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, "
+                "fuel_l_per_100km, gco2_per_km) VALUES (1, 900001, 'ICE', 'Gasoline', 'HOMOLOGATED', 6.5, 150.0)"
+            )
+            # VDE-QA-006 has no resolved transmission -> NET unavailable end-to-end.
+            con.execute(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, "
+                "fuel_l_per_100km, gco2_per_km) VALUES (2, 900006, 'ICE', 'Gasoline', 'HOMOLOGATED', 7.0, 160.0)"
+            )
+            con.commit()
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def test_is_a_superset_of_the_lightweight_catalog_fields(self):
+        lightweight = {row["fuelcons_id"]: row for row in list_comparison_scenarios()}
+        detailed = {row["fuelcons_id"]: row for row in list_comparison_scenarios_detailed()}
+        self.assertEqual(set(lightweight), set(detailed))
+        for fuelcons_id, light_row in lightweight.items():
+            wide_row = detailed[fuelcons_id]
+            for key in ("record_origin", "make", "legislation", "electrification", "engine_size_l", "engine_max_power_kw"):
+                self.assertEqual(light_row.get(key), wide_row.get(key), key)
+
+    def test_filters_match_the_lightweight_catalog_exactly(self):
+        for filters in ({"electrification": "ICE"}, {"record_origin": "HOMOLOGATED"}, {"make": "NOT-A-REAL-MAKE"}):
+            with self.subTest(filters=filters):
+                lightweight_ids = {r["fuelcons_id"] for r in list_comparison_scenarios(filters)}
+                detailed_ids = {r["fuelcons_id"] for r in list_comparison_scenarios_detailed(filters)}
+                self.assertEqual(lightweight_ids, detailed_ids)
+
+    def test_net_available_scenario_has_resolved_net_abc_and_vde(self):
+        rows = {r["fuelcons_id"]: r for r in list_comparison_scenarios_detailed()}
+        row = rows[1]
+        self.assertEqual(row["transmission_status"], "AVAILABLE")
+        self.assertIsNotNone(row["net_A_N"])
+        self.assertAlmostEqual(row["net_A_N"], row["coast_A_N"] - row["trans_A_coef_N"], places=9)
+        self.assertIsNotNone(row["vde_net_mj_per_km"])
+
+    def test_net_unavailable_scenario_never_falls_back_to_total(self):
+        rows = {r["fuelcons_id"]: r for r in list_comparison_scenarios_detailed()}
+        row = rows[2]
+        self.assertEqual(row["transmission_status"], "MISSING")
+        self.assertIsNone(row["net_A_N"])
+        self.assertIsNone(row["net_B_N_per_kph"])
+        self.assertIsNone(row["net_C_N_per_kph2"])
+        self.assertIsNone(row["vde_net_mj_per_km"])
+        self.assertIsNotNone(row["vde_total_mj_per_km"])
+        self.assertNotEqual(row["net_A_N"], row["coast_A_N"])
+
+    def test_fuel_and_physical_setup_fields_are_present(self):
+        rows = {r["fuelcons_id"]: r for r in list_comparison_scenarios_detailed()}
+        row = rows[1]
+        for key in ("mass_kg", "test_mass_kg", "cda_m2", "rrc_N_per_kN", "fuel_l_per_100km", "gco2_per_km"):
+            self.assertIsNotNone(row.get(key), key)
+
+
 class VdeCatalogTests(unittest.TestCase):
     def setUp(self):
         self._temp_dir = tempfile.TemporaryDirectory()
@@ -436,7 +509,7 @@ class VdeCatalogTests(unittest.TestCase):
 
     def test_catalog_lists_qa_vde_rows_without_full_resolution(self):
         rows = list_vde_catalog()
-        self.assertEqual(len(rows), 7)
+        self.assertEqual(len(rows), 8)
         for row in rows:
             self.assertIn("vde_id", row)
             self.assertIn("legislation", row)

@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Callable, Mapping, Sequence
 
@@ -65,6 +65,7 @@ _UNIT_QUANTITY_MAP = {
     "force_n_per_kph2": "force_per_speed_squared",
     "rrc_n_per_kn": "rrc",
     "energy_mj_per_km": "energy_per_distance",
+    "energy_mj": "energy_mj",
     "wh_per_km": "energy_wh_per_distance",
     "gco2_per_km": "co2_per_distance",
     "ratio": "fraction",
@@ -128,6 +129,12 @@ def apply_engineering_filters(
     *,
     engine_size_l_range: tuple[float | None, float | None] | None = None,
     engine_max_power_kw_range: tuple[float | None, float | None] | None = None,
+    mass_kg_range: tuple[float | None, float | None] | None = None,
+    test_mass_kg_range: tuple[float | None, float | None] | None = None,
+    cda_m2_range: tuple[float | None, float | None] | None = None,
+    rrc_range: tuple[float | None, float | None] | None = None,
+    vde_total_range: tuple[float | None, float | None] | None = None,
+    fuel_l_per_100km_range: tuple[float | None, float | None] | None = None,
 ) -> list[Mapping[str, Any]]:
     """Numeric range filter over scenario catalog rows. Each range is only
     active when supplied (not None); an active range excludes a row whose
@@ -153,6 +160,12 @@ def apply_engineering_filters(
         for row in rows
         if _in_range(row.get("engine_size_l"), engine_size_l_range)
         and _in_range(row.get("engine_max_power_kw"), engine_max_power_kw_range)
+        and _in_range(row.get("mass_kg"), mass_kg_range)
+        and _in_range(row.get("test_mass_kg"), test_mass_kg_range)
+        and _in_range(row.get("cda_m2"), cda_m2_range)
+        and _in_range(row.get("rrc_N_per_kN"), rrc_range)
+        and _in_range(row.get("vde_total_mj_per_km"), vde_total_range)
+        and _in_range(row.get("fuel_l_per_100km"), fuel_l_per_100km_range)
     ]
 
 
@@ -180,7 +193,10 @@ def build_scenario_options(catalog_rows: Sequence[dict[str, Any]]) -> list[Scena
         legislation = row.get("legislation")
         electrification = row.get("electrification")
         meta = " · ".join(str(x) for x in (year, legislation, electrification) if x)
-        label = f"{base_label} · {meta}" if meta else base_label
+        vehicle_label = f"{base_label} · {meta}" if meta else base_label
+        vde_id_value = row.get("vde_id")
+        id_suffix = f"(VDE {vde_id_value} · FC {row['fuelcons_id']})" if vde_id_value is not None else f"(FC {row['fuelcons_id']})"
+        label = f"{vehicle_label} {id_suffix}"
         options.append(
             ScenarioOption(
                 fuelcons_id=int(row["fuelcons_id"]),
@@ -196,6 +212,228 @@ def build_scenario_options(catalog_rows: Sequence[dict[str, Any]]) -> list[Scena
             )
         )
     return options
+
+
+def _abc_text(a: Any, b: Any, c: Any) -> str:
+    if a is None or b is None or c is None:
+        return "-"
+    return f"{float(a):.4g}/{float(b):.5g}/{float(c):.6g}"
+
+
+def build_scenario_browse_rows(catalog_rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Presentation rows for the scenario Browse table (Sec ~50s "Browse
+    Fuel Cons DB join VDE DB") -- every field the Scorecard itself would
+    show for a selected item, formatted for a plain st.dataframe (matches
+    VDE Setup's own "Browse VDE Database" table's style: a slash-joined
+    ABC string, plain numeric columns, no unit-system conversion). Input
+    rows come from comparison_report_service.list_comparison_scenarios_
+    detailed, already filtered by whatever candidate-search filters are
+    active -- this function only formats, it does not fetch or filter.
+    """
+    rows: list[dict[str, Any]] = []
+    for row in catalog_rows:
+        rows.append(
+            {
+                "Fuelcons ID": row.get("fuelcons_id"),
+                "VDE ID": row.get("vde_id"),
+                "Make": row.get("make"),
+                "Model": row.get("model"),
+                "Year": row.get("year"),
+                "Legislation": row.get("legislation"),
+                "Category": row.get("category"),
+                "Cycle": row.get("cycle_name"),
+                "Electrification": row.get("electrification"),
+                "Fuel type": row.get("fuel_type"),
+                "Engine": row.get("engine_type"),
+                "Drive": row.get("drive_type"),
+                "Transmission": row.get("transmission_type"),
+                "Trans. status": row.get("transmission_status"),
+                "Mass [kg]": row.get("mass_kg"),
+                "Test mass [kg]": row.get("test_mass_kg"),
+                "CdA [m2]": row.get("cda_m2"),
+                "RRC [N/kN]": row.get("rrc_N_per_kN"),
+                "ABC TOTAL": _abc_text(row.get("coast_A_N"), row.get("coast_B_N_per_kph"), row.get("coast_C_N_per_kph2")),
+                "ABC NET": _abc_text(row.get("net_A_N"), row.get("net_B_N_per_kph"), row.get("net_C_N_per_kph2")),
+                "VDE TOTAL [MJ/km]": row.get("vde_total_mj_per_km"),
+                "VDE NET [MJ/km]": row.get("vde_net_mj_per_km"),
+                "Fuel [L/100km]": row.get("fuel_l_per_100km"),
+                "Fuel [km/L]": row.get("fuel_km_per_l"),
+                "Energy [Wh/km]": row.get("energy_Wh_per_km"),
+                "CO2 [g/km]": row.get("gco2_per_km"),
+                "PSE": row.get("eta_pt_est"),
+                "Gears": row.get("gear_count"),
+                "Final drive": row.get("final_drive_ratio"),
+                "Scenario origin": row.get("record_origin"),
+                "VDE origin": row.get("vde_record_origin"),
+                "Created": row.get("created_at"),
+            }
+        )
+    return rows
+
+
+# -----------------------------------------------------------------------------
+# Browse UX upgrade -- search, data-availability quick filters, quick presets,
+# and summary counters (Comparison Browse UX Upgrade Package). All pure and
+# operate on the same enriched catalog rows build_scenario_browse_rows reads
+# from (comparison_report_service.list_comparison_scenarios_detailed output)
+# -- no new physics, only presentation-layer discovery aids.
+# -----------------------------------------------------------------------------
+
+
+def search_browse_candidates(rows: Sequence[Mapping[str, Any]], query: str) -> list[Mapping[str, Any]]:
+    """Free-text search across Model, Make, VDE ID and Fuelcons ID -- a
+    case-insensitive substring match against each, so "900001" finds a VDE
+    ID and "g80" finds a model. An empty/blank query is a no-op (returns
+    every row unchanged), matching the "All" neutral state every other
+    filter here uses.
+    """
+    needle = (query or "").strip().lower()
+    if not needle:
+        return list(rows)
+    matched: list[Mapping[str, Any]] = []
+    for row in rows:
+        haystacks = (
+            str(row.get("model") or "").lower(),
+            str(row.get("make") or "").lower(),
+            str(row.get("vde_id") if row.get("vde_id") is not None else ""),
+            str(row.get("fuelcons_id") if row.get("fuelcons_id") is not None else ""),
+        )
+        if any(needle in haystack for haystack in haystacks):
+            matched.append(row)
+    return matched
+
+
+def _browse_has_cda(row: Mapping[str, Any]) -> bool:
+    return row.get("cda_m2") is not None
+
+
+def _browse_has_rrc(row: Mapping[str, Any]) -> bool:
+    return row.get("rrc_N_per_kN") is not None
+
+
+def _browse_has_net(row: Mapping[str, Any]) -> bool:
+    return row.get("vde_net_mj_per_km") is not None
+
+
+def _browse_transmission_resolved(row: Mapping[str, Any]) -> bool:
+    return row.get("transmission_status") == "AVAILABLE"
+
+
+def _browse_has_fuel_economy(row: Mapping[str, Any]) -> bool:
+    return row.get("fuel_l_per_100km") is not None or row.get("fuel_km_per_l") is not None
+
+
+@dataclass(frozen=True)
+class BrowseAvailabilityFilters:
+    """One flag per "Data Availability" quick filter (Sec 3.3 of the Browse
+    UX Upgrade package). Each flag is independently AND-combined by
+    apply_availability_filters -- False means "don't restrict on this field",
+    never "must be missing".
+    """
+
+    has_cda: bool = False
+    has_rrc: bool = False
+    has_net: bool = False
+    transmission_resolved: bool = False
+    has_fuel_economy: bool = False
+
+
+def apply_availability_filters(
+    rows: Sequence[Mapping[str, Any]], filters: BrowseAvailabilityFilters
+) -> list[Mapping[str, Any]]:
+    out = list(rows)
+    if filters.has_cda:
+        out = [row for row in out if _browse_has_cda(row)]
+    if filters.has_rrc:
+        out = [row for row in out if _browse_has_rrc(row)]
+    if filters.has_net:
+        out = [row for row in out if _browse_has_net(row)]
+    if filters.transmission_resolved:
+        out = [row for row in out if _browse_transmission_resolved(row)]
+    if filters.has_fuel_economy:
+        out = [row for row in out if _browse_has_fuel_economy(row)]
+    return out
+
+
+def is_complete_engineering_data(row: Mapping[str, Any]) -> bool:
+    """"Complete Engineering Data" preset/counter definition: every field the
+    Scorecard itself needs is available -- Mass, ABC TOTAL, CdA, RRC, a
+    resolved transmission, ABC/VDE NET, VDE TOTAL, and Fuel Economy.
+    """
+    return (
+        row.get("mass_kg") is not None
+        and row.get("coast_A_N") is not None
+        and _browse_has_cda(row)
+        and _browse_has_rrc(row)
+        and _browse_transmission_resolved(row)
+        and _browse_has_net(row)
+        and row.get("vde_total_mj_per_km") is not None
+        and _browse_has_fuel_economy(row)
+    )
+
+
+def is_roadload_ready(row: Mapping[str, Any]) -> bool:
+    """"Roadload Ready" = the minimum physical roadload triplet (Mass + the
+    full ABC TOTAL coastdown curve) needed for a useful roadload/energy-
+    demand analysis -- deliberately lighter than Complete Engineering Data,
+    which additionally requires the CdA/RRC decomposition and NET/
+    transmission resolution.
+    """
+    return (
+        row.get("mass_kg") is not None
+        and row.get("coast_A_N") is not None
+        and row.get("coast_B_N_per_kph") is not None
+        and row.get("coast_C_N_per_kph2") is not None
+    )
+
+
+BROWSE_PRESET_LABELS: dict[str, str] = {
+    "complete_engineering_data": "Complete Engineering Data",
+    "roadload_ready": "Roadload Ready",
+    "has_net": "Has NET",
+    "fuel_economy_ready": "Fuel Economy Ready",
+}
+
+
+def apply_browse_preset(rows: Sequence[Mapping[str, Any]], preset: str | None) -> list[Mapping[str, Any]]:
+    """Quick preset (Sec 3.5): a single named, reusable predicate applied on
+    top of whatever other filters are already active. An unknown or absent
+    preset name is a no-op, matching every other filter's "All" neutral
+    state.
+    """
+    if preset == "complete_engineering_data":
+        return [row for row in rows if is_complete_engineering_data(row)]
+    if preset == "roadload_ready":
+        return [row for row in rows if is_roadload_ready(row)]
+    if preset == "has_net":
+        return [row for row in rows if _browse_has_net(row)]
+    if preset == "fuel_economy_ready":
+        return [row for row in rows if _browse_has_fuel_economy(row)]
+    return list(rows)
+
+
+@dataclass(frozen=True)
+class BrowseSummaryCounters:
+    matching: int
+    with_cda_and_rrc: int
+    with_net: int
+    fully_populated: int
+
+
+def compute_browse_summary_counters(rows: Sequence[Mapping[str, Any]]) -> BrowseSummaryCounters:
+    """Sub-counts within the CURRENTLY filtered set (Sec 3.6) -- e.g.
+    "with_net" is how many of the rows already matching every other active
+    filter also have NET available, not a count against the unfiltered
+    catalog. "fully_populated" reuses is_complete_engineering_data so the
+    counter and the "Complete Engineering Data" preset never disagree.
+    """
+    materialized = list(rows)
+    return BrowseSummaryCounters(
+        matching=len(materialized),
+        with_cda_and_rrc=sum(1 for row in materialized if _browse_has_cda(row) and _browse_has_rrc(row)),
+        with_net=sum(1 for row in materialized if _browse_has_net(row)),
+        fully_populated=sum(1 for row in materialized if is_complete_engineering_data(row)),
+    )
 
 
 @dataclass(frozen=True)
@@ -627,6 +865,27 @@ def build_walk_rows(
         if step.advances_anchor and status == "OK":
             active_anchor_item = item
 
+    # Two distinct items (different fuelcons_id) can legitimately share one
+    # label -- e.g. two FuelCons scenarios on the same VDE baseline. build_walk_chart
+    # plots bars keyed by this label, so an undisambiguated collision puts
+    # two bars at the same x-position with their value text stacked on top
+    # of each other. Same fix the Scorecard's column headers already use
+    # (_dedupe_titles), applied here by item_id so a row's own label and any
+    # other row's reference to it as a delta base always agree.
+    deduped_by_item_id = dict(zip((row.item_id for row in rows), dedupe_titles([row.label for row in rows])))
+    rows = [
+        replace(
+            row,
+            label=deduped_by_item_id[row.item_id],
+            delta_base_label=(
+                deduped_by_item_id.get(row.delta_base_item_id, row.delta_base_label)
+                if row.delta_base_item_id is not None
+                else row.delta_base_label
+            ),
+        )
+        for row in rows
+    ]
+
     return WalkResult(
         metric_key=spec.metric_key,
         rows=tuple(rows),
@@ -694,6 +953,25 @@ def _format_delta(absolute_delta: float | None, percent_delta: float | None, uni
 # -----------------------------------------------------------------------------
 
 
+class RowVisibility(str, Enum):
+    """Sprint 9 post-freeze hotfix: _render_section's legacy behavior (a row
+    disappears entirely when no cell in it is available) is right for
+    optional/contextual metrics, but wrong for basic/canonical engineering
+    audit information -- for those, "unavailable is information" and the
+    row must stay visible with an auditable reason. AUTO preserves the
+    legacy behavior exactly (the default for every row unless explicitly
+    marked); ALWAYS opts a specific row into staying visible regardless of
+    per-cell availability. This is a per-row flag, not a global toggle --
+    no section-wide or dataset-wide "show everything" mode exists.
+    """
+
+    AUTO = "AUTO"
+    ALWAYS = "ALWAYS"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 @dataclass(frozen=True)
 class ScorecardCell:
     raw_value: Any
@@ -714,6 +992,7 @@ class ScorecardRow:
     label: str
     reference_cell: ScorecardCell
     comparison_cells: tuple[ScorecardCell, ...] = field(default_factory=tuple)
+    visibility: RowVisibility = RowVisibility.AUTO
 
 
 @dataclass(frozen=True)
@@ -746,7 +1025,10 @@ def _absolute_cell(item: ComparisonItem, metric_key: str, unit_family: str, unit
     )
 
 
-def _metric_row(dataset: ComparisonDataset, metric_key: str, label: str, unit_family: str, unit_system: str) -> ScorecardRow:
+def _metric_row(
+    dataset: ComparisonDataset, metric_key: str, label: str, unit_family: str, unit_system: str, *, always_visible: bool = False
+) -> ScorecardRow:
+    visibility = RowVisibility.ALWAYS if always_visible else RowVisibility.AUTO
     if dataset.reference is None:
         # No Reference selected: every item is ABSOLUTE only, never a
         # fabricated delta. The first item fills ScorecardRow's mandatory
@@ -754,7 +1036,9 @@ def _metric_row(dataset: ComparisonDataset, metric_key: str, label: str, unit_fa
         # meaning; build_scenario_header only marks a column REFERENCE from
         # item.role, and no item holds ComparisonRole.REFERENCE here.
         cells = [_absolute_cell(item, metric_key, unit_family, unit_system) for item in dataset.comparisons]
-        return ScorecardRow(metric_key=metric_key, label=label, reference_cell=cells[0], comparison_cells=tuple(cells[1:]))
+        return ScorecardRow(
+            metric_key=metric_key, label=label, reference_cell=cells[0], comparison_cells=tuple(cells[1:]), visibility=visibility
+        )
 
     self_result = compare_metric(dataset.reference, dataset.reference, metric_key)
     reference_cell = ScorecardCell(
@@ -790,7 +1074,9 @@ def _metric_row(dataset: ComparisonDataset, metric_key: str, label: str, unit_fa
                 warning=warning,
             )
         )
-    return ScorecardRow(metric_key=metric_key, label=label, reference_cell=reference_cell, comparison_cells=tuple(comparison_cells))
+    return ScorecardRow(
+        metric_key=metric_key, label=label, reference_cell=reference_cell, comparison_cells=tuple(comparison_cells), visibility=visibility
+    )
 
 
 def _provenance_value(item: ComparisonItem, field_name: str) -> Any:
@@ -830,11 +1116,32 @@ def _provenance_section(dataset: ComparisonDataset) -> ScorecardSection:
     return ScorecardSection(title=_PROVENANCE_SECTION_TITLE, rows=tuple(rows))
 
 
+def visible_rows(section: ScorecardSection) -> tuple[ScorecardRow, ...]:
+    """The single row-visibility policy every Scorecard-style table renderer
+    uses (Sprint 9 post-freeze hotfix). A row is visible when:
+
+    - it is marked RowVisibility.ALWAYS (basic/canonical engineering audit
+      information -- "unavailable is information" for these, never hidden
+      even when unavailable for every selected item), or
+    - at least one cell (reference or any comparison) is available (legacy
+      AUTO behavior, unchanged: an optional/contextual row with nothing
+      available anywhere simply doesn't clutter the table).
+
+    Extracted as a pure, Streamlit-free function specifically so this policy
+    is unit-testable without an AppTest/Streamlit render pass.
+    """
+    return tuple(
+        row
+        for row in section.rows
+        if row.visibility is RowVisibility.ALWAYS or row.reference_cell.available or any(c.available for c in row.comparison_cells)
+    )
+
+
 def build_scorecard_sections(dataset: ComparisonDataset, *, unit_system: str = "Metric") -> list[ScorecardSection]:
     sections: list[ScorecardSection] = []
     for group_key, title in _SCORECARD_SECTIONS:
         rows = tuple(
-            _metric_row(dataset, metric.key, metric.label, metric.unit_family, unit_system)
+            _metric_row(dataset, metric.key, metric.label, metric.unit_family, unit_system, always_visible=metric.always_visible)
             for metric in list_metrics(group_key)
         )
         sections.append(ScorecardSection(title=title, rows=rows))
@@ -1570,14 +1877,18 @@ def list_explore_dimension_values(items: Sequence[ComparisonItem], dimension_key
     return sorted(values)
 
 
-def _dedupe_display_labels(labels: list[str]) -> list[str]:
-    """Presentation-only disambiguation equivalent to components/comparison_report.py's
-    _dedupe_titles (Sec 10) -- kept local so this module stays Streamlit-free
-    and dependency-direction-clean (UI imports viewmodels, never the reverse).
-    Two distinct scenarios sharing one label must never be merged into one bar.
+def dedupe_titles(labels: Sequence[str]) -> list[str]:
+    """Two comparison items can legitimately share the same display label
+    (e.g. two FuelCons scenarios on the same VDE baseline with different
+    fuel assumptions, or the same label+provenance) -- disambiguate with a
+    trailing counter rather than letting a consumer either raise (pandas
+    Styler requires unique columns/index) or silently overlay two chart
+    bars/Walk steps at the same categorical position. The single shared
+    implementation for this across the Scorecard, Explore bar chart, and
+    Walk/KPI Comparison chart.
     """
     seen: dict[str, int] = {}
-    result = []
+    result: list[str] = []
     for label in labels:
         seen[label] = seen.get(label, 0) + 1
         result.append(label if seen[label] == 1 else f"{label} ({seen[label]})")
@@ -1673,7 +1984,7 @@ def build_explore_bar_rows(
         kept_items.append(item)
         labels.append(str(x_value))
 
-    labels = _dedupe_display_labels(labels)
+    labels = dedupe_titles(labels)
     rows: list[ExploreBarRow] = []
     for item, label in zip(kept_items, labels):
         value = extract_metric_value(item, y_metric_key)
@@ -2005,6 +2316,7 @@ def build_lineage_waterfall(
 __all__ = [
     "MAX_COMPARISONS",
     "HP_PER_KW",
+    "dedupe_titles",
     "kw_to_hp",
     "hp_to_kw",
     "apply_engineering_filters",
@@ -2033,6 +2345,16 @@ __all__ = [
     "delta_vs_reference_walk_steps",
     "ScenarioOption",
     "build_scenario_options",
+    "build_scenario_browse_rows",
+    "search_browse_candidates",
+    "BrowseAvailabilityFilters",
+    "apply_availability_filters",
+    "is_complete_engineering_data",
+    "is_roadload_ready",
+    "BROWSE_PRESET_LABELS",
+    "apply_browse_preset",
+    "BrowseSummaryCounters",
+    "compute_browse_summary_counters",
     "SelectionState",
     "set_reference",
     "add_comparison",
@@ -2040,9 +2362,11 @@ __all__ = [
     "sync_comparisons_from_widget",
     "format_value",
     "metric_axis_label",
+    "RowVisibility",
     "ScorecardCell",
     "ScorecardRow",
     "ScorecardSection",
+    "visible_rows",
     "build_scorecard_sections",
     "build_scenario_header",
     "dataset_warnings_summary",

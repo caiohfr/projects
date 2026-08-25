@@ -15,12 +15,14 @@ from src.vde_core.qa_mock_data import (
     GOLDEN_QA_SCENARIO,
     QA_COMPONENT_FIXTURES,
     QA_DATA_DIR,
+    build_fuelcons_seed_rows,
     build_seed_manifest,
     build_tire_seed_rows,
     build_vde_seed_rows,
     inertia_row_for_mass,
     is_safe_qa_db_path,
     seed_qa_database,
+    seed_qa_fuelcons_mock_rows,
     seeded_database_digest,
 )
 from src.vde_core.roadload import KPA_PER_PSI, calculate_applied_rrc_by_axle
@@ -138,7 +140,7 @@ class QaMockDataTests(unittest.TestCase):
             tire = get_tire_by_code("TIRE-QA-010")
             nominal = fetch_vde_by_id(900001)
 
-        self.assertEqual(len(rows), 7)
+        self.assertEqual(len(rows), 8)
         self.assertEqual(tire["tire_test_code"], "TIRE-QA-010")
         self.assertEqual(nominal["model"], "Nominal EPA baseline")
 
@@ -440,11 +442,84 @@ class QaMockDataTests(unittest.TestCase):
 
         self.assertIn("vde_db", tables)
         self.assertIn("tire_roadload_db", tables)
-        self.assertEqual(vde_count, 7)
+        self.assertEqual(vde_count, 8)
         self.assertEqual(tire_count, 19)
 
     def test_default_demo_path_stays_under_qa_directory(self):
         self.assertTrue(is_safe_qa_db_path(DEFAULT_QA_DB_PATH))
+
+    def test_wltp_baseline_exists_alongside_the_epa_baselines(self):
+        baseline_rows = {row["id"]: row for row in build_vde_seed_rows()}
+        self.assertEqual(baseline_rows[900008]["legislation"], "WLTP")
+        self.assertEqual(baseline_rows[900008]["cycle_name"], "WLTC")
+        epa_ids = [row_id for row_id, row in baseline_rows.items() if row["legislation"] == "EPA"]
+        self.assertGreaterEqual(len(epa_ids), 1)
+
+
+class QaFuelconsMockRowsTests(unittest.TestCase):
+    """Comparison Browse Compact UX + QA Data package: opt-in FuelCons mock
+    rows for exercising the Fuel Economy / NET / Complete Engineering Data
+    filters and presets with real data instead of empty catalogs.
+    """
+
+    def _temp_db_path(self) -> Path:
+        QA_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        temp_dir = Path(tempfile.mkdtemp(prefix="qa_fuelcons_", dir=str(QA_DATA_DIR)))
+        self.addCleanup(lambda: shutil.rmtree(temp_dir, ignore_errors=True))
+        return temp_dir / "qa_fuelcons.db"
+
+    def test_seeding_a_qa_database_leaves_fuelcons_db_empty_by_default(self):
+        db_path = self._temp_db_path()
+        seed_qa_database(db_path, overwrite=False)
+        with sqlite3.connect(str(db_path)) as con:
+            count = con.execute("SELECT COUNT(*) FROM fuelcons_db").fetchone()[0]
+        self.assertEqual(count, 0)
+
+    def test_opt_in_helper_inserts_every_mock_row_linked_to_a_real_vde(self):
+        db_path = self._temp_db_path()
+        seed_qa_database(db_path, overwrite=False)
+        seed_qa_fuelcons_mock_rows(db_path)
+
+        vde_ids = {row["id"] for row in build_vde_seed_rows()}
+        rows = build_fuelcons_seed_rows()
+        self.assertGreaterEqual(len(rows), 6)
+        with sqlite3.connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            stored = {r["id"]: dict(r) for r in con.execute("SELECT * FROM fuelcons_db").fetchall()}
+        self.assertEqual(set(stored.keys()), {row["id"] for row in rows})
+        for row in rows:
+            self.assertIn(row["vde_id"], vde_ids)
+
+    def test_coverage_includes_fuel_economy_present_and_missing_cases(self):
+        rows = build_fuelcons_seed_rows()
+        with_fe = [r for r in rows if r.get("fuel_l_per_100km") is not None]
+        without_fe = [r for r in rows if r.get("fuel_l_per_100km") is None]
+        self.assertGreaterEqual(len(with_fe), 1)
+        self.assertGreaterEqual(len(without_fe), 1)
+
+    def test_coverage_includes_a_net_available_and_a_net_unavailable_case(self):
+        baseline_rows = {row["id"]: row for row in build_vde_seed_rows()}
+        rows = build_fuelcons_seed_rows()
+        net_available = [r for r in rows if baseline_rows[r["vde_id"]].get("trans_A_coef_N") is not None]
+        net_unavailable = [r for r in rows if baseline_rows[r["vde_id"]].get("trans_A_coef_N") is None]
+        self.assertGreaterEqual(len(net_available), 1)
+        self.assertGreaterEqual(len(net_unavailable), 1)
+
+    def test_coverage_includes_both_epa_and_wltp_scenarios(self):
+        baseline_rows = {row["id"]: row for row in build_vde_seed_rows()}
+        rows = build_fuelcons_seed_rows()
+        legislations = {baseline_rows[r["vde_id"]]["legislation"] for r in rows}
+        self.assertIn("EPA", legislations)
+        self.assertIn("WLTP", legislations)
+
+    def test_opt_in_helper_is_idempotent(self):
+        db_path = self._temp_db_path()
+        seed_qa_database(db_path, overwrite=False)
+        seed_qa_fuelcons_mock_rows(db_path)
+        seed_qa_fuelcons_mock_rows(db_path)
+        with sqlite3.connect(str(db_path)) as con:
+            count = con.execute("SELECT COUNT(*) FROM fuelcons_db").fetchone()[0]
+        self.assertEqual(count, len(build_fuelcons_seed_rows()))
 
 
 if __name__ == "__main__":

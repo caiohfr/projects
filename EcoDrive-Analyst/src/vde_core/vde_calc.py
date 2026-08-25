@@ -14,13 +14,15 @@ _SIMPLE_TRANS_FACTORS = {
 }
 
 
-def compute_vde_net(
-    df: pd.DataFrame,
-    A_N: float,
-    B_N_per_kph: float,
-    C_N_per_kph2: float,
-    mass_kg: float,
-) -> Dict[str, float]:
+def extract_cycle_arrays(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Validate and extract a cycle's (t, v) arrays.
+
+    Same validation compute_vde_net has always applied (columns present,
+    finite values, no duplicate/decreasing timestamps, at least 2 points).
+    Extracted so the Vehicle Demand engine (Sprint 9B) can build a time
+    series from the same validated arrays compute_vde_net integrates,
+    without re-deriving or loosening these checks.
+    """
     if not {"t", "v"} <= set(df.columns):
         raise ValueError("cycle df must have columns: t (s), v (m/s)")
 
@@ -39,12 +41,52 @@ def compute_vde_net(
     if np.any(dt < 0):
         raise ValueError("cycle time must be strictly increasing")
 
+    return t, v
+
+
+def compute_vde_series(
+    t: np.ndarray,
+    v: np.ndarray,
+    A_N: float,
+    B_N_per_kph: float,
+    C_N_per_kph2: float,
+    mass_kg: float,
+) -> Dict[str, np.ndarray]:
+    """Per-timestep arrays behind compute_vde_net's aggregate result.
+
+    A_N/B_N_per_kph/C_N_per_kph2 are evaluated against speed in kph (v_kph =
+    v * 3.6); v/t/mass_kg are SI (m/s, s, kg). This is the single place that
+    computes road-load force, acceleration (np.gradient(v, t)), and tractive
+    power for the canonical VDE calculation -- compute_vde_net and the
+    Vehicle Demand engine (Sprint 9B, src/vde_core/vehicle_demand/) both
+    consume it rather than each deriving their own copy of this math.
+    """
     v_kph = v * 3.6
     F_road = A_N + B_N_per_kph * v_kph + C_N_per_kph2 * (v_kph**2)
-
     a = np.gradient(v, t)
-    P = (F_road + mass_kg * a) * v
-    P_pos = np.clip(P, 0.0, None)
+    F_inertia = mass_kg * a
+    F_tractive = F_road + F_inertia
+    P = F_tractive * v
+    return {
+        "v_kph": v_kph,
+        "F_road_N": F_road,
+        "a_mps2": a,
+        "F_inertia_N": F_inertia,
+        "F_tractive_N": F_tractive,
+        "P_W": P,
+    }
+
+
+def compute_vde_net(
+    df: pd.DataFrame,
+    A_N: float,
+    B_N_per_kph: float,
+    C_N_per_kph2: float,
+    mass_kg: float,
+) -> Dict[str, float]:
+    t, v = extract_cycle_arrays(df)
+    series = compute_vde_series(t, v, A_N, B_N_per_kph, C_N_per_kph2, mass_kg)
+    P_pos = np.clip(series["P_W"], 0.0, None)
 
     E_J = np.trapezoid(P_pos, t)
     s_m = np.trapezoid(v, t)
@@ -99,5 +141,7 @@ __all__ = [
     "apply_coastdown_deltas",
     "compute_vde_net",
     "compute_vde_net_mj_per_km",
+    "compute_vde_series",
+    "extract_cycle_arrays",
     "vde_total_simple",
 ]

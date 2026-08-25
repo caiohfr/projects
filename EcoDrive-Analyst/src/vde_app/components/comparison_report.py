@@ -28,6 +28,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from src.vde_app.components.shared import get_legislation_icon, search_logo
+
 from src.vde_app.comparison_report_charts import (
     build_cycle_demand_figure,
     build_explore_bar,
@@ -36,7 +38,14 @@ from src.vde_app.comparison_report_charts import (
     build_fe_vde_figure,
     build_grouped_bar_figure,
     build_lineage_waterfall_chart,
+    build_vehicle_demand_breakdown_chart,
     build_walk_chart,
+)
+from src.vde_app.comparison_vehicle_demand_viewmodels import (
+    VEHICLE_DEMAND_SECTION_TITLE,
+    build_vehicle_demand_breakdown_rows,
+    build_vehicle_demand_comparison_rows,
+    resolve_vehicle_demand_outcomes,
 )
 from src.vde_app.comparison_report_viewmodels import (
     ComparisonItem,
@@ -49,7 +58,11 @@ from src.vde_app.comparison_report_viewmodels import (
     WalkDisplayMode,
     WalkStep,
     WalkViewSpec,
+    apply_availability_filters,
+    apply_browse_preset,
     apply_engineering_filters,
+    BROWSE_PRESET_LABELS,
+    BrowseAvailabilityFilters,
     build_cycle_demand_rows,
     build_cycle_phase_rows,
     build_explore_bar_rows,
@@ -58,11 +71,15 @@ from src.vde_app.comparison_report_viewmodels import (
     build_fe_vde_points,
     build_iso_pse_lines,
     compute_adaptive_pse_guides,
+    compute_browse_summary_counters,
+    dedupe_titles,
     build_lineage_waterfall,
     build_roadload_curve_rows,
     build_scenario_header,
+    build_scenario_browse_rows,
     build_scenario_options,
     build_scorecard_sections,
+    search_browse_candidates,
     build_walk_rows,
     canonical_identity,
     dataset_items,
@@ -72,7 +89,6 @@ from src.vde_app.comparison_report_viewmodels import (
     evaluate_target_gap,
     format_value,
     hp_to_kw,
-    kw_to_hp,
     list_available_explore_metrics,
     list_available_lineage_metrics,
     list_explore_dimension_values,
@@ -87,6 +103,7 @@ from src.vde_app.comparison_report_viewmodels import (
     set_reference,
     set_target,
     sync_comparisons_from_widget,
+    visible_rows,
 )
 from src.vde_app.components.pwt_fuel_energy import (
     render_comparison_report_page,
@@ -102,13 +119,14 @@ from src.vde_core.comparison_report_service import (
     build_comparison_dataset,
     compare_metric,
     extract_metric_value,
-    list_comparison_scenarios,
+    list_comparison_scenarios_detailed,
     list_vde_catalog,
     resolve_temporary_transmission_from_component,
 )
 from src.vde_core.component_repositories import load_component_repository
 from src.vde_core.cycles import use_standard_cycle
 from src.vde_core.db import current_db_path
+from src.vde_core.vehicle_demand import RoadloadBasis
 
 _CELL_STYLE = {
     "BETTER": "background-color: rgba(34,197,94,0.18)",
@@ -160,7 +178,13 @@ _LINEAGE_WARNING_MESSAGES = {
 
 @st.cache_data(show_spinner=False)
 def _load_catalog_cached(db_path_signature: str) -> list[dict]:
-    return list_comparison_scenarios()
+    # list_comparison_scenarios_detailed is a drop-in superset of
+    # list_comparison_scenarios (same record_origin/make/legislation/
+    # electrification/engine_size_l/engine_max_power_kw fields, plus the
+    # wider Scorecard-equivalent set the Browse table needs) -- switching
+    # the shared catalog to it means _render_filters/build_scenario_options
+    # keep working unchanged, and the Browse table needs no separate fetch.
+    return list_comparison_scenarios_detailed()
 
 
 def _load_catalog() -> list[dict]:
@@ -174,20 +198,6 @@ def _load_vde_catalog_cached(db_path_signature: str) -> list[dict]:
 
 def _load_vde_catalog() -> list[dict]:
     return _load_vde_catalog_cached(str(Path(current_db_path()).resolve()))
-
-
-def _dedupe_titles(titles: list[str]) -> list[str]:
-    """pandas.Styler requires unique columns/index. Two comparison items can
-    legitimately share the same label+provenance (e.g. two scenarios on the
-    same VDE with the same record_origin but different fuel assumptions) --
-    disambiguate with a trailing counter rather than letting Styler raise.
-    """
-    seen: dict[str, int] = {}
-    result = []
-    for title in titles:
-        seen[title] = seen.get(title, 0) + 1
-        result.append(title if seen[title] == 1 else f"{title} ({seen[title]})")
-    return result
 
 
 def _index_of(value, ordered_values: list) -> int:
@@ -222,94 +232,346 @@ def _render_exclusions(excluded: list[dict]) -> None:
 # -----------------------------------------------------------------------------
 
 
-def _render_filters(catalog_rows: list[dict]) -> list[dict]:
-    """One flat filter grid -- no expanders. Conceptual category (vehicle vs
-    engineering vs data) is not a reason to create a separate visual section
-    on its own; grouping is only introduced where it actually reduces
-    complexity, and a second row of controls next to the first doesn't need
-    one here. Displacement/Power are range sliders whose default spans the
-    full dataset -- that full span IS the "All" neutral state, so no
-    separate activation checkbox is needed; a scenario missing the field is
-    excluded only once the user narrows the slider off its default (Package 8F).
+# Real local icon assets exist only for two concepts: manufacturer brand
+# (data/images/logos/*.png, via search_logo) and legislation/country
+# (data/images/flag_*.png, via get_legislation_icon) -- both reused below
+# next to the Make/Legislation filters, the same assets VDE Setup's own
+# branding header already uses. No local asset exists yet for engineering-
+# status concepts (CdA/RRC/NET/Transmission/Fuel Economy/preset state), so
+# those stay plain text rather than emoji; if icon files for them are added
+# later (e.g. data/images/badges/<key>.png), swap st.image(...) in wherever
+# _AVAILABILITY_LABELS/BROWSE_PRESET_LABELS are rendered -- no other
+# restructuring needed.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_IMAGES_DIR = _REPO_ROOT / "data" / "images"
+_LOGOS_DIR = _IMAGES_DIR / "logos"
+
+_AVAILABILITY_OPTIONS = ("has_cda", "has_rrc", "has_net", "transmission_resolved", "has_fuel_economy")
+_AVAILABILITY_LABELS = {
+    "has_cda": "CdA",
+    "has_rrc": "RRC",
+    "has_net": "NET (ABC)",
+    "transmission_resolved": "Transmission resolved",
+    "has_fuel_economy": "Fuel Economy",
+}
+_COMPLETE_ENGINEERING_DATA_DEFINITION = (
+    "Complete Engineering Data = Mass, ABC TOTAL, CdA, RRC, Transmission resolved, "
+    "ABC NET / VDE NET, VDE TOTAL, Fuel Economy"
+)
+
+# Every widget key "Clear Filters" resets. Popping these mutates only
+# candidate-search state -- st.session_state["comparison_selection"] (the
+# already-selected Reference/Comparison scenarios) is a separate key never
+# touched here, so clearing filters can never corrupt an existing selection.
+_FILTER_WIDGET_KEYS = (
+    "comparison_filter_query",
+    "comparison_filter_make",
+    "comparison_filter_model",
+    "comparison_filter_year",
+    "comparison_filter_category",
+    "comparison_filter_legislation",
+    "comparison_filter_electrification",
+    "comparison_filter_availability",
+    "comparison_filter_advanced_open",
+    "comparison_filter_engine_size_min",
+    "comparison_filter_engine_size_max",
+    "comparison_filter_power_min",
+    "comparison_filter_power_max",
+    "comparison_filter_mass_min",
+    "comparison_filter_mass_max",
+    "comparison_filter_test_mass_min",
+    "comparison_filter_test_mass_max",
+    "comparison_filter_cda_min",
+    "comparison_filter_cda_max",
+    "comparison_filter_rrc_min",
+    "comparison_filter_rrc_max",
+    "comparison_filter_vde_total_min",
+    "comparison_filter_vde_total_max",
+    "comparison_filter_fuel_economy_min",
+    "comparison_filter_fuel_economy_max",
+    "comparison_filter_drive",
+    "comparison_filter_transmission",
+    "comparison_filter_fuel_type",
+    "comparison_filter_record_origin",
+    "comparison_filter_active_preset",
+)
+
+
+def _render_min_max_range(label: str, key_prefix: str) -> tuple[float | None, float | None] | None:
+    """A blank Min AND a blank Max means "not active" (returns None, the same
+    neutral state apply_engineering_filters already treats as unrestricted)
+    -- only once at least one bound is actually typed does the range start
+    excluding rows with a missing value for that field.
     """
+    st.caption(label)
+    min_col, max_col = st.columns(2)
+    min_value = min_col.number_input(
+        f"{label} min", value=None, step=0.1, key=f"{key_prefix}_min", placeholder="Min", label_visibility="collapsed"
+    )
+    max_value = max_col.number_input(
+        f"{label} max", value=None, step=0.1, key=f"{key_prefix}_max", placeholder="Max", label_visibility="collapsed"
+    )
+    if min_value is None and max_value is None:
+        return None
+    return (min_value, max_value)
+
+
+def _render_identity_icons(make: str, legislation: str) -> None:
+    """Real local icon assets (Sec 8/9) -- the same manufacturer-logo and
+    legislation-flag lookup VDE Setup's own branding header uses, shown
+    only when a specific Make/Legislation is actually selected (parsimony:
+    Sec 9 "usar com parcimonia, preferir valor informativo real"). No
+    layout reserved when neither is active, keeping the compact block
+    genuinely compact.
+    """
+    if make == "All" and legislation == "All":
+        return
+    icon_col1, icon_col2, _spacer = st.columns([1, 1, 6])
+    if make != "All":
+        logo_path = search_logo({"make": make}, base_dir=str(_LOGOS_DIR))
+        if logo_path:
+            icon_col1.image(logo_path, width=28)
+    if legislation != "All":
+        flag_path = get_legislation_icon({"legislation": legislation}, base_dir=str(_IMAGES_DIR))
+        if flag_path:
+            icon_col2.image(flag_path, width=28)
+
+
+def _render_identity_filters(catalog_rows: list[dict]) -> list[dict]:
+    """Everything that stays OUTSIDE the Browse workspace (Sec 3.1): a
+    full-width search plus two compact rows of vehicle identity filters --
+    Make/Model/Year, then Category/Legislation/Electrification. Data
+    Availability, Quick presets, Advanced Filters, and the summary counters
+    all moved inside Browse (Sec 3.2); this function only narrows the
+    catalog down to what Browse itself further refines.
+    """
+    query = st.text_input(
+        "Search",
+        key="comparison_filter_query",
+        placeholder="Search model, VDE ID or Fuelcons ID...",
+        label_visibility="collapsed",
+    )
+    rows = search_browse_candidates(catalog_rows, query)
+
     makes = sorted({r["make"] for r in catalog_rows if r.get("make")})
+    models = sorted({r["model"] for r in catalog_rows if r.get("model")})
+    years = sorted({r["year"] for r in catalog_rows if r.get("year") is not None})
     categories = sorted({r["category"] for r in catalog_rows if r.get("category")})
     legislations = sorted({r["legislation"] for r in catalog_rows if r.get("legislation")})
     electrifications = sorted({r["electrification"] for r in catalog_rows if r.get("electrification")})
-    origins = sorted({r["record_origin"] for r in catalog_rows if r.get("record_origin")})
 
-    col1, col2, col3, col4 = st.columns(4)
-    make = col1.selectbox("Make", ["All"] + makes, key="comparison_filter_make")
-    category = col2.selectbox("Category", ["All"] + categories, key="comparison_filter_category")
-    legislation = col3.selectbox("Legislation", ["All"] + legislations, key="comparison_filter_legislation")
-    electrification = col4.selectbox("Electrification", ["All"] + electrifications, key="comparison_filter_electrification")
+    row1_col1, row1_col2, row1_col3 = st.columns(3)
+    make = row1_col1.selectbox("Make", ["All"] + makes, key="comparison_filter_make")
+    model = row1_col2.selectbox("Model", ["All"] + models, key="comparison_filter_model")
+    year = row1_col3.selectbox("Year", ["All"] + years, key="comparison_filter_year")
 
-    rows = catalog_rows
+    row2_col1, row2_col2, row2_col3 = st.columns(3)
+    category = row2_col1.selectbox("Category", ["All"] + categories, key="comparison_filter_category")
+    legislation = row2_col2.selectbox("Legislation", ["All"] + legislations, key="comparison_filter_legislation")
+    electrification = row2_col3.selectbox(
+        "Electrification", ["All"] + electrifications, key="comparison_filter_electrification"
+    )
+
+    _render_identity_icons(make, legislation)
+
     if make != "All":
         rows = [r for r in rows if r.get("make") == make]
+    if model != "All":
+        rows = [r for r in rows if r.get("model") == model]
+    if year != "All":
+        rows = [r for r in rows if r.get("year") == year]
     if category != "All":
         rows = [r for r in rows if r.get("category") == category]
     if legislation != "All":
         rows = [r for r in rows if r.get("legislation") == legislation]
     if electrification != "All":
         rows = [r for r in rows if r.get("electrification") == electrification]
+    return rows
 
-    size_col, power_col, origin_col = st.columns(3)
 
-    sizes = sorted({r["engine_size_l"] for r in catalog_rows if r.get("engine_size_l") is not None})
-    engine_size_l_range = None
-    if len(sizes) >= 1:
-        data_min, data_max = float(sizes[0]), float(sizes[-1])
-        if data_min < data_max:
-            size_min, size_max = size_col.slider(
-                "Displacement [L]",
-                min_value=data_min,
-                max_value=data_max,
-                value=(data_min, data_max),
-                step=0.1,
-                key="comparison_filter_engine_size_range",
-            )
-            if (size_min, size_max) != (data_min, data_max):
-                engine_size_l_range = (size_min, size_max)
-        else:
-            size_col.caption(f"Displacement [L]: {data_min:g} (all)")
-    else:
-        size_col.caption("Displacement [L]: no data")
+def _render_availability_and_presets(rows: list[dict]) -> list[dict]:
+    """Data Availability quick filters and Quick presets (Sec 3.3/3.5),
+    inside the Browse workspace: presets are just one more predicate
+    stacked on top of whatever's already active here, never reaching into
+    the pills' own state (no hidden interdependencies).
+    """
+    st.caption("Data availability")
+    selected_availability = st.pills(
+        "Data availability",
+        options=list(_AVAILABILITY_OPTIONS),
+        format_func=lambda option_key: _AVAILABILITY_LABELS[option_key],
+        selection_mode="multi",
+        default=[],
+        key="comparison_filter_availability",
+        label_visibility="collapsed",
+    )
+    availability_filters = BrowseAvailabilityFilters(
+        has_cda="has_cda" in selected_availability,
+        has_rrc="has_rrc" in selected_availability,
+        has_net="has_net" in selected_availability,
+        transmission_resolved="transmission_resolved" in selected_availability,
+        has_fuel_economy="has_fuel_economy" in selected_availability,
+    )
+    rows = apply_availability_filters(rows, availability_filters)
 
-    powers_hp = sorted({kw_to_hp(r["engine_max_power_kw"]) for r in catalog_rows if r.get("engine_max_power_kw") is not None})
+    st.caption("Quick presets")
+    preset_row1_col1, preset_row1_col2 = st.columns(2)
+    if preset_row1_col1.button(
+        "Complete Engineering Data",
+        key="comparison_preset_complete_engineering_data",
+        width="stretch",
+    ):
+        st.session_state["comparison_filter_active_preset"] = "complete_engineering_data"
+    if preset_row1_col2.button(
+        "Roadload Ready", key="comparison_preset_roadload_ready", width="stretch"
+    ):
+        st.session_state["comparison_filter_active_preset"] = "roadload_ready"
+
+    preset_row2_col1, preset_row2_col2 = st.columns(2)
+    if preset_row2_col1.button("Has NET", key="comparison_preset_has_net", width="stretch"):
+        st.session_state["comparison_filter_active_preset"] = "has_net"
+    if preset_row2_col2.button(
+        "Fuel Economy Ready",
+        key="comparison_preset_fuel_economy_ready",
+        width="stretch",
+    ):
+        st.session_state["comparison_filter_active_preset"] = "fuel_economy_ready"
+
+    if st.button("Clear Filters", key="comparison_clear_filters", width="stretch"):
+        for widget_key in _FILTER_WIDGET_KEYS:
+            st.session_state.pop(widget_key, None)
+        st.rerun()
+
+    active_preset = st.session_state.get("comparison_filter_active_preset")
+    rows = apply_browse_preset(rows, active_preset)
+    if active_preset:
+        preset_label = BROWSE_PRESET_LABELS.get(active_preset, active_preset)
+        st.caption(f"Preset active: **{preset_label}**")
+    return rows
+
+
+def _render_advanced_filters(catalog_rows: list[dict], rows: list[dict]) -> list[dict]:
+    """Secondary filters (Sec 3.4), inside the Browse workspace, entirely
+    Min/Max pairs (Sec 4.1: "DO NOT keep the big red sliders") or
+    categorical selectboxes -- no field is visually heavier than any other.
+    A blank Min/Max pair is inactive, same convention as every other Min/
+    Max field here. Streamlit forbids nesting an expander inside another
+    expander, so a toggle gates the whole subsection instead of a second
+    expander -- collapsed by default, so these 12 fields don't dominate
+    Browse the moment it's opened. While collapsed the fields simply don't
+    render, so any value set earlier stops being applied (and reappears,
+    unchanged, the next time the section is reopened) -- an inactive filter
+    is never invisible, matching every other filter's "not shown = not
+    applied" convention here.
+    """
+    st.caption("Advanced Filters")
+    show_advanced = st.toggle("Show advanced filters", value=False, key="comparison_filter_advanced_open")
+    if not show_advanced:
+        return rows
+
+    displacement_range = _render_min_max_range("Displacement [L]", "comparison_filter_engine_size")
+    power_hp_range = _render_min_max_range("Engine power [hp]", "comparison_filter_power")
     engine_max_power_kw_range = None
-    if len(powers_hp) >= 1:
-        data_min_hp, data_max_hp = float(powers_hp[0]), float(powers_hp[-1])
-        if data_min_hp < data_max_hp:
-            power_min_hp, power_max_hp = power_col.slider(
-                "Engine power [hp]",
-                min_value=data_min_hp,
-                max_value=data_max_hp,
-                value=(data_min_hp, data_max_hp),
-                step=5.0,
-                key="comparison_filter_power_range",
-            )
-            if (power_min_hp, power_max_hp) != (data_min_hp, data_max_hp):
-                engine_max_power_kw_range = (hp_to_kw(power_min_hp), hp_to_kw(power_max_hp))
-        else:
-            power_col.caption(f"Engine power [hp]: {data_min_hp:g} (all)")
-    else:
-        power_col.caption("Engine power [hp]: no data")
+    if power_hp_range is not None:
+        power_min_hp, power_max_hp = power_hp_range
+        engine_max_power_kw_range = (hp_to_kw(power_min_hp), hp_to_kw(power_max_hp))
 
-    record_origin = origin_col.selectbox("Provenance", ["All"] + origins, key="comparison_filter_record_origin")
+    mass_range = _render_min_max_range("Mass [kg]", "comparison_filter_mass")
+    test_mass_range = _render_min_max_range("Test mass [kg]", "comparison_filter_test_mass")
+    cda_range = _render_min_max_range("CdA [m2]", "comparison_filter_cda")
+    rrc_range = _render_min_max_range("RRC [N/kN]", "comparison_filter_rrc")
+    vde_total_range = _render_min_max_range("VDE TOTAL [MJ/km]", "comparison_filter_vde_total")
+    fuel_economy_range = _render_min_max_range("Fuel Economy [L/100km]", "comparison_filter_fuel_economy")
+
+    drives = sorted({r["drive_type"] for r in catalog_rows if r.get("drive_type")})
+    transmissions = sorted({r["transmission_type"] for r in catalog_rows if r.get("transmission_type")})
+    fuel_types = sorted({r["fuel_type"] for r in catalog_rows if r.get("fuel_type")})
+    origins = sorted({r["record_origin"] for r in catalog_rows if r.get("record_origin")})
+
+    cat_row1_col1, cat_row1_col2 = st.columns(2)
+    drive = cat_row1_col1.selectbox("Drive", ["All"] + drives, key="comparison_filter_drive")
+    transmission = cat_row1_col2.selectbox(
+        "Transmission", ["All"] + transmissions, key="comparison_filter_transmission"
+    )
+
+    cat_row2_col1, cat_row2_col2 = st.columns(2)
+    fuel_type = cat_row2_col1.selectbox("Fuel type", ["All"] + fuel_types, key="comparison_filter_fuel_type")
+    record_origin = cat_row2_col2.selectbox("Provenance", ["All"] + origins, key="comparison_filter_record_origin")
 
     rows = apply_engineering_filters(
-        rows, engine_size_l_range=engine_size_l_range, engine_max_power_kw_range=engine_max_power_kw_range
+        rows,
+        engine_size_l_range=displacement_range,
+        engine_max_power_kw_range=engine_max_power_kw_range,
+        mass_kg_range=mass_range,
+        test_mass_kg_range=test_mass_range,
+        cda_m2_range=cda_range,
+        rrc_range=rrc_range,
+        vde_total_range=vde_total_range,
+        fuel_l_per_100km_range=fuel_economy_range,
     )
+    if drive != "All":
+        rows = [r for r in rows if r.get("drive_type") == drive]
+    if transmission != "All":
+        rows = [r for r in rows if r.get("transmission_type") == transmission]
+    if fuel_type != "All":
+        rows = [r for r in rows if r.get("fuel_type") == fuel_type]
     if record_origin != "All":
         rows = [r for r in rows if r.get("record_origin") == record_origin]
-
     return rows
+
+
+def _render_browse_summary_counters(rows: list[dict]) -> None:
+    """Compact counters (Sec 3.6) -- every number is a sub-count of `rows`,
+    i.e. of whatever already matches every filter/preset above, so the
+    counters and the table below never disagree. "Fully populated" reuses
+    the exact same predicate as the "Complete Engineering Data" preset.
+    """
+    counters = compute_browse_summary_counters(rows)
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Matching scenarios", counters.matching)
+    col2.metric("With CdA + RRC", counters.with_cda_and_rrc)
+    col3.metric("With NET", counters.with_net)
+    col4.metric("Fully populated*", counters.fully_populated)
+    st.caption(f"* {_COMPLETE_ENGINEERING_DATA_DEFINITION}")
 
 
 def _option_label(fid: int, all_options_by_id: dict) -> str:
     option = all_options_by_id.get(fid)
     return option.label if option is not None else f"Unknown scenario #{fid}"
+
+
+def _render_scenario_browse(catalog_rows: list[dict], identity_filtered_rows: list[dict]) -> list[dict]:
+    """The Browse workspace (Sec 3.2): Data Availability -> Quick presets ->
+    Advanced Filters -> summary counters -> the detailed table, all inside
+    one expander, in that order. `identity_filtered_rows` is what's left
+    after the compact outside-Browse block (search + vehicle identity);
+    everything in here narrows it further, and the RETURNED rows -- not
+    identity_filtered_rows -- are what the Reference/Comparison selectboxes
+    below get to offer, since refinement controls now live entirely inside
+    Browse (Sec 2). `catalog_rows` (the full, unfiltered dataset) is only
+    used to compute Advanced Filters' categorical option lists, so widening
+    a filter can always reach the full dataset again, matching every other
+    filter here. The expander's own title count reflects
+    identity_filtered_rows (the Advanced/Availability/preset refinement
+    hasn't run yet at the point the title has to be chosen); the "Matching
+    scenarios" counter inside shows the fully-refined count instead.
+    """
+    with st.expander(f"Browse Comparison Scenarios ({len(identity_filtered_rows)})", expanded=False):
+        if not identity_filtered_rows:
+            st.info("No scenarios match the current filters.")
+            return identity_filtered_rows
+
+        rows = _render_availability_and_presets(identity_filtered_rows)
+        rows = _render_advanced_filters(catalog_rows, rows)
+        _render_browse_summary_counters(rows)
+
+        st.caption("Detailed scenarios")
+        if not rows:
+            st.info("No scenarios match the current filters.")
+        else:
+            browse_df = pd.DataFrame(build_scenario_browse_rows(rows))
+            st.dataframe(browse_df, hide_index=True, width="stretch")
+    return rows
 
 
 def _render_selection(catalog_rows: list[dict]) -> SelectionState:
@@ -323,7 +585,8 @@ def _render_selection(catalog_rows: list[dict]) -> SelectionState:
     control what's newly discoverable, just never what's already chosen.
     """
     all_options_by_id = {opt.fuelcons_id: opt for opt in build_scenario_options(catalog_rows)}
-    filtered_rows = _render_filters(catalog_rows)
+    identity_filtered_rows = _render_identity_filters(catalog_rows)
+    filtered_rows = _render_scenario_browse(catalog_rows, identity_filtered_rows)
     filtered_options = build_scenario_options(filtered_rows)
 
     state: SelectionState = st.session_state.setdefault(_SELECTION_KEY, SelectionState())
@@ -709,7 +972,7 @@ def _render_walk_hero(dataset: ComparisonDataset, metric_key: str, unit_system: 
 
 
 def _render_section(section: ScorecardSection, header_titles: list[str]) -> None:
-    rows = [row for row in section.rows if row.reference_cell.available or any(c.available for c in row.comparison_cells)]
+    rows = list(visible_rows(section))
     if not rows:
         return
 
@@ -721,10 +984,17 @@ def _render_section(section: ScorecardSection, header_titles: list[str]) -> None
         cell_texts = []
         cell_semantics = []
         for cell in cells:
+            # Sprint 9D: `if` rather than `elif` so a cell can show a delta
+            # AND a short warning together (e.g. a negative-residual "Review"
+            # flag next to its Reference delta). Behavior-preserving for
+            # every existing caller: warning and formatted_delta have always
+            # been mutually exclusive by construction elsewhere in this file
+            # (compare_metric's incompatible branch sets warning and leaves
+            # formatted_delta None; every other cell never sets warning).
             text = cell.formatted_value
             if cell.formatted_delta:
                 text = f"{text}\n{cell.formatted_delta}"
-            elif cell.warning:
+            if cell.warning:
                 text = f"{text}\n{cell.warning}"
             cell_texts.append(text)
             cell_semantics.append(cell.semantic)
@@ -757,7 +1027,7 @@ def _render_scorecard_tab(dataset: ComparisonDataset | None) -> None:
                 st.warning(warning)
 
     items = dataset_items(dataset)
-    header_titles = _dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
+    header_titles = dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
 
     unit_system = normalize_unit_system(st.session_state.get("unit_system"))
     for section in build_scorecard_sections(dataset, unit_system=unit_system):
@@ -1096,7 +1366,7 @@ def _render_physical_setup_section(dataset: ComparisonDataset, unit_system: str)
     including its Reference-less absolute-only degrade.
     """
     items = dataset_items(dataset)
-    header_titles = _dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
+    header_titles = dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
     physical_section = next(
         (s for s in build_scorecard_sections(dataset, unit_system=unit_system) if s.title == "Physical Setup"), None
     )
@@ -1113,7 +1383,7 @@ def _render_abc_section(dataset: ComparisonDataset, boundaries: list[str], unit_
     filtered to the boundaries currently selected above.
     """
     items = dataset_items(dataset)
-    header_titles = _dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
+    header_titles = dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
     roadload_section = next(
         (s for s in build_scorecard_sections(dataset, unit_system=unit_system) if s.title == "Roadload"), None
     )
@@ -1166,6 +1436,40 @@ def _render_cycle_phase_section(dataset: ComparisonDataset, boundaries: list[str
         st.caption("No recognized phase breakdown (EPA City/Highway or WLTP Low/Mid/High/Extra High) is available for the selected items.")
 
 
+_ROADLOAD_BASIS_BY_LABEL = {"TOTAL": RoadloadBasis.TOTAL, "NET": RoadloadBasis.NET}
+
+
+def _render_vehicle_demand_summary_section(dataset: ComparisonDataset, boundaries: list[str], unit_system: str) -> None:
+    """"Why is vehicle demand different?" (Sprint 9D) -- a compact table from
+    the frozen Vehicle Demand Core (Sprint 9A-9C), complementing (never
+    replacing) VDE by Cycle/Phase above. Pure consumer: no roadload/RRC/CdA/
+    air-density/inertia/tractive/energy-integration physics is computed
+    here -- everything comes from calculate_vehicle_demand() via
+    comparison_vehicle_demand_viewmodels.py.
+    """
+    st.markdown(f"**{VEHICLE_DEMAND_SECTION_TITLE}**")
+    st.caption(
+        "Top rows: overall demand (VDE, tractive/braking energy). Lower rows: the roadload "
+        "explanation behind it (known rolling/aero, residual/unattributed, inertial work)."
+    )
+    items = dataset_items(dataset)
+    header_titles = dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
+    outcomes = resolve_vehicle_demand_outcomes(dataset)
+    for boundary in boundaries:
+        basis = _ROADLOAD_BASIS_BY_LABEL[boundary]
+        if len(boundaries) > 1:
+            st.caption(boundary)
+        section = build_vehicle_demand_comparison_rows(dataset, basis, unit_system, outcomes=outcomes)
+        _render_section(section, header_titles)
+
+        breakdown = build_vehicle_demand_breakdown_rows(dataset, basis, outcomes=outcomes)
+        _render_exclusions(breakdown["excluded"])
+        if breakdown["rows"]:
+            with st.expander("Vehicle Demand Energy Breakdown", expanded=False):
+                st.caption("Known Rolling + Known Aero + Residual/Unattributed always sum to Roadload Energy.")
+                st.plotly_chart(build_vehicle_demand_breakdown_chart(breakdown["rows"]), width="stretch")
+
+
 def _render_cycle_demand_section(dataset: ComparisonDataset, boundaries: list[str]) -> None:
     st.markdown("**Demanded power over cycle**")
     if not st.checkbox("Show demanded power over cycle", value=False, key="roadload_show_cycle_demand"):
@@ -1190,11 +1494,12 @@ def _render_cycle_demand_section(dataset: ComparisonDataset, boundaries: list[st
 
 
 def _render_energy_drivers_tab(scorecard_dataset: ComparisonDataset | None) -> None:
-    """"Why is vehicle demand different?" (Package 8F). Storytelling order:
-    physical setup -> roadload force curve -> ABC coefficients -> VDE by
-    cycle/phase -> demanded power (lower priority/expandable). Mass/RRC/CdA
-    stay visually coupled with roadload/VDE rather than split into a
-    separate overview.
+    """"Why is vehicle demand different?" (Package 8F, extended Sprint 9D).
+    Storytelling order: physical setup -> roadload force curve -> ABC
+    coefficients -> VDE by cycle/phase -> Vehicle Demand Summary (compact
+    physical explanation table, Sprint 9D) -> demanded power (lower
+    priority/expandable). Mass/RRC/CdA stay visually coupled with roadload/
+    VDE rather than split into a separate overview.
     """
     source = st.radio(
         "Source",
@@ -1233,6 +1538,8 @@ def _render_energy_drivers_tab(scorecard_dataset: ComparisonDataset | None) -> N
     _render_abc_section(dataset, boundaries, unit_system)
     st.divider()
     _render_cycle_phase_section(dataset, boundaries, unit_system)
+    st.divider()
+    _render_vehicle_demand_summary_section(dataset, boundaries, unit_system)
     st.divider()
     _render_cycle_demand_section(dataset, boundaries)
 

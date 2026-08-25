@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from src.vde_app.comparison_report_viewmodels import (
     MAX_COMPARISONS,
@@ -12,7 +13,14 @@ from src.vde_app.comparison_report_viewmodels import (
     PresentationRole,
     PresentationState,
     SelectionState,
+    apply_availability_filters,
+    apply_browse_preset,
     apply_engineering_filters,
+    BrowseAvailabilityFilters,
+    compute_browse_summary_counters,
+    is_complete_engineering_data,
+    is_roadload_ready,
+    search_browse_candidates,
     hp_to_kw,
     kw_to_hp,
     TargetState,
@@ -44,6 +52,7 @@ from src.vde_app.comparison_report_viewmodels import (
     build_reference_summary,
     build_roadload_curve_rows,
     build_scenario_header,
+    build_scenario_browse_rows,
     build_scenario_options,
     build_scorecard_sections,
     dataset_items,
@@ -66,8 +75,14 @@ from src.vde_app.comparison_report_viewmodels import (
     set_presentation_role,
     set_reference,
     sync_comparisons_from_widget,
+    RowVisibility,
+    ScorecardCell,
+    ScorecardRow,
+    ScorecardSection,
+    visible_rows,
 )
 from src.vde_core import db as db_module
+from src.vde_core.comparison_metric_registry import get_metric, list_metrics
 from src.vde_core.comparison_report_service import (
     ComparisonDataset,
     ComparisonRole,
@@ -352,6 +367,31 @@ class VersatileWalkTests(unittest.TestCase):
         self.assertAlmostEqual(rows[self._id(self.current)].delta_value, 5.9 - 6.0)
         for item_id in (self._id(self.proposal_a), self._id(self.proposal_b), self._id(self.current)):
             self.assertEqual(rows[item_id].delta_base_item_id, self._id(self.reference))
+
+    def test_rows_sharing_one_vde_get_distinct_labels_not_a_collapsed_chart_bar(self):
+        # self.reference (fuelcons_id=1) and self.current (fuelcons_id=4)
+        # are both linked to vde_id=900001, so item.label is identical for
+        # both -- build_walk_chart plots bars keyed by row.label, so an
+        # undisambiguated collision would put two bars at the same
+        # x-position with their value text stacked on top of each other.
+        dataset = self._dataset()
+        spec = WalkViewSpec(
+            metric_key="fuel_l_per_100km",
+            steps=(
+                WalkStep(self._id(self.reference), WalkDisplayMode.ABSOLUTE, advances_anchor=True),
+                WalkStep(self._id(self.current), WalkDisplayMode.DELTA, WalkDeltaBase.REFERENCE, advances_anchor=False),
+            ),
+        )
+        result = build_walk_rows(dataset, spec)
+        rows = {row.item_id: row for row in result.rows}
+        reference_row = rows[self._id(self.reference)]
+        current_row = rows[self._id(self.current)]
+        self.assertEqual(reference_row.label, self.reference.label)
+        self.assertNotEqual(current_row.label, reference_row.label)
+        self.assertTrue(current_row.label.startswith(self.current.label))
+        # The delta base label shown for the "current" row must match the
+        # reference row's own (deduped) label, not the pre-dedup original.
+        self.assertEqual(current_row.delta_base_label, reference_row.label)
 
     def test_c_mixed_walk_benchmark_context_only_does_not_become_anchor(self):
         dataset = self._dataset()
@@ -643,6 +683,325 @@ class ScenarioOptionTests(unittest.TestCase):
         self.assertFalse(option.label.startswith("#"))
         self.assertIn("QA Baseline", option.label)
 
+    def test_label_includes_vde_id_and_fuelcons_id_to_disambiguate_identical_vehicle_names(self):
+        rows = [
+            {"fuelcons_id": 10, "vde_id": 900001, "make": "HYUNDAI", "model": "G80", "year": 2020, "legislation": "EPA", "electrification": "ICE", "record_origin": "HOMOLOGATED"},
+            {"fuelcons_id": 11, "vde_id": 900002, "make": "HYUNDAI", "model": "G80", "year": 2020, "legislation": "EPA", "electrification": "ICE", "record_origin": "ESTIMATED"},
+        ]
+        first, second = build_scenario_options(rows)
+        self.assertIn("VDE 900001", first.label)
+        self.assertIn("FC 10", first.label)
+        self.assertIn("VDE 900002", second.label)
+        self.assertIn("FC 11", second.label)
+        self.assertNotEqual(first.label, second.label)
+
+    def test_label_falls_back_to_fuelcons_id_only_when_vde_id_missing(self):
+        rows = [{"fuelcons_id": 5, "vde_id": None, "make": "QA", "model": "Orphan", "year": 2026, "legislation": "EPA", "electrification": "ICE", "record_origin": "HOMOLOGATED"}]
+        option = build_scenario_options(rows)[0]
+        self.assertIn("FC 5", option.label)
+        self.assertNotIn("VDE", option.label)
+
+
+class ScenarioBrowseRowsTests(unittest.TestCase):
+    def test_maps_scorecard_equivalent_fields_into_display_columns(self):
+        rows = [
+            {
+                "fuelcons_id": 1,
+                "vde_id": 900001,
+                "make": "QA",
+                "model": "Nominal EPA baseline",
+                "year": 2026,
+                "legislation": "EPA",
+                "category": "Car",
+                "cycle_name": "EPA_FTP75_HWFET",
+                "electrification": "ICE",
+                "fuel_type": "Gasoline",
+                "engine_type": "ICE",
+                "drive_type": "FWD",
+                "transmission_type": "AUTOMATIC",
+                "transmission_status": "AVAILABLE",
+                "mass_kg": 1500.0,
+                "test_mass_kg": 1520.0,
+                "cda_m2": 0.65,
+                "rrc_N_per_kN": 8.5,
+                "coast_A_N": 100.0,
+                "coast_B_N_per_kph": 1.0,
+                "coast_C_N_per_kph2": 0.03,
+                "net_A_N": 80.0,
+                "net_B_N_per_kph": 0.8,
+                "net_C_N_per_kph2": 0.025,
+                "vde_total_mj_per_km": 2.5,
+                "vde_net_mj_per_km": 2.1,
+                "fuel_l_per_100km": 7.5,
+                "fuel_km_per_l": 13.3,
+                "energy_Wh_per_km": 650.0,
+                "gco2_per_km": 175.0,
+                "eta_pt_est": 0.32,
+                "gear_count": 8,
+                "final_drive_ratio": 3.5,
+                "record_origin": "HOMOLOGATED",
+                "vde_record_origin": "HOMOLOGATED",
+                "created_at": "2026-01-01T00:00:00",
+            }
+        ]
+
+        [row] = build_scenario_browse_rows(rows)
+
+        self.assertEqual(row["Fuelcons ID"], 1)
+        self.assertEqual(row["VDE ID"], 900001)
+        self.assertEqual(row["Make"], "QA")
+        self.assertEqual(row["Mass [kg]"], 1500.0)
+        self.assertEqual(row["CdA [m2]"], 0.65)
+        self.assertEqual(row["RRC [N/kN]"], 8.5)
+        self.assertEqual(row["Trans. status"], "AVAILABLE")
+        self.assertEqual(row["ABC TOTAL"], "100/1/0.03")
+        self.assertEqual(row["ABC NET"], "80/0.8/0.025")
+        self.assertEqual(row["VDE TOTAL [MJ/km]"], 2.5)
+        self.assertEqual(row["VDE NET [MJ/km]"], 2.1)
+        self.assertEqual(row["Fuel [L/100km]"], 7.5)
+        self.assertEqual(row["Scenario origin"], "HOMOLOGATED")
+        self.assertEqual(row["VDE origin"], "HOMOLOGATED")
+
+    def test_missing_net_abc_renders_as_dash_never_falls_back_to_total(self):
+        rows = [
+            {
+                "fuelcons_id": 2,
+                "vde_id": 900006,
+                "coast_A_N": 100.0,
+                "coast_B_N_per_kph": 1.0,
+                "coast_C_N_per_kph2": 0.03,
+                "net_A_N": None,
+                "net_B_N_per_kph": None,
+                "net_C_N_per_kph2": None,
+                "vde_total_mj_per_km": 2.5,
+                "vde_net_mj_per_km": None,
+                "transmission_status": "MISSING",
+            }
+        ]
+
+        [row] = build_scenario_browse_rows(rows)
+
+        self.assertEqual(row["ABC TOTAL"], "100/1/0.03")
+        self.assertEqual(row["ABC NET"], "-")
+        self.assertEqual(row["VDE NET [MJ/km]"], None)
+        self.assertNotEqual(row["ABC NET"], row["ABC TOTAL"])
+
+    def test_empty_catalog_yields_empty_rows(self):
+        self.assertEqual(build_scenario_browse_rows([]), [])
+
+
+def _complete_browse_row(**overrides: Any) -> dict[str, Any]:
+    """A catalog row with every field the "Complete Engineering Data" preset
+    checks present and populated -- individual tests knock out one field at
+    a time via overrides rather than repeating the whole shape.
+    """
+    row: dict[str, Any] = {
+        "fuelcons_id": 1,
+        "vde_id": 900001,
+        "make": "HYUNDAI",
+        "model": "G80",
+        "year": 2020,
+        "mass_kg": 1500.0,
+        "coast_A_N": 100.0,
+        "coast_B_N_per_kph": 1.0,
+        "coast_C_N_per_kph2": 0.03,
+        "cda_m2": 0.65,
+        "rrc_N_per_kN": 8.5,
+        "test_mass_kg": 1520.0,
+        "transmission_status": "AVAILABLE",
+        "vde_total_mj_per_km": 2.5,
+        "vde_net_mj_per_km": 2.1,
+        "fuel_l_per_100km": 7.5,
+        "fuel_km_per_l": None,
+    }
+    row.update(overrides)
+    return row
+
+
+class BrowseSearchTests(unittest.TestCase):
+    def test_matches_model_case_insensitive(self):
+        rows = [_complete_browse_row(model="Veloster N"), _complete_browse_row(model="Accent")]
+        matched = search_browse_candidates(rows, "veloster")
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["model"], "Veloster N")
+
+    def test_matches_vde_id_substring(self):
+        rows = [_complete_browse_row(vde_id=900001), _complete_browse_row(vde_id=900002)]
+        matched = search_browse_candidates(rows, "900001")
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["vde_id"], 900001)
+
+    def test_matches_fuelcons_id_substring(self):
+        rows = [_complete_browse_row(fuelcons_id=42), _complete_browse_row(fuelcons_id=43)]
+        matched = search_browse_candidates(rows, "42")
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["fuelcons_id"], 42)
+
+    def test_matches_make(self):
+        rows = [_complete_browse_row(make="HYUNDAI"), _complete_browse_row(make="LEXUS")]
+        matched = search_browse_candidates(rows, "lexus")
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["make"], "LEXUS")
+
+    def test_blank_query_returns_every_row_unchanged(self):
+        rows = [_complete_browse_row(fuelcons_id=1), _complete_browse_row(fuelcons_id=2)]
+        self.assertEqual(search_browse_candidates(rows, ""), rows)
+        self.assertEqual(search_browse_candidates(rows, "   "), rows)
+
+    def test_no_match_returns_empty_list(self):
+        rows = [_complete_browse_row(model="Veloster N")]
+        self.assertEqual(search_browse_candidates(rows, "nonexistent"), [])
+
+
+class BrowseAvailabilityFilterTests(unittest.TestCase):
+    def test_has_cda_excludes_rows_missing_cda(self):
+        rows = [_complete_browse_row(fuelcons_id=1, cda_m2=0.65), _complete_browse_row(fuelcons_id=2, cda_m2=None)]
+        out = apply_availability_filters(rows, BrowseAvailabilityFilters(has_cda=True))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_has_rrc_excludes_rows_missing_rrc(self):
+        rows = [_complete_browse_row(fuelcons_id=1, rrc_N_per_kN=8.5), _complete_browse_row(fuelcons_id=2, rrc_N_per_kN=None)]
+        out = apply_availability_filters(rows, BrowseAvailabilityFilters(has_rrc=True))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_has_net_excludes_rows_missing_vde_net(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, vde_net_mj_per_km=2.1),
+            _complete_browse_row(fuelcons_id=2, vde_net_mj_per_km=None),
+        ]
+        out = apply_availability_filters(rows, BrowseAvailabilityFilters(has_net=True))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_transmission_resolved_requires_available_status_not_just_non_missing(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, transmission_status="AVAILABLE"),
+            _complete_browse_row(fuelcons_id=2, transmission_status="MISSING"),
+            _complete_browse_row(fuelcons_id=3, transmission_status="NOT_USED"),
+        ]
+        out = apply_availability_filters(rows, BrowseAvailabilityFilters(transmission_resolved=True))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_has_fuel_economy_accepts_either_unit(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, fuel_l_per_100km=7.5, fuel_km_per_l=None),
+            _complete_browse_row(fuelcons_id=2, fuel_l_per_100km=None, fuel_km_per_l=13.3),
+            _complete_browse_row(fuelcons_id=3, fuel_l_per_100km=None, fuel_km_per_l=None),
+        ]
+        out = apply_availability_filters(rows, BrowseAvailabilityFilters(has_fuel_economy=True))
+        self.assertEqual({r["fuelcons_id"] for r in out}, {1, 2})
+
+    def test_multiple_active_flags_are_and_combined(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, cda_m2=0.65, rrc_N_per_kN=8.5),
+            _complete_browse_row(fuelcons_id=2, cda_m2=0.65, rrc_N_per_kN=None),
+        ]
+        out = apply_availability_filters(rows, BrowseAvailabilityFilters(has_cda=True, has_rrc=True))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_no_flags_active_is_a_no_op(self):
+        rows = [_complete_browse_row(fuelcons_id=1, cda_m2=None)]
+        out = apply_availability_filters(rows, BrowseAvailabilityFilters())
+        self.assertEqual(out, rows)
+
+
+class BrowseAdvancedRangeFilterTests(unittest.TestCase):
+    def test_mass_range_excludes_out_of_range_and_missing(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, mass_kg=1500.0),
+            _complete_browse_row(fuelcons_id=2, mass_kg=2500.0),
+            _complete_browse_row(fuelcons_id=3, mass_kg=None),
+        ]
+        out = apply_engineering_filters(rows, mass_kg_range=(1000.0, 2000.0))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_cda_and_rrc_ranges_combine(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, cda_m2=0.6, rrc_N_per_kN=8.0),
+            _complete_browse_row(fuelcons_id=2, cda_m2=0.9, rrc_N_per_kN=8.0),
+        ]
+        out = apply_engineering_filters(rows, cda_m2_range=(0.5, 0.7), rrc_range=(7.0, 9.0))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_vde_total_and_fuel_economy_ranges(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, vde_total_mj_per_km=2.0, fuel_l_per_100km=6.0),
+            _complete_browse_row(fuelcons_id=2, vde_total_mj_per_km=3.5, fuel_l_per_100km=9.0),
+        ]
+        out = apply_engineering_filters(rows, vde_total_range=(1.5, 2.5), fuel_l_per_100km_range=(5.0, 7.0))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_unset_ranges_are_all_no_ops(self):
+        rows = [_complete_browse_row(fuelcons_id=1, mass_kg=None, cda_m2=None)]
+        self.assertEqual(apply_engineering_filters(rows), rows)
+
+
+class BrowsePresetTests(unittest.TestCase):
+    def test_complete_engineering_data_requires_every_field(self):
+        complete = _complete_browse_row(fuelcons_id=1)
+        missing_cda = _complete_browse_row(fuelcons_id=2, cda_m2=None)
+        self.assertTrue(is_complete_engineering_data(complete))
+        self.assertFalse(is_complete_engineering_data(missing_cda))
+        out = apply_browse_preset([complete, missing_cda], "complete_engineering_data")
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_roadload_ready_only_needs_mass_and_full_abc_total(self):
+        roadload_only = _complete_browse_row(
+            fuelcons_id=1, cda_m2=None, rrc_N_per_kN=None, transmission_status="MISSING", vde_net_mj_per_km=None
+        )
+        missing_abc = _complete_browse_row(fuelcons_id=2, coast_C_N_per_kph2=None)
+        self.assertTrue(is_roadload_ready(roadload_only))
+        self.assertFalse(is_roadload_ready(missing_abc))
+        out = apply_browse_preset([roadload_only, missing_abc], "roadload_ready")
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_has_net_preset_matches_availability_predicate(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, vde_net_mj_per_km=2.1),
+            _complete_browse_row(fuelcons_id=2, vde_net_mj_per_km=None),
+        ]
+        out = apply_browse_preset(rows, "has_net")
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_fuel_economy_ready_preset_matches_availability_predicate(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, fuel_l_per_100km=7.5),
+            _complete_browse_row(fuelcons_id=2, fuel_l_per_100km=None, fuel_km_per_l=None),
+        ]
+        out = apply_browse_preset(rows, "fuel_economy_ready")
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_none_or_unknown_preset_is_a_no_op(self):
+        rows = [_complete_browse_row(fuelcons_id=1, cda_m2=None)]
+        self.assertEqual(apply_browse_preset(rows, None), rows)
+        self.assertEqual(apply_browse_preset(rows, "not_a_real_preset"), rows)
+
+
+class BrowseSummaryCountersTests(unittest.TestCase):
+    def test_counters_are_subset_counts_of_the_rows_passed_in(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1),
+            _complete_browse_row(fuelcons_id=2, rrc_N_per_kN=None, vde_net_mj_per_km=None),
+            _complete_browse_row(fuelcons_id=3, cda_m2=None, rrc_N_per_kN=None, vde_net_mj_per_km=None),
+        ]
+        counters = compute_browse_summary_counters(rows)
+        self.assertEqual(counters.matching, 3)
+        self.assertEqual(counters.with_cda_and_rrc, 1)  # only fuelcons_id 1 has both
+        self.assertEqual(counters.with_net, 1)  # only fuelcons_id 1
+        self.assertEqual(counters.fully_populated, 1)  # only fuelcons_id 1
+
+    def test_fully_populated_agrees_with_the_complete_engineering_data_preset(self):
+        rows = [_complete_browse_row(fuelcons_id=1), _complete_browse_row(fuelcons_id=2, mass_kg=None)]
+        counters = compute_browse_summary_counters(rows)
+        preset_result = apply_browse_preset(rows, "complete_engineering_data")
+        self.assertEqual(counters.fully_populated, len(preset_result))
+
+    def test_empty_input_yields_zeroed_counters(self):
+        counters = compute_browse_summary_counters([])
+        self.assertEqual(counters.matching, 0)
+        self.assertEqual(counters.with_cda_and_rrc, 0)
+        self.assertEqual(counters.with_net, 0)
+        self.assertEqual(counters.fully_populated, 0)
+
 
 # -----------------------------------------------------------------------------
 # Scorecard construction, deltas, compatibility, provenance, NET missing (Sec 53-59)
@@ -846,6 +1205,114 @@ class ScorecardConstructionTests(unittest.TestCase):
         self.assertIn("stale", joined.lower())
         self.assertIn("NET boundary", joined)
         self.assertIn("Mixed legislations", joined)
+
+
+class RowVisibilityPolicyTests(unittest.TestCase):
+    """Sprint 9 post-freeze hotfix -- "unavailable is information" for
+    basic/canonical engineering audit rows; the legacy AUTO behavior
+    (disappear when nothing is available) is unchanged for everything else.
+    """
+
+    def _dataset_missing(self, field_names: list[str], *, reference_less: bool = False):
+        row_a = _qa_row(900001)
+        row_b = _qa_row(900004)
+        for field_name in field_names:
+            row_a[field_name] = None
+            row_b[field_name] = None
+        item_a = build_vde_comparison_item(900001, role=ComparisonRole.COMPARISON, vde_row=row_a)
+        item_b = build_vde_comparison_item(900004, role=ComparisonRole.COMPARISON, vde_row=row_b)
+        if reference_less:
+            return ComparisonDataset(reference=None, comparisons=(item_a, item_b))
+        item_a = build_vde_comparison_item(900001, role=ComparisonRole.REFERENCE, vde_row=row_a)
+        return ComparisonDataset(reference=item_a, comparisons=(item_b,))
+
+    def test_1_canonical_row_unavailable_for_all_scenarios_still_renders(self):
+        dataset = self._dataset_missing(["cda_m2"])
+        section = next(s for s in build_scorecard_sections(dataset) if s.title == "Physical Setup")
+        cda_row = next(r for r in section.rows if r.metric_key == "cda_m2")
+        self.assertIs(cda_row.visibility, RowVisibility.ALWAYS)
+        self.assertFalse(cda_row.reference_cell.available)
+        visible = visible_rows(section)
+        self.assertIn(cda_row, visible)
+
+    def test_2_optional_auto_row_unavailable_for_all_scenarios_keeps_legacy_hidden_behavior(self):
+        dataset = self._dataset_missing(["gear_count"])
+        section = next(s for s in build_scorecard_sections(dataset) if s.title == "Powertrain")
+        gear_row = next(r for r in section.rows if r.metric_key == "gear_count")
+        self.assertIs(gear_row.visibility, RowVisibility.AUTO)
+        self.assertFalse(gear_row.reference_cell.available)
+        visible = visible_rows(section)
+        self.assertNotIn(gear_row, visible)
+
+    def test_basic_scorecard_canonical_metrics_are_exactly_the_expected_set(self):
+        expected_always_visible = {
+            "mass_kg", "cda_m2", "rrc_n_per_kn",
+            "roadload_a_total", "roadload_b_total", "roadload_c_total",
+            "roadload_a_net", "roadload_b_net", "roadload_c_net",
+            "vde_total", "vde_net",
+        }
+        actual_always_visible = {m.key for m in list_metrics() if m.always_visible}
+        self.assertEqual(actual_always_visible, expected_always_visible)
+
+    def test_6_net_roadload_metric_stays_auditable_with_no_total_fallback(self):
+        # VDE-QA-006 has no resolved transmission -> NET roadload/VDE unavailable.
+        dataset = ComparisonDataset(
+            reference=build_vde_comparison_item(900006, role=ComparisonRole.REFERENCE, vde_row=_qa_row(900006)),
+            comparisons=(),
+        )
+        section = next(s for s in build_scorecard_sections(dataset) if s.title == "Roadload")
+        net_a_row = next(r for r in section.rows if r.metric_key == "roadload_a_net")
+        total_a_row = next(r for r in section.rows if r.metric_key == "roadload_a_total")
+
+        self.assertIn(net_a_row, visible_rows(section))
+        self.assertFalse(net_a_row.reference_cell.available)
+        self.assertTrue(total_a_row.reference_cell.available)
+        self.assertNotEqual(net_a_row.reference_cell.raw_value, total_a_row.reference_cell.raw_value)
+
+    def test_7_reference_less_dataset_uses_the_same_visibility_policy(self):
+        dataset = self._dataset_missing(["cda_m2"], reference_less=True)
+        section = next(s for s in build_scorecard_sections(dataset) if s.title == "Physical Setup")
+        cda_row = next(r for r in section.rows if r.metric_key == "cda_m2")
+        self.assertIn(cda_row, visible_rows(section))
+        self.assertFalse(cda_row.reference_cell.available)
+
+    def test_8_zero_value_on_an_always_visible_row_is_available_not_missing(self):
+        row = _qa_row(900001)
+        row["rrc_N_per_kN"] = 0.0
+        dataset = ComparisonDataset(
+            reference=build_vde_comparison_item(900001, role=ComparisonRole.REFERENCE, vde_row=row), comparisons=()
+        )
+        section = next(s for s in build_scorecard_sections(dataset) if s.title == "Physical Setup")
+        rrc_row = next(r for r in section.rows if r.metric_key == "rrc_n_per_kn")
+
+        self.assertIn(rrc_row, visible_rows(section))
+        self.assertTrue(rrc_row.reference_cell.available)
+        self.assertEqual(rrc_row.reference_cell.raw_value, 0.0)
+        self.assertNotEqual(rrc_row.reference_cell.formatted_value, "-")
+
+    def test_visible_rows_preserves_row_order(self):
+        section = ScorecardSection(
+            title="X",
+            rows=(
+                ScorecardRow(
+                    metric_key="a",
+                    label="A",
+                    reference_cell=ScorecardCell(None, "-", None, None, None, None, True, False, False, None),
+                    visibility=RowVisibility.ALWAYS,
+                ),
+                ScorecardRow(
+                    metric_key="b",
+                    label="B",
+                    reference_cell=ScorecardCell(1.0, "1", None, None, None, None, True, True, False, None),
+                ),
+                ScorecardRow(
+                    metric_key="c",
+                    label="C",
+                    reference_cell=ScorecardCell(None, "-", None, None, None, None, True, False, False, None),
+                ),
+            ),
+        )
+        self.assertEqual([r.metric_key for r in visible_rows(section)], ["a", "b"])
 
 
 class OptionalReferenceViewmodelTests(unittest.TestCase):

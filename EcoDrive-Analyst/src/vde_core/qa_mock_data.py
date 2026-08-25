@@ -479,6 +479,152 @@ def build_vde_seed_rows() -> list[dict[str, Any]]:
             rear_tire_id=920007,
             tire_code="TIRE-QA-007",
         ),
+        _base_vde_row(
+            900008,
+            "VDE-QA-008",
+            "WLTP nominal baseline",
+            mass_kg=nominal_mass,
+            inertia_class=nominal_class,
+            test_mass_kg=nominal_class,
+            rrc_n_per_kn=8.1,
+            front_pressure_psi=36.0,
+            rear_pressure_psi=36.0,
+            cda_m2=0.618,
+            coast_a_n=119.0,
+            coast_b_n_per_kph=0.0198,
+            coast_c_n_per_kph2=0.0091,
+            trans_a=8.4,
+            trans_b=0.0040,
+            trans_c=0.0008,
+            brake_a=4.0,
+            brake_b=0.0008,
+            brake_c=0.0001,
+            parasitic_a=3.0,
+            parasitic_b=0.0005,
+            parasitic_c=0.0001,
+            axle_a=2.5,
+            axle_b=0.0004,
+            axle_c=0.0001,
+            vde_total=1.235,
+            vde_net=1.175,
+            notes="QA MOCK | VDE-QA-008 | WLTP-legislation baseline, otherwise equivalent to the EPA nominal baseline.",
+            front_tire_id=920001,
+            rear_tire_id=920001,
+            tire_code="TIRE-QA-001",
+            legislation="WLTP",
+            cycle_name="WLTC",
+        ),
+    ]
+
+
+def build_fuelcons_seed_rows() -> list[dict[str, Any]]:
+    """Opt-in FuelCons scenarios for exercising Comparison Browse's data-
+    availability filters, presets, and counters -- NOT part of the default
+    seed_qa_database() output (fuelcons_db stays empty after seeding, as
+    every existing test that seeds a QA database already assumes); only
+    inserted by seed_qa_fuelcons_mock_rows(). Deliberately covers: Fuel
+    Economy present without NET (linked to VDE-QA-006, which has no
+    transmission data), Fuel Economy with NET, a fully-populated scenario,
+    Fuel Economy explicitly missing, and one WLTP example (VDE-QA-008)
+    alongside several EPA ones.
+    """
+    return [
+        {
+            # Case A: Fuel Economy available, NET unavailable (VDE-QA-006 has no transmission).
+            "id": 900101,
+            "vde_id": 900006,
+            "electrification": "ICE",
+            "fuel_type": "Gasoline",
+            "record_origin": "HOMOLOGATED",
+            "fuel_l_per_100km": 6.8,
+            "fuel_km_per_l": round(100.0 / 6.8, 4),
+            "energy_Wh_per_km": 610.0,
+            "gco2_per_km": 158.0,
+            "eta_pt_est": 0.30,
+            "gear_count": 6,
+            "final_drive_ratio": 3.7,
+            "engine_max_power_kw": 110.0,
+        },
+        {
+            # Case B: Fuel Economy + NET (VDE-QA-001 has full transmission data).
+            "id": 900102,
+            "vde_id": 900001,
+            "electrification": "ICE",
+            "fuel_type": "Gasoline",
+            "record_origin": "HOMOLOGATED",
+            "fuel_l_per_100km": 6.5,
+            "fuel_km_per_l": round(100.0 / 6.5, 4),
+            "energy_Wh_per_km": 600.0,
+            "gco2_per_km": 150.0,
+            "eta_pt_est": 0.32,
+            "gear_count": 8,
+            "final_drive_ratio": 3.5,
+            "engine_max_power_kw": 115.0,
+        },
+        {
+            # Case C: Fuel Economy + CdA + RRC (every VDE row has CdA/RRC; this one is a hybrid).
+            "id": 900103,
+            "vde_id": 900002,
+            "electrification": "HEV",
+            "fuel_type": "Gasoline",
+            "record_origin": "ESTIMATED",
+            "fuel_l_per_100km": 5.2,
+            "fuel_km_per_l": round(100.0 / 5.2, 4),
+            "energy_Wh_per_km": 480.0,
+            "gco2_per_km": 120.0,
+            "eta_pt_est": 0.36,
+            "gear_count": 6,
+            "final_drive_ratio": 3.9,
+            "engine_max_power_kw": 105.0,
+        },
+        {
+            # Case D: fully populated (Mass + ABC TOTAL + CdA + RRC + transmission + NET + VDE TOTAL + Fuel Economy).
+            "id": 900104,
+            "vde_id": 900001,
+            "electrification": "ICE",
+            "fuel_type": "Gasoline",
+            "record_origin": "HOMOLOGATED",
+            "fuel_l_per_100km": 6.3,
+            "fuel_km_per_l": round(100.0 / 6.3, 4),
+            "energy_Wh_per_km": 590.0,
+            "gco2_per_km": 148.0,
+            "eta_pt_est": 0.33,
+            "gear_count": 8,
+            "final_drive_ratio": 3.5,
+            "engine_max_power_kw": 120.0,
+        },
+        {
+            # Case E: Fuel Economy explicitly missing.
+            "id": 900105,
+            "vde_id": 900002,
+            "electrification": "ICE",
+            "fuel_type": "Diesel",
+            "record_origin": "ESTIMATED",
+            "fuel_l_per_100km": None,
+            "fuel_km_per_l": None,
+            "energy_Wh_per_km": None,
+            "gco2_per_km": None,
+            "eta_pt_est": None,
+            "gear_count": None,
+            "final_drive_ratio": None,
+            "engine_max_power_kw": None,
+        },
+        {
+            # Case F: WLTP example with Fuel Economy (VDE-QA-008 is the only WLTP baseline).
+            "id": 900106,
+            "vde_id": 900008,
+            "electrification": "ICE",
+            "fuel_type": "Gasoline",
+            "record_origin": "ESTIMATED",
+            "fuel_l_per_100km": 6.1,
+            "fuel_km_per_l": round(100.0 / 6.1, 4),
+            "energy_Wh_per_km": 575.0,
+            "gco2_per_km": 145.0,
+            "eta_pt_est": 0.33,
+            "gear_count": 7,
+            "final_drive_ratio": 3.6,
+            "engine_max_power_kw": 118.0,
+        },
     ]
 
 
@@ -879,6 +1025,26 @@ def seed_qa_database(db_path: str | Path | None = None, *, overwrite: bool = Fal
     return target
 
 
+def seed_qa_fuelcons_mock_rows(db_path: str | Path | None = None) -> Path:
+    """Insert (or refresh) the opt-in FuelCons mock rows from
+    build_fuelcons_seed_rows() into an already-seeded QA database. Safe to
+    call more than once -- rows sharing the same id are replaced, never
+    duplicated. Only touches fuelcons_db; never runs as part of
+    seed_qa_database() itself, so every existing test relying on a
+    fuelcons-empty seed is unaffected.
+    """
+    target = Path(db_path or DEFAULT_QA_DB_PATH)
+    with db_module.using_db_path(target):
+        db_module.ensure_db()
+    rows = build_fuelcons_seed_rows()
+    with sqlite3.connect(str(target), timeout=30) as con:
+        con.execute("PRAGMA foreign_keys = ON")
+        con.executemany("DELETE FROM fuelcons_db WHERE id = ?", [(row["id"],) for row in rows])
+        _insert_rows(con, "fuelcons_db", rows)
+        con.commit()
+    return target
+
+
 def is_safe_qa_db_path(path: str | Path) -> bool:
     target = Path(path).expanduser()
     try:
@@ -976,6 +1142,9 @@ def _base_vde_row(
     tire_b_final: float | None = 0.0008,
     tire_c_final: float | None = 0.0002,
     include_optional_fields: bool = True,
+    legislation: str = "EPA",
+    category: str | None = None,
+    cycle_name: str = "FTP-75",
 ) -> dict[str, Any]:
     row = {
         "id": int(row_id),
@@ -985,8 +1154,8 @@ def _base_vde_row(
         "record_status": "ACTIVE",
         "source_name": "qa_mock_seed",
         "source_record_id": qa_id,
-        "legislation": "EPA",
-        "category": "QA_EPA",
+        "legislation": legislation,
+        "category": category or f"QA_{legislation}",
         "make": "QA",
         "model": model_name,
         "year": 2026,
@@ -1017,7 +1186,7 @@ def _base_vde_row(
         "brake_A_coef_N": brake_a,
         "brake_B_coef_Npkph": brake_b,
         "brake_C_coef_Npkph2": brake_c,
-        "cycle_name": "FTP-75",
+        "cycle_name": cycle_name,
         "cycle_source": "qa_mock_seed",
         "vde_net_mj_per_km": vde_net,
         "vde_total_mj_per_km": float(vde_total),
@@ -1230,6 +1399,7 @@ __all__ = [
     "QA_COMPONENT_FIXTURES",
     "QA_DATA_DIR",
     "SYNTHETIC_QA_WARNING",
+    "build_fuelcons_seed_rows",
     "build_seed_manifest",
     "build_tire_seed_rows",
     "build_vde_seed_rows",
@@ -1239,6 +1409,7 @@ __all__ = [
     "load_inertia_table",
     "manifest_json",
     "seed_qa_database",
+    "seed_qa_fuelcons_mock_rows",
     "seeded_database_digest",
     "temporary_seeded_db",
 ]

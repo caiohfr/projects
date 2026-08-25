@@ -484,7 +484,7 @@ class BrowseUxUpgradeSmokeTests(unittest.TestCase):
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
         labels = [exp.label for exp in app.expander]
-        self.assertIn("Advanced Filters", labels)
+        self.assertIn("Show advanced filters", labels)
         self.assertTrue(any(label.startswith("Browse Comparison Scenarios (") for label in labels))
         metric_labels = [m.label for m in app.metric]
         self.assertTrue(any("Matching scenarios" in label for label in metric_labels))

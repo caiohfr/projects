@@ -331,21 +331,134 @@ def _render_min_max_range(label: str, key_prefix: str) -> tuple[float | None, fl
     return (min_value, max_value)
 
 
-def _render_advanced_filters(catalog_rows: list[dict], rows: list[dict]) -> list[dict]:
-    """Secondary filters (Sec 3.4) -- Displacement/Engine power are the same
-    range sliders the flat grid used to show at top level (same keys, same
-    widgets, only relocated here so they stop visually dominating the main
-    row); every other field is a new Min/Max pair or categorical selectbox.
+def _render_search_and_vehicle_filters(catalog_rows: list[dict]) -> list[dict]:
+    """Panel 1 -- free-text search plus vehicle identity filters, two
+    selectboxes per row so the panel stays usable at roughly a third of
+    page width (Sec 7 layout-alvo).
     """
-    with st.expander("Advanced Filters", expanded=False):
-        size_col, power_col = st.columns(2)
+    st.caption("1. Search & Vehicle Filters")
+    query = st.text_input(
+        "Search",
+        key="comparison_filter_query",
+        placeholder="\U0001F50D  Search model, VDE ID or Fuelcons ID...",
+        label_visibility="collapsed",
+    )
+    rows = search_browse_candidates(catalog_rows, query)
 
+    makes = sorted({r["make"] for r in catalog_rows if r.get("make")})
+    models = sorted({r["model"] for r in catalog_rows if r.get("model")})
+    years = sorted({r["year"] for r in catalog_rows if r.get("year") is not None})
+    categories = sorted({r["category"] for r in catalog_rows if r.get("category")})
+    legislations = sorted({r["legislation"] for r in catalog_rows if r.get("legislation")})
+    electrifications = sorted({r["electrification"] for r in catalog_rows if r.get("electrification")})
+
+    row1_col1, row1_col2 = st.columns(2)
+    make = row1_col1.selectbox("Make", ["All"] + makes, key="comparison_filter_make")
+    model = row1_col2.selectbox("Model", ["All"] + models, key="comparison_filter_model")
+
+    row2_col1, row2_col2 = st.columns(2)
+    year = row2_col1.selectbox("Year", ["All"] + years, key="comparison_filter_year")
+    category = row2_col2.selectbox("Category", ["All"] + categories, key="comparison_filter_category")
+
+    row3_col1, row3_col2 = st.columns(2)
+    legislation = row3_col1.selectbox("Legislation", ["All"] + legislations, key="comparison_filter_legislation")
+    electrification = row3_col2.selectbox(
+        "Electrification", ["All"] + electrifications, key="comparison_filter_electrification"
+    )
+
+    if make != "All":
+        rows = [r for r in rows if r.get("make") == make]
+    if model != "All":
+        rows = [r for r in rows if r.get("model") == model]
+    if year != "All":
+        rows = [r for r in rows if r.get("year") == year]
+    if category != "All":
+        rows = [r for r in rows if r.get("category") == category]
+    if legislation != "All":
+        rows = [r for r in rows if r.get("legislation") == legislation]
+    if electrification != "All":
+        rows = [r for r in rows if r.get("electrification") == electrification]
+    return rows
+
+
+def _render_availability_and_presets(rows: list[dict]) -> list[dict]:
+    """Panel 2 -- Data Availability quick filters and Quick presets share
+    one card (Sec 3.3/3.5), matching the approved mockup: presets are just
+    one more predicate stacked on top of whatever's already active here,
+    never reaching into the pills' own state (no hidden interdependencies).
+    """
+    st.caption("2. Data Availability (quick filters)")
+    selected_availability = st.pills(
+        "Data availability",
+        options=list(_AVAILABILITY_OPTIONS),
+        format_func=lambda option_key: f"{_AVAILABILITY_ICONS[option_key]} {_AVAILABILITY_LABELS[option_key]}",
+        selection_mode="multi",
+        default=[],
+        key="comparison_filter_availability",
+        label_visibility="collapsed",
+    )
+    availability_filters = BrowseAvailabilityFilters(
+        has_cda="has_cda" in selected_availability,
+        has_rrc="has_rrc" in selected_availability,
+        has_net="has_net" in selected_availability,
+        transmission_resolved="transmission_resolved" in selected_availability,
+        has_fuel_economy="has_fuel_economy" in selected_availability,
+    )
+    rows = apply_availability_filters(rows, availability_filters)
+
+    st.caption("Quick presets")
+    preset_row1_col1, preset_row1_col2 = st.columns(2)
+    if preset_row1_col1.button(
+        f"{_PRESET_ICONS['complete_engineering_data']} Complete Engineering Data",
+        key="comparison_preset_complete_engineering_data",
+        width="stretch",
+    ):
+        st.session_state["comparison_filter_active_preset"] = "complete_engineering_data"
+    if preset_row1_col2.button(
+        f"{_PRESET_ICONS['roadload_ready']} Roadload Ready", key="comparison_preset_roadload_ready", width="stretch"
+    ):
+        st.session_state["comparison_filter_active_preset"] = "roadload_ready"
+
+    preset_row2_col1, preset_row2_col2 = st.columns(2)
+    if preset_row2_col1.button(f"{_PRESET_ICONS['has_net']} Has NET", key="comparison_preset_has_net", width="stretch"):
+        st.session_state["comparison_filter_active_preset"] = "has_net"
+    if preset_row2_col2.button(
+        f"{_PRESET_ICONS['fuel_economy_ready']} Fuel Economy Ready",
+        key="comparison_preset_fuel_economy_ready",
+        width="stretch",
+    ):
+        st.session_state["comparison_filter_active_preset"] = "fuel_economy_ready"
+
+    if st.button("✕ Clear Filters", key="comparison_clear_filters", width="stretch"):
+        for widget_key in _FILTER_WIDGET_KEYS:
+            st.session_state.pop(widget_key, None)
+        st.rerun()
+
+    active_preset = st.session_state.get("comparison_filter_active_preset")
+    rows = apply_browse_preset(rows, active_preset)
+    if active_preset:
+        preset_label = BROWSE_PRESET_LABELS.get(active_preset, active_preset)
+        st.caption(f"Preset active: **{preset_label}**")
+    return rows
+
+
+def _render_advanced_filters(catalog_rows: list[dict], rows: list[dict]) -> list[dict]:
+    """Panel 3 -- secondary filters (Sec 3.4), one field per row so the
+    panel stays usable at roughly a third of page width. Displacement/
+    Engine power are the exact same range sliders and session_state keys
+    the original flat grid used at top level, only relocated here so they
+    stop dominating the page; every other field is a new Min/Max pair or
+    categorical selectbox. Collapsed behind its own expander so the panel
+    stays compact until the user actually needs it.
+    """
+    st.caption("3. Advanced Filters")
+    with st.expander("Show advanced filters", expanded=False):
         sizes = sorted({r["engine_size_l"] for r in catalog_rows if r.get("engine_size_l") is not None})
         engine_size_l_range = None
         if len(sizes) >= 1:
             data_min, data_max = float(sizes[0]), float(sizes[-1])
             if data_min < data_max:
-                size_min, size_max = size_col.slider(
+                size_min, size_max = st.slider(
                     "Displacement [L]",
                     min_value=data_min,
                     max_value=data_max,
@@ -356,9 +469,9 @@ def _render_advanced_filters(catalog_rows: list[dict], rows: list[dict]) -> list
                 if (size_min, size_max) != (data_min, data_max):
                     engine_size_l_range = (size_min, size_max)
             else:
-                size_col.caption(f"Displacement [L]: {data_min:g} (all)")
+                st.caption(f"Displacement [L]: {data_min:g} (all)")
         else:
-            size_col.caption("Displacement [L]: no data")
+            st.caption("Displacement [L]: no data")
 
         powers_hp = sorted(
             {kw_to_hp(r["engine_max_power_kw"]) for r in catalog_rows if r.get("engine_max_power_kw") is not None}
@@ -367,7 +480,7 @@ def _render_advanced_filters(catalog_rows: list[dict], rows: list[dict]) -> list
         if len(powers_hp) >= 1:
             data_min_hp, data_max_hp = float(powers_hp[0]), float(powers_hp[-1])
             if data_min_hp < data_max_hp:
-                power_min_hp, power_max_hp = power_col.slider(
+                power_min_hp, power_max_hp = st.slider(
                     "Engine power [hp]",
                     min_value=data_min_hp,
                     max_value=data_max_hp,
@@ -378,9 +491,9 @@ def _render_advanced_filters(catalog_rows: list[dict], rows: list[dict]) -> list
                 if (power_min_hp, power_max_hp) != (data_min_hp, data_max_hp):
                     engine_max_power_kw_range = (hp_to_kw(power_min_hp), hp_to_kw(power_max_hp))
             else:
-                power_col.caption(f"Engine power [hp]: {data_min_hp:g} (all)")
+                st.caption(f"Engine power [hp]: {data_min_hp:g} (all)")
         else:
-            power_col.caption("Engine power [hp]: no data")
+            st.caption("Engine power [hp]: no data")
 
         mass_range = _render_min_max_range("Mass [kg]", "comparison_filter_mass")
         test_mass_range = _render_min_max_range("Test mass [kg]", "comparison_filter_test_mass")
@@ -394,11 +507,15 @@ def _render_advanced_filters(catalog_rows: list[dict], rows: list[dict]) -> list
         fuel_types = sorted({r["fuel_type"] for r in catalog_rows if r.get("fuel_type")})
         origins = sorted({r["record_origin"] for r in catalog_rows if r.get("record_origin")})
 
-        cat_col1, cat_col2, cat_col3, cat_col4 = st.columns(4)
-        drive = cat_col1.selectbox("Drive", ["All"] + drives, key="comparison_filter_drive")
-        transmission = cat_col2.selectbox("Transmission", ["All"] + transmissions, key="comparison_filter_transmission")
-        fuel_type = cat_col3.selectbox("Fuel type", ["All"] + fuel_types, key="comparison_filter_fuel_type")
-        record_origin = cat_col4.selectbox("Provenance", ["All"] + origins, key="comparison_filter_record_origin")
+        cat_row1_col1, cat_row1_col2 = st.columns(2)
+        drive = cat_row1_col1.selectbox("Drive", ["All"] + drives, key="comparison_filter_drive")
+        transmission = cat_row1_col2.selectbox(
+            "Transmission", ["All"] + transmissions, key="comparison_filter_transmission"
+        )
+
+        cat_row2_col1, cat_row2_col2 = st.columns(2)
+        fuel_type = cat_row2_col1.selectbox("Fuel type", ["All"] + fuel_types, key="comparison_filter_fuel_type")
+        record_origin = cat_row2_col2.selectbox("Provenance", ["All"] + origins, key="comparison_filter_record_origin")
 
     rows = apply_engineering_filters(
         rows,
@@ -422,46 +539,6 @@ def _render_advanced_filters(catalog_rows: list[dict], rows: list[dict]) -> list
     return rows
 
 
-def _render_quick_presets(rows: list[dict]) -> list[dict]:
-    """A preset is one more predicate stacked on top of whatever other
-    filters are already active (Sec 3.5) -- it never reaches into the
-    Data Availability pills or Advanced Filters widgets to change their
-    state, avoiding the hidden-interdependency trap the package explicitly
-    warns against. "Clear Filters" is the one button that resets everything.
-    """
-    st.caption("Quick presets")
-    preset_col1, preset_col2, preset_col3, preset_col4, clear_col = st.columns(5)
-    if preset_col1.button(
-        f"{_PRESET_ICONS['complete_engineering_data']} Complete Engineering Data",
-        key="comparison_preset_complete_engineering_data",
-        width="stretch",
-    ):
-        st.session_state["comparison_filter_active_preset"] = "complete_engineering_data"
-    if preset_col2.button(
-        f"{_PRESET_ICONS['roadload_ready']} Roadload Ready", key="comparison_preset_roadload_ready", width="stretch"
-    ):
-        st.session_state["comparison_filter_active_preset"] = "roadload_ready"
-    if preset_col3.button(f"{_PRESET_ICONS['has_net']} Has NET", key="comparison_preset_has_net", width="stretch"):
-        st.session_state["comparison_filter_active_preset"] = "has_net"
-    if preset_col4.button(
-        f"{_PRESET_ICONS['fuel_economy_ready']} Fuel Economy Ready",
-        key="comparison_preset_fuel_economy_ready",
-        width="stretch",
-    ):
-        st.session_state["comparison_filter_active_preset"] = "fuel_economy_ready"
-    if clear_col.button("✕ Clear Filters", key="comparison_clear_filters", width="stretch"):
-        for widget_key in _FILTER_WIDGET_KEYS:
-            st.session_state.pop(widget_key, None)
-        st.rerun()
-
-    active_preset = st.session_state.get("comparison_filter_active_preset")
-    rows = apply_browse_preset(rows, active_preset)
-    if active_preset:
-        preset_label = BROWSE_PRESET_LABELS.get(active_preset, active_preset)
-        st.caption(f"Preset active: **{preset_label}**")
-    return rows
-
-
 def _render_browse_summary_counters(rows: list[dict]) -> None:
     """Compact counters (Sec 3.6) -- every number is a sub-count of `rows`,
     i.e. of whatever already matches every filter/preset above, so the
@@ -478,75 +555,29 @@ def _render_browse_summary_counters(rows: list[dict]) -> None:
 
 
 def _render_filters(catalog_rows: list[dict]) -> list[dict]:
-    """Search & Vehicle Filters -> Data Availability quick filters ->
-    Advanced Filters (collapsed) -> Quick presets -> summary counters, in
-    that order (Comparison Browse UX Upgrade package). Every stage narrows
-    the same `rows` list handed to the next; the result feeds BOTH the
-    Browse table and the Reference/Comparison selectboxes below it, so a
-    filter here changes what's newly discoverable everywhere on this page,
-    never what's already selected (Package 8F semantics, unchanged).
+    """Three side-by-side cards -- Search & Vehicle Filters, Data
+    Availability + Quick presets, Advanced Filters -- followed by summary
+    counters (Comparison Browse UX Upgrade package, Sec 7 layout-alvo).
+    Every stage narrows the same `rows` list handed to the next; the result
+    feeds BOTH the Browse table and the Reference/Comparison selectboxes
+    below it, so a filter here changes what's newly discoverable everywhere
+    on this page, never what's already selected (Package 8F semantics,
+    unchanged).
     """
-    query = st.text_input(
-        "Search",
-        key="comparison_filter_query",
-        placeholder="\U0001F50D  Search by model, VDE ID or Fuelcons ID...",
-        label_visibility="collapsed",
-    )
-    rows = search_browse_candidates(catalog_rows, query)
+    search_col, availability_col, advanced_col = st.columns([1.15, 1.0, 1.15])
 
-    makes = sorted({r["make"] for r in catalog_rows if r.get("make")})
-    models = sorted({r["model"] for r in catalog_rows if r.get("model")})
-    years = sorted({r["year"] for r in catalog_rows if r.get("year") is not None})
-    categories = sorted({r["category"] for r in catalog_rows if r.get("category")})
-    legislations = sorted({r["legislation"] for r in catalog_rows if r.get("legislation")})
-    electrifications = sorted({r["electrification"] for r in catalog_rows if r.get("electrification")})
+    with search_col:
+        with st.container(border=True):
+            rows = _render_search_and_vehicle_filters(catalog_rows)
 
-    col1, col2, col3, col4 = st.columns(4)
-    make = col1.selectbox("Make", ["All"] + makes, key="comparison_filter_make")
-    model = col2.selectbox("Model", ["All"] + models, key="comparison_filter_model")
-    year = col3.selectbox("Year", ["All"] + years, key="comparison_filter_year")
-    category = col4.selectbox("Category", ["All"] + categories, key="comparison_filter_category")
+    with availability_col:
+        with st.container(border=True):
+            rows = _render_availability_and_presets(rows)
 
-    col5, col6 = st.columns(2)
-    legislation = col5.selectbox("Legislation", ["All"] + legislations, key="comparison_filter_legislation")
-    electrification = col6.selectbox(
-        "Electrification", ["All"] + electrifications, key="comparison_filter_electrification"
-    )
+    with advanced_col:
+        with st.container(border=True):
+            rows = _render_advanced_filters(catalog_rows, rows)
 
-    if make != "All":
-        rows = [r for r in rows if r.get("make") == make]
-    if model != "All":
-        rows = [r for r in rows if r.get("model") == model]
-    if year != "All":
-        rows = [r for r in rows if r.get("year") == year]
-    if category != "All":
-        rows = [r for r in rows if r.get("category") == category]
-    if legislation != "All":
-        rows = [r for r in rows if r.get("legislation") == legislation]
-    if electrification != "All":
-        rows = [r for r in rows if r.get("electrification") == electrification]
-
-    st.caption("Data availability (quick filters)")
-    selected_availability = st.pills(
-        "Data availability",
-        options=list(_AVAILABILITY_OPTIONS),
-        format_func=lambda option_key: f"{_AVAILABILITY_ICONS[option_key]} {_AVAILABILITY_LABELS[option_key]}",
-        selection_mode="multi",
-        default=[],
-        key="comparison_filter_availability",
-        label_visibility="collapsed",
-    )
-    availability_filters = BrowseAvailabilityFilters(
-        has_cda="has_cda" in selected_availability,
-        has_rrc="has_rrc" in selected_availability,
-        has_net="has_net" in selected_availability,
-        transmission_resolved="transmission_resolved" in selected_availability,
-        has_fuel_economy="has_fuel_economy" in selected_availability,
-    )
-    rows = apply_availability_filters(rows, availability_filters)
-
-    rows = _render_advanced_filters(catalog_rows, rows)
-    rows = _render_quick_presets(rows)
     _render_browse_summary_counters(rows)
     return rows
 

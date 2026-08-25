@@ -129,6 +129,12 @@ def apply_engineering_filters(
     *,
     engine_size_l_range: tuple[float | None, float | None] | None = None,
     engine_max_power_kw_range: tuple[float | None, float | None] | None = None,
+    mass_kg_range: tuple[float | None, float | None] | None = None,
+    test_mass_kg_range: tuple[float | None, float | None] | None = None,
+    cda_m2_range: tuple[float | None, float | None] | None = None,
+    rrc_range: tuple[float | None, float | None] | None = None,
+    vde_total_range: tuple[float | None, float | None] | None = None,
+    fuel_l_per_100km_range: tuple[float | None, float | None] | None = None,
 ) -> list[Mapping[str, Any]]:
     """Numeric range filter over scenario catalog rows. Each range is only
     active when supplied (not None); an active range excludes a row whose
@@ -154,6 +160,12 @@ def apply_engineering_filters(
         for row in rows
         if _in_range(row.get("engine_size_l"), engine_size_l_range)
         and _in_range(row.get("engine_max_power_kw"), engine_max_power_kw_range)
+        and _in_range(row.get("mass_kg"), mass_kg_range)
+        and _in_range(row.get("test_mass_kg"), test_mass_kg_range)
+        and _in_range(row.get("cda_m2"), cda_m2_range)
+        and _in_range(row.get("rrc_N_per_kN"), rrc_range)
+        and _in_range(row.get("vde_total_mj_per_km"), vde_total_range)
+        and _in_range(row.get("fuel_l_per_100km"), fuel_l_per_100km_range)
     ]
 
 
@@ -257,6 +269,171 @@ def build_scenario_browse_rows(catalog_rows: Sequence[dict[str, Any]]) -> list[d
             }
         )
     return rows
+
+
+# -----------------------------------------------------------------------------
+# Browse UX upgrade -- search, data-availability quick filters, quick presets,
+# and summary counters (Comparison Browse UX Upgrade Package). All pure and
+# operate on the same enriched catalog rows build_scenario_browse_rows reads
+# from (comparison_report_service.list_comparison_scenarios_detailed output)
+# -- no new physics, only presentation-layer discovery aids.
+# -----------------------------------------------------------------------------
+
+
+def search_browse_candidates(rows: Sequence[Mapping[str, Any]], query: str) -> list[Mapping[str, Any]]:
+    """Free-text search across Model, Make, VDE ID and Fuelcons ID -- a
+    case-insensitive substring match against each, so "900001" finds a VDE
+    ID and "g80" finds a model. An empty/blank query is a no-op (returns
+    every row unchanged), matching the "All" neutral state every other
+    filter here uses.
+    """
+    needle = (query or "").strip().lower()
+    if not needle:
+        return list(rows)
+    matched: list[Mapping[str, Any]] = []
+    for row in rows:
+        haystacks = (
+            str(row.get("model") or "").lower(),
+            str(row.get("make") or "").lower(),
+            str(row.get("vde_id") if row.get("vde_id") is not None else ""),
+            str(row.get("fuelcons_id") if row.get("fuelcons_id") is not None else ""),
+        )
+        if any(needle in haystack for haystack in haystacks):
+            matched.append(row)
+    return matched
+
+
+def _browse_has_cda(row: Mapping[str, Any]) -> bool:
+    return row.get("cda_m2") is not None
+
+
+def _browse_has_rrc(row: Mapping[str, Any]) -> bool:
+    return row.get("rrc_N_per_kN") is not None
+
+
+def _browse_has_net(row: Mapping[str, Any]) -> bool:
+    return row.get("vde_net_mj_per_km") is not None
+
+
+def _browse_transmission_resolved(row: Mapping[str, Any]) -> bool:
+    return row.get("transmission_status") == "AVAILABLE"
+
+
+def _browse_has_fuel_economy(row: Mapping[str, Any]) -> bool:
+    return row.get("fuel_l_per_100km") is not None or row.get("fuel_km_per_l") is not None
+
+
+@dataclass(frozen=True)
+class BrowseAvailabilityFilters:
+    """One flag per "Data Availability" quick filter (Sec 3.3 of the Browse
+    UX Upgrade package). Each flag is independently AND-combined by
+    apply_availability_filters -- False means "don't restrict on this field",
+    never "must be missing".
+    """
+
+    has_cda: bool = False
+    has_rrc: bool = False
+    has_net: bool = False
+    transmission_resolved: bool = False
+    has_fuel_economy: bool = False
+
+
+def apply_availability_filters(
+    rows: Sequence[Mapping[str, Any]], filters: BrowseAvailabilityFilters
+) -> list[Mapping[str, Any]]:
+    out = list(rows)
+    if filters.has_cda:
+        out = [row for row in out if _browse_has_cda(row)]
+    if filters.has_rrc:
+        out = [row for row in out if _browse_has_rrc(row)]
+    if filters.has_net:
+        out = [row for row in out if _browse_has_net(row)]
+    if filters.transmission_resolved:
+        out = [row for row in out if _browse_transmission_resolved(row)]
+    if filters.has_fuel_economy:
+        out = [row for row in out if _browse_has_fuel_economy(row)]
+    return out
+
+
+def is_complete_engineering_data(row: Mapping[str, Any]) -> bool:
+    """"Complete Engineering Data" preset/counter definition: every field the
+    Scorecard itself needs is available -- Mass, ABC TOTAL, CdA, RRC, a
+    resolved transmission, ABC/VDE NET, VDE TOTAL, and Fuel Economy.
+    """
+    return (
+        row.get("mass_kg") is not None
+        and row.get("coast_A_N") is not None
+        and _browse_has_cda(row)
+        and _browse_has_rrc(row)
+        and _browse_transmission_resolved(row)
+        and _browse_has_net(row)
+        and row.get("vde_total_mj_per_km") is not None
+        and _browse_has_fuel_economy(row)
+    )
+
+
+def is_roadload_ready(row: Mapping[str, Any]) -> bool:
+    """"Roadload Ready" = the minimum physical roadload triplet (Mass + the
+    full ABC TOTAL coastdown curve) needed for a useful roadload/energy-
+    demand analysis -- deliberately lighter than Complete Engineering Data,
+    which additionally requires the CdA/RRC decomposition and NET/
+    transmission resolution.
+    """
+    return (
+        row.get("mass_kg") is not None
+        and row.get("coast_A_N") is not None
+        and row.get("coast_B_N_per_kph") is not None
+        and row.get("coast_C_N_per_kph2") is not None
+    )
+
+
+BROWSE_PRESET_LABELS: dict[str, str] = {
+    "complete_engineering_data": "Complete Engineering Data",
+    "roadload_ready": "Roadload Ready",
+    "has_net": "Has NET",
+    "fuel_economy_ready": "Fuel Economy Ready",
+}
+
+
+def apply_browse_preset(rows: Sequence[Mapping[str, Any]], preset: str | None) -> list[Mapping[str, Any]]:
+    """Quick preset (Sec 3.5): a single named, reusable predicate applied on
+    top of whatever other filters are already active. An unknown or absent
+    preset name is a no-op, matching every other filter's "All" neutral
+    state.
+    """
+    if preset == "complete_engineering_data":
+        return [row for row in rows if is_complete_engineering_data(row)]
+    if preset == "roadload_ready":
+        return [row for row in rows if is_roadload_ready(row)]
+    if preset == "has_net":
+        return [row for row in rows if _browse_has_net(row)]
+    if preset == "fuel_economy_ready":
+        return [row for row in rows if _browse_has_fuel_economy(row)]
+    return list(rows)
+
+
+@dataclass(frozen=True)
+class BrowseSummaryCounters:
+    matching: int
+    with_cda_and_rrc: int
+    with_net: int
+    fully_populated: int
+
+
+def compute_browse_summary_counters(rows: Sequence[Mapping[str, Any]]) -> BrowseSummaryCounters:
+    """Sub-counts within the CURRENTLY filtered set (Sec 3.6) -- e.g.
+    "with_net" is how many of the rows already matching every other active
+    filter also have NET available, not a count against the unfiltered
+    catalog. "fully_populated" reuses is_complete_engineering_data so the
+    counter and the "Complete Engineering Data" preset never disagree.
+    """
+    materialized = list(rows)
+    return BrowseSummaryCounters(
+        matching=len(materialized),
+        with_cda_and_rrc=sum(1 for row in materialized if _browse_has_cda(row) and _browse_has_rrc(row)),
+        with_net=sum(1 for row in materialized if _browse_has_net(row)),
+        fully_populated=sum(1 for row in materialized if is_complete_engineering_data(row)),
+    )
 
 
 @dataclass(frozen=True)
@@ -2143,6 +2320,15 @@ __all__ = [
     "ScenarioOption",
     "build_scenario_options",
     "build_scenario_browse_rows",
+    "search_browse_candidates",
+    "BrowseAvailabilityFilters",
+    "apply_availability_filters",
+    "is_complete_engineering_data",
+    "is_roadload_ready",
+    "BROWSE_PRESET_LABELS",
+    "apply_browse_preset",
+    "BrowseSummaryCounters",
+    "compute_browse_summary_counters",
     "SelectionState",
     "set_reference",
     "add_comparison",

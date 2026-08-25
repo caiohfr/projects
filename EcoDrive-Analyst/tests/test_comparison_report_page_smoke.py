@@ -442,6 +442,231 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
         self.assertEqual(state.comparison_fuelcons_ids, (2,))
 
 
+class BrowseUxUpgradeSmokeTests(unittest.TestCase):
+    """Comparison Browse UX Upgrade package -- search, Model/Year filters,
+    Data Availability quick filters, Advanced Filters, Quick presets, and
+    summary counters, all layered on top of the same `_render_filters` ->
+    `_render_scenario_browse` -> Reference/Comparison selectbox chain the
+    pre-upgrade tests above already cover. fuelcons_id=1 -> VDE-QA-001
+    ("Nominal EPA baseline", vde_id=900001); fuelcons_id=2 -> VDE-QA-002
+    ("TWC boundary lower", vde_id=900002); both start with full CdA/RRC/
+    transmission/fuel-economy data in the QA seed.
+    """
+
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "comparison_browse_ux.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+        with sqlite3.connect(self.db_path) as con:
+            con.execute(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, "
+                "fuel_l_per_100km, gco2_per_km) VALUES (1, 900001, 'ICE', 'Gasoline', 'HOMOLOGATED', 6.5, 150.0)"
+            )
+            con.execute(
+                "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, "
+                "fuel_l_per_100km, gco2_per_km) VALUES (2, 900002, 'ICE', 'Gasoline', 'ESTIMATED', 7.0, 160.0)"
+            )
+            con.commit()
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def _matching_scenarios_value(self, app: AppTest) -> str:
+        metric = next(m for m in app.metric if "Matching scenarios" in m.label)
+        return metric.value
+
+    def test_smoke_a_new_top_matter_renders(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        labels = [exp.label for exp in app.expander]
+        self.assertIn("Advanced Filters", labels)
+        self.assertTrue(any(label.startswith("Browse Comparison Scenarios (") for label in labels))
+        metric_labels = [m.label for m in app.metric]
+        self.assertTrue(any("Matching scenarios" in label for label in metric_labels))
+        self.assertTrue(any("With CdA" in label for label in metric_labels))
+        self.assertTrue(any("With NET" in label for label in metric_labels))
+        self.assertTrue(any("Fully populated" in label for label in metric_labels))
+        button_labels = [b.label for b in app.button]
+        self.assertTrue(any("Complete Engineering Data" in label for label in button_labels))
+        self.assertTrue(any("Roadload Ready" in label for label in button_labels))
+        self.assertTrue(any("Clear Filters" in label for label in button_labels))
+
+    def test_search_by_model_narrows_reference_candidates(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_query"] = "Nominal"
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        reference_select = app.selectbox(key="comparison_reference_select")
+        self.assertTrue(any("Nominal EPA baseline" in opt for opt in reference_select.options))
+        self.assertFalse(any("TWC boundary lower" in opt for opt in reference_select.options))
+
+    def test_search_by_vde_id_narrows_candidates(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_query"] = "900002"
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        reference_select = app.selectbox(key="comparison_reference_select")
+        self.assertTrue(any("TWC boundary lower" in opt for opt in reference_select.options))
+        self.assertFalse(any("Nominal EPA baseline" in opt for opt in reference_select.options))
+
+    def test_search_by_fuelcons_id_narrows_candidates(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_query"] = "1"  # matches fuelcons_id=1 and vde_id 900001, not 900002/2
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        reference_select = app.selectbox(key="comparison_reference_select")
+        self.assertTrue(any("Nominal EPA baseline" in opt for opt in reference_select.options))
+        self.assertFalse(any("TWC boundary lower" in opt for opt in reference_select.options))
+
+    def test_model_filter_narrows_candidates(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_model"] = "TWC boundary lower"
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        reference_select = app.selectbox(key="comparison_reference_select")
+        self.assertTrue(any("TWC boundary lower" in opt for opt in reference_select.options))
+        self.assertFalse(any("Nominal EPA baseline" in opt for opt in reference_select.options))
+
+    def test_year_filter_narrows_candidates(self):
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE vde_db SET year=2019 WHERE id=900001")
+            con.commit()
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_year"] = 2026
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        reference_select = app.selectbox(key="comparison_reference_select")
+        self.assertTrue(any("TWC boundary lower" in opt for opt in reference_select.options))
+        self.assertFalse(any("Nominal EPA baseline" in opt for opt in reference_select.options))
+
+    def test_smoke_c_data_availability_toggle_excludes_missing_cda(self):
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE vde_db SET cda_m2=NULL WHERE id=900002")
+            con.commit()
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_availability"] = ["has_cda"]
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        reference_select = app.selectbox(key="comparison_reference_select")
+        self.assertTrue(any("Nominal EPA baseline" in opt for opt in reference_select.options))
+        self.assertFalse(any("TWC boundary lower" in opt for opt in reference_select.options))
+        self.assertEqual(self._matching_scenarios_value(app), "1")
+
+    def test_has_rrc_and_has_net_quick_filters(self):
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE vde_db SET rrc_N_per_kN=NULL WHERE id=900002")
+            con.commit()
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_availability"] = ["has_rrc"]
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(self._matching_scenarios_value(app), "1")
+
+    def test_transmission_resolved_quick_filter(self):
+        with sqlite3.connect(self.db_path) as con:
+            con.execute(
+                "UPDATE vde_db SET trans_A_coef_N=NULL, trans_B_coef_Npkph=NULL, trans_C_coef_Npkph2=NULL WHERE id=900002"
+            )
+            con.commit()
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_availability"] = ["transmission_resolved"]
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(self._matching_scenarios_value(app), "1")
+
+    def test_fuel_economy_quick_filter(self):
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE fuelcons_db SET fuel_l_per_100km=NULL WHERE id=2")
+            con.commit()
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_availability"] = ["has_fuel_economy"]
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(self._matching_scenarios_value(app), "1")
+
+    def test_smoke_d_complete_engineering_data_preset_via_button_click(self):
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("UPDATE vde_db SET cda_m2=NULL WHERE id=900002")
+            con.commit()
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        preset_button = next(b for b in app.button if "Complete Engineering Data" in b.label)
+        preset_button.click().run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(app.session_state["comparison_filter_active_preset"], "complete_engineering_data")
+        reference_select = app.selectbox(key="comparison_reference_select")
+        self.assertTrue(any("Nominal EPA baseline" in opt for opt in reference_select.options))
+        self.assertFalse(any("TWC boundary lower" in opt for opt in reference_select.options))
+
+    def test_roadload_ready_preset_via_button_click(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        preset_button = next(b for b in app.button if "Roadload Ready" in b.label)
+        preset_button.click().run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(app.session_state["comparison_filter_active_preset"], "roadload_ready")
+
+    def test_smoke_e_advanced_filter_mass_min_max(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_mass_min"] = 100000.0
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(self._matching_scenarios_value(app), "0")
+
+    def test_smoke_f_clear_filters_restores_full_catalog(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_make"] = "QA"
+        app.session_state["comparison_filter_mass_min"] = 100000.0
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(self._matching_scenarios_value(app), "0")
+        clear_button = next(b for b in app.button if "Clear Filters" in b.label)
+        clear_button.click().run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertIsNone(app.session_state["comparison_filter_mass_min"])
+        self.assertNotIn("comparison_filter_active_preset", app.session_state)
+        self.assertEqual(self._matching_scenarios_value(app), "2")
+
+    def test_smoke_g_selected_scenarios_remain_stable_after_filter_changes(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(2,))
+        app.session_state["comparison_filter_availability"] = ["has_cda"]
+        app.session_state["comparison_filter_query"] = "nonexistent-model-xyz"
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        state = app.session_state["comparison_selection"]
+        self.assertEqual(state.reference_fuelcons_id, 1)
+        self.assertEqual(state.comparison_fuelcons_ids, (2,))
+        self.assertEqual(len(app.warning), 0)
+
+    def test_reference_less_mode_still_works_with_new_filters(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_selection"] = SelectionState(
+            reference_fuelcons_id=None, comparison_fuelcons_ids=(1, 2)
+        )
+        app.session_state["comparison_filter_availability"] = []
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        state = app.session_state["comparison_selection"]
+        self.assertIsNone(state.reference_fuelcons_id)
+        self.assertEqual(state.comparison_fuelcons_ids, (1, 2))
+
+    def test_browse_table_still_renders_with_new_filters_active(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_availability"] = ["has_fuel_economy"]
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        labels = [exp.label for exp in app.expander]
+        self.assertTrue(any(label.startswith("Browse Comparison Scenarios (") for label in labels))
+        self.assertGreaterEqual(len(app.dataframe), 1)
+
+
 class SelectionFilterPersistenceTests(unittest.TestCase):
     """Package 8F -- top-level filters (Make/Category/Legislation/
     Electrification/Displacement/Power/Provenance) are candidate-SEARCH

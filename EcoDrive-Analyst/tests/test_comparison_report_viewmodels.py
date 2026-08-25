@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from src.vde_app.comparison_report_viewmodels import (
     MAX_COMPARISONS,
@@ -12,7 +13,14 @@ from src.vde_app.comparison_report_viewmodels import (
     PresentationRole,
     PresentationState,
     SelectionState,
+    apply_availability_filters,
+    apply_browse_preset,
     apply_engineering_filters,
+    BrowseAvailabilityFilters,
+    compute_browse_summary_counters,
+    is_complete_engineering_data,
+    is_roadload_ready,
+    search_browse_candidates,
     hp_to_kw,
     kw_to_hp,
     TargetState,
@@ -755,6 +763,219 @@ class ScenarioBrowseRowsTests(unittest.TestCase):
 
     def test_empty_catalog_yields_empty_rows(self):
         self.assertEqual(build_scenario_browse_rows([]), [])
+
+
+def _complete_browse_row(**overrides: Any) -> dict[str, Any]:
+    """A catalog row with every field the "Complete Engineering Data" preset
+    checks present and populated -- individual tests knock out one field at
+    a time via overrides rather than repeating the whole shape.
+    """
+    row: dict[str, Any] = {
+        "fuelcons_id": 1,
+        "vde_id": 900001,
+        "make": "HYUNDAI",
+        "model": "G80",
+        "year": 2020,
+        "mass_kg": 1500.0,
+        "coast_A_N": 100.0,
+        "coast_B_N_per_kph": 1.0,
+        "coast_C_N_per_kph2": 0.03,
+        "cda_m2": 0.65,
+        "rrc_N_per_kN": 8.5,
+        "test_mass_kg": 1520.0,
+        "transmission_status": "AVAILABLE",
+        "vde_total_mj_per_km": 2.5,
+        "vde_net_mj_per_km": 2.1,
+        "fuel_l_per_100km": 7.5,
+        "fuel_km_per_l": None,
+    }
+    row.update(overrides)
+    return row
+
+
+class BrowseSearchTests(unittest.TestCase):
+    def test_matches_model_case_insensitive(self):
+        rows = [_complete_browse_row(model="Veloster N"), _complete_browse_row(model="Accent")]
+        matched = search_browse_candidates(rows, "veloster")
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["model"], "Veloster N")
+
+    def test_matches_vde_id_substring(self):
+        rows = [_complete_browse_row(vde_id=900001), _complete_browse_row(vde_id=900002)]
+        matched = search_browse_candidates(rows, "900001")
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["vde_id"], 900001)
+
+    def test_matches_fuelcons_id_substring(self):
+        rows = [_complete_browse_row(fuelcons_id=42), _complete_browse_row(fuelcons_id=43)]
+        matched = search_browse_candidates(rows, "42")
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["fuelcons_id"], 42)
+
+    def test_matches_make(self):
+        rows = [_complete_browse_row(make="HYUNDAI"), _complete_browse_row(make="LEXUS")]
+        matched = search_browse_candidates(rows, "lexus")
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["make"], "LEXUS")
+
+    def test_blank_query_returns_every_row_unchanged(self):
+        rows = [_complete_browse_row(fuelcons_id=1), _complete_browse_row(fuelcons_id=2)]
+        self.assertEqual(search_browse_candidates(rows, ""), rows)
+        self.assertEqual(search_browse_candidates(rows, "   "), rows)
+
+    def test_no_match_returns_empty_list(self):
+        rows = [_complete_browse_row(model="Veloster N")]
+        self.assertEqual(search_browse_candidates(rows, "nonexistent"), [])
+
+
+class BrowseAvailabilityFilterTests(unittest.TestCase):
+    def test_has_cda_excludes_rows_missing_cda(self):
+        rows = [_complete_browse_row(fuelcons_id=1, cda_m2=0.65), _complete_browse_row(fuelcons_id=2, cda_m2=None)]
+        out = apply_availability_filters(rows, BrowseAvailabilityFilters(has_cda=True))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_has_rrc_excludes_rows_missing_rrc(self):
+        rows = [_complete_browse_row(fuelcons_id=1, rrc_N_per_kN=8.5), _complete_browse_row(fuelcons_id=2, rrc_N_per_kN=None)]
+        out = apply_availability_filters(rows, BrowseAvailabilityFilters(has_rrc=True))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_has_net_excludes_rows_missing_vde_net(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, vde_net_mj_per_km=2.1),
+            _complete_browse_row(fuelcons_id=2, vde_net_mj_per_km=None),
+        ]
+        out = apply_availability_filters(rows, BrowseAvailabilityFilters(has_net=True))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_transmission_resolved_requires_available_status_not_just_non_missing(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, transmission_status="AVAILABLE"),
+            _complete_browse_row(fuelcons_id=2, transmission_status="MISSING"),
+            _complete_browse_row(fuelcons_id=3, transmission_status="NOT_USED"),
+        ]
+        out = apply_availability_filters(rows, BrowseAvailabilityFilters(transmission_resolved=True))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_has_fuel_economy_accepts_either_unit(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, fuel_l_per_100km=7.5, fuel_km_per_l=None),
+            _complete_browse_row(fuelcons_id=2, fuel_l_per_100km=None, fuel_km_per_l=13.3),
+            _complete_browse_row(fuelcons_id=3, fuel_l_per_100km=None, fuel_km_per_l=None),
+        ]
+        out = apply_availability_filters(rows, BrowseAvailabilityFilters(has_fuel_economy=True))
+        self.assertEqual({r["fuelcons_id"] for r in out}, {1, 2})
+
+    def test_multiple_active_flags_are_and_combined(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, cda_m2=0.65, rrc_N_per_kN=8.5),
+            _complete_browse_row(fuelcons_id=2, cda_m2=0.65, rrc_N_per_kN=None),
+        ]
+        out = apply_availability_filters(rows, BrowseAvailabilityFilters(has_cda=True, has_rrc=True))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_no_flags_active_is_a_no_op(self):
+        rows = [_complete_browse_row(fuelcons_id=1, cda_m2=None)]
+        out = apply_availability_filters(rows, BrowseAvailabilityFilters())
+        self.assertEqual(out, rows)
+
+
+class BrowseAdvancedRangeFilterTests(unittest.TestCase):
+    def test_mass_range_excludes_out_of_range_and_missing(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, mass_kg=1500.0),
+            _complete_browse_row(fuelcons_id=2, mass_kg=2500.0),
+            _complete_browse_row(fuelcons_id=3, mass_kg=None),
+        ]
+        out = apply_engineering_filters(rows, mass_kg_range=(1000.0, 2000.0))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_cda_and_rrc_ranges_combine(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, cda_m2=0.6, rrc_N_per_kN=8.0),
+            _complete_browse_row(fuelcons_id=2, cda_m2=0.9, rrc_N_per_kN=8.0),
+        ]
+        out = apply_engineering_filters(rows, cda_m2_range=(0.5, 0.7), rrc_range=(7.0, 9.0))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_vde_total_and_fuel_economy_ranges(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, vde_total_mj_per_km=2.0, fuel_l_per_100km=6.0),
+            _complete_browse_row(fuelcons_id=2, vde_total_mj_per_km=3.5, fuel_l_per_100km=9.0),
+        ]
+        out = apply_engineering_filters(rows, vde_total_range=(1.5, 2.5), fuel_l_per_100km_range=(5.0, 7.0))
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_unset_ranges_are_all_no_ops(self):
+        rows = [_complete_browse_row(fuelcons_id=1, mass_kg=None, cda_m2=None)]
+        self.assertEqual(apply_engineering_filters(rows), rows)
+
+
+class BrowsePresetTests(unittest.TestCase):
+    def test_complete_engineering_data_requires_every_field(self):
+        complete = _complete_browse_row(fuelcons_id=1)
+        missing_cda = _complete_browse_row(fuelcons_id=2, cda_m2=None)
+        self.assertTrue(is_complete_engineering_data(complete))
+        self.assertFalse(is_complete_engineering_data(missing_cda))
+        out = apply_browse_preset([complete, missing_cda], "complete_engineering_data")
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_roadload_ready_only_needs_mass_and_full_abc_total(self):
+        roadload_only = _complete_browse_row(
+            fuelcons_id=1, cda_m2=None, rrc_N_per_kN=None, transmission_status="MISSING", vde_net_mj_per_km=None
+        )
+        missing_abc = _complete_browse_row(fuelcons_id=2, coast_C_N_per_kph2=None)
+        self.assertTrue(is_roadload_ready(roadload_only))
+        self.assertFalse(is_roadload_ready(missing_abc))
+        out = apply_browse_preset([roadload_only, missing_abc], "roadload_ready")
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_has_net_preset_matches_availability_predicate(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, vde_net_mj_per_km=2.1),
+            _complete_browse_row(fuelcons_id=2, vde_net_mj_per_km=None),
+        ]
+        out = apply_browse_preset(rows, "has_net")
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_fuel_economy_ready_preset_matches_availability_predicate(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1, fuel_l_per_100km=7.5),
+            _complete_browse_row(fuelcons_id=2, fuel_l_per_100km=None, fuel_km_per_l=None),
+        ]
+        out = apply_browse_preset(rows, "fuel_economy_ready")
+        self.assertEqual([r["fuelcons_id"] for r in out], [1])
+
+    def test_none_or_unknown_preset_is_a_no_op(self):
+        rows = [_complete_browse_row(fuelcons_id=1, cda_m2=None)]
+        self.assertEqual(apply_browse_preset(rows, None), rows)
+        self.assertEqual(apply_browse_preset(rows, "not_a_real_preset"), rows)
+
+
+class BrowseSummaryCountersTests(unittest.TestCase):
+    def test_counters_are_subset_counts_of_the_rows_passed_in(self):
+        rows = [
+            _complete_browse_row(fuelcons_id=1),
+            _complete_browse_row(fuelcons_id=2, rrc_N_per_kN=None, vde_net_mj_per_km=None),
+            _complete_browse_row(fuelcons_id=3, cda_m2=None, rrc_N_per_kN=None, vde_net_mj_per_km=None),
+        ]
+        counters = compute_browse_summary_counters(rows)
+        self.assertEqual(counters.matching, 3)
+        self.assertEqual(counters.with_cda_and_rrc, 1)  # only fuelcons_id 1 has both
+        self.assertEqual(counters.with_net, 1)  # only fuelcons_id 1
+        self.assertEqual(counters.fully_populated, 1)  # only fuelcons_id 1
+
+    def test_fully_populated_agrees_with_the_complete_engineering_data_preset(self):
+        rows = [_complete_browse_row(fuelcons_id=1), _complete_browse_row(fuelcons_id=2, mass_kg=None)]
+        counters = compute_browse_summary_counters(rows)
+        preset_result = apply_browse_preset(rows, "complete_engineering_data")
+        self.assertEqual(counters.fully_populated, len(preset_result))
+
+    def test_empty_input_yields_zeroed_counters(self):
+        counters = compute_browse_summary_counters([])
+        self.assertEqual(counters.matching, 0)
+        self.assertEqual(counters.with_cda_and_rrc, 0)
+        self.assertEqual(counters.with_net, 0)
+        self.assertEqual(counters.fully_populated, 0)
 
 
 # -----------------------------------------------------------------------------

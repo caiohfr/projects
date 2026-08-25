@@ -368,6 +368,31 @@ class VersatileWalkTests(unittest.TestCase):
         for item_id in (self._id(self.proposal_a), self._id(self.proposal_b), self._id(self.current)):
             self.assertEqual(rows[item_id].delta_base_item_id, self._id(self.reference))
 
+    def test_rows_sharing_one_vde_get_distinct_labels_not_a_collapsed_chart_bar(self):
+        # self.reference (fuelcons_id=1) and self.current (fuelcons_id=4)
+        # are both linked to vde_id=900001, so item.label is identical for
+        # both -- build_walk_chart plots bars keyed by row.label, so an
+        # undisambiguated collision would put two bars at the same
+        # x-position with their value text stacked on top of each other.
+        dataset = self._dataset()
+        spec = WalkViewSpec(
+            metric_key="fuel_l_per_100km",
+            steps=(
+                WalkStep(self._id(self.reference), WalkDisplayMode.ABSOLUTE, advances_anchor=True),
+                WalkStep(self._id(self.current), WalkDisplayMode.DELTA, WalkDeltaBase.REFERENCE, advances_anchor=False),
+            ),
+        )
+        result = build_walk_rows(dataset, spec)
+        rows = {row.item_id: row for row in result.rows}
+        reference_row = rows[self._id(self.reference)]
+        current_row = rows[self._id(self.current)]
+        self.assertEqual(reference_row.label, self.reference.label)
+        self.assertNotEqual(current_row.label, reference_row.label)
+        self.assertTrue(current_row.label.startswith(self.current.label))
+        # The delta base label shown for the "current" row must match the
+        # reference row's own (deduped) label, not the pre-dedup original.
+        self.assertEqual(current_row.delta_base_label, reference_row.label)
+
     def test_c_mixed_walk_benchmark_context_only_does_not_become_anchor(self):
         dataset = self._dataset()
         spec = WalkViewSpec(

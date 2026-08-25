@@ -72,6 +72,7 @@ from src.vde_app.comparison_report_viewmodels import (
     build_iso_pse_lines,
     compute_adaptive_pse_guides,
     compute_browse_summary_counters,
+    dedupe_titles,
     build_lineage_waterfall,
     build_roadload_curve_rows,
     build_scenario_header,
@@ -197,20 +198,6 @@ def _load_vde_catalog_cached(db_path_signature: str) -> list[dict]:
 
 def _load_vde_catalog() -> list[dict]:
     return _load_vde_catalog_cached(str(Path(current_db_path()).resolve()))
-
-
-def _dedupe_titles(titles: list[str]) -> list[str]:
-    """pandas.Styler requires unique columns/index. Two comparison items can
-    legitimately share the same label+provenance (e.g. two scenarios on the
-    same VDE with the same record_origin but different fuel assumptions) --
-    disambiguate with a trailing counter rather than letting Styler raise.
-    """
-    seen: dict[str, int] = {}
-    result = []
-    for title in titles:
-        seen[title] = seen.get(title, 0) + 1
-        result.append(title if seen[title] == 1 else f"{title} ({seen[title]})")
-    return result
 
 
 def _index_of(value, ordered_values: list) -> int:
@@ -1040,7 +1027,7 @@ def _render_scorecard_tab(dataset: ComparisonDataset | None) -> None:
                 st.warning(warning)
 
     items = dataset_items(dataset)
-    header_titles = _dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
+    header_titles = dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
 
     unit_system = normalize_unit_system(st.session_state.get("unit_system"))
     for section in build_scorecard_sections(dataset, unit_system=unit_system):
@@ -1379,7 +1366,7 @@ def _render_physical_setup_section(dataset: ComparisonDataset, unit_system: str)
     including its Reference-less absolute-only degrade.
     """
     items = dataset_items(dataset)
-    header_titles = _dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
+    header_titles = dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
     physical_section = next(
         (s for s in build_scorecard_sections(dataset, unit_system=unit_system) if s.title == "Physical Setup"), None
     )
@@ -1396,7 +1383,7 @@ def _render_abc_section(dataset: ComparisonDataset, boundaries: list[str], unit_
     filtered to the boundaries currently selected above.
     """
     items = dataset_items(dataset)
-    header_titles = _dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
+    header_titles = dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
     roadload_section = next(
         (s for s in build_scorecard_sections(dataset, unit_system=unit_system) if s.title == "Roadload"), None
     )
@@ -1466,7 +1453,7 @@ def _render_vehicle_demand_summary_section(dataset: ComparisonDataset, boundarie
         "explanation behind it (known rolling/aero, residual/unattributed, inertial work)."
     )
     items = dataset_items(dataset)
-    header_titles = _dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
+    header_titles = dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
     outcomes = resolve_vehicle_demand_outcomes(dataset)
     for boundary in boundaries:
         basis = _ROADLOAD_BASIS_BY_LABEL[boundary]

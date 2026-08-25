@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Callable, Mapping, Sequence
 
@@ -864,6 +864,27 @@ def build_walk_rows(
         )
         if step.advances_anchor and status == "OK":
             active_anchor_item = item
+
+    # Two distinct items (different fuelcons_id) can legitimately share one
+    # label -- e.g. two FuelCons scenarios on the same VDE baseline. build_walk_chart
+    # plots bars keyed by this label, so an undisambiguated collision puts
+    # two bars at the same x-position with their value text stacked on top
+    # of each other. Same fix the Scorecard's column headers already use
+    # (_dedupe_titles), applied here by item_id so a row's own label and any
+    # other row's reference to it as a delta base always agree.
+    deduped_by_item_id = dict(zip((row.item_id for row in rows), dedupe_titles([row.label for row in rows])))
+    rows = [
+        replace(
+            row,
+            label=deduped_by_item_id[row.item_id],
+            delta_base_label=(
+                deduped_by_item_id.get(row.delta_base_item_id, row.delta_base_label)
+                if row.delta_base_item_id is not None
+                else row.delta_base_label
+            ),
+        )
+        for row in rows
+    ]
 
     return WalkResult(
         metric_key=spec.metric_key,
@@ -1856,14 +1877,18 @@ def list_explore_dimension_values(items: Sequence[ComparisonItem], dimension_key
     return sorted(values)
 
 
-def _dedupe_display_labels(labels: list[str]) -> list[str]:
-    """Presentation-only disambiguation equivalent to components/comparison_report.py's
-    _dedupe_titles (Sec 10) -- kept local so this module stays Streamlit-free
-    and dependency-direction-clean (UI imports viewmodels, never the reverse).
-    Two distinct scenarios sharing one label must never be merged into one bar.
+def dedupe_titles(labels: Sequence[str]) -> list[str]:
+    """Two comparison items can legitimately share the same display label
+    (e.g. two FuelCons scenarios on the same VDE baseline with different
+    fuel assumptions, or the same label+provenance) -- disambiguate with a
+    trailing counter rather than letting a consumer either raise (pandas
+    Styler requires unique columns/index) or silently overlay two chart
+    bars/Walk steps at the same categorical position. The single shared
+    implementation for this across the Scorecard, Explore bar chart, and
+    Walk/KPI Comparison chart.
     """
     seen: dict[str, int] = {}
-    result = []
+    result: list[str] = []
     for label in labels:
         seen[label] = seen.get(label, 0) + 1
         result.append(label if seen[label] == 1 else f"{label} ({seen[label]})")
@@ -1959,7 +1984,7 @@ def build_explore_bar_rows(
         kept_items.append(item)
         labels.append(str(x_value))
 
-    labels = _dedupe_display_labels(labels)
+    labels = dedupe_titles(labels)
     rows: list[ExploreBarRow] = []
     for item, label in zip(kept_items, labels):
         value = extract_metric_value(item, y_metric_key)
@@ -2291,6 +2316,7 @@ def build_lineage_waterfall(
 __all__ = [
     "MAX_COMPARISONS",
     "HP_PER_KW",
+    "dedupe_titles",
     "kw_to_hp",
     "hp_to_kw",
     "apply_engineering_filters",

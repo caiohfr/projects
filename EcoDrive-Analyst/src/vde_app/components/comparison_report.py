@@ -285,8 +285,11 @@ _FILTER_WIDGET_KEYS = (
     "comparison_filter_legislation",
     "comparison_filter_electrification",
     "comparison_filter_availability",
-    "comparison_filter_engine_size_range",
-    "comparison_filter_power_range",
+    "comparison_filter_advanced_open",
+    "comparison_filter_engine_size_min",
+    "comparison_filter_engine_size_max",
+    "comparison_filter_power_min",
+    "comparison_filter_power_max",
     "comparison_filter_mass_min",
     "comparison_filter_mass_max",
     "comparison_filter_test_mass_min",
@@ -466,11 +469,19 @@ def _render_advanced_filters(catalog_rows: list[dict], rows: list[dict]) -> list
     categorical selectboxes -- no field is visually heavier than any other.
     A blank Min/Max pair is inactive, same convention as every other Min/
     Max field here. Streamlit forbids nesting an expander inside another
-    expander, so this is a plain subsection rather than its own collapsed
-    panel; Browse itself (collapsed by default) already keeps the page
-    compact until opened.
+    expander, so a toggle gates the whole subsection instead of a second
+    expander -- collapsed by default, so these 12 fields don't dominate
+    Browse the moment it's opened. While collapsed the fields simply don't
+    render, so any value set earlier stops being applied (and reappears,
+    unchanged, the next time the section is reopened) -- an inactive filter
+    is never invisible, matching every other filter's "not shown = not
+    applied" convention here.
     """
     st.caption("Advanced Filters")
+    show_advanced = st.toggle("Show advanced filters", value=False, key="comparison_filter_advanced_open")
+    if not show_advanced:
+        return rows
+
     displacement_range = _render_min_max_range("Displacement [L]", "comparison_filter_engine_size")
     power_hp_range = _render_min_max_range("Engine power [hp]", "comparison_filter_power")
     engine_max_power_kw_range = None

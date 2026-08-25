@@ -180,7 +180,10 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
             con.commit()
         app = AppTest.from_file(str(PAGE_PATH))
         # A blank Min/Max Advanced Filters field is the "All" neutral state --
-        # setting either bound is what activates the filter.
+        # setting either bound is what activates the filter. Advanced
+        # Filters is collapsed behind a toggle (off by default) since its
+        # fields don't render -- and so don't apply -- while hidden.
+        app.session_state["comparison_filter_advanced_open"] = True
         app.session_state["comparison_filter_engine_size_min"] = 1.5
         app.session_state["comparison_filter_engine_size_max"] = 2.5
         app.run(timeout=90)
@@ -209,6 +212,7 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
             )
             con.commit()
         app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_advanced_open"] = True
         app.session_state["comparison_filter_power_min"] = 150.0
         app.session_state["comparison_filter_power_max"] = 450.0
         app.run(timeout=90)
@@ -496,6 +500,27 @@ class BrowseUxUpgradeSmokeTests(unittest.TestCase):
         self.assertTrue(any("Roadload Ready" in label for label in button_labels))
         self.assertTrue(any("Clear Filters" in label for label in button_labels))
 
+    def test_advanced_filters_are_collapsed_by_default(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        advanced_toggle = app.toggle(key="comparison_filter_advanced_open")
+        self.assertFalse(advanced_toggle.value)
+        advanced_field_keys = [
+            ni.key for ni in app.number_input if ni.key and ni.key.startswith("comparison_filter_mass_")
+        ]
+        self.assertEqual(advanced_field_keys, [])
+
+    def test_advanced_filters_expand_when_the_toggle_is_switched_on(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_advanced_open"] = True
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        advanced_field_keys = {
+            ni.key for ni in app.number_input if ni.key and ni.key.startswith("comparison_filter_mass_")
+        }
+        self.assertEqual(advanced_field_keys, {"comparison_filter_mass_min", "comparison_filter_mass_max"})
+
     def test_search_by_model_narrows_reference_candidates(self):
         app = AppTest.from_file(str(PAGE_PATH))
         app.session_state["comparison_filter_query"] = "Nominal"
@@ -614,6 +639,7 @@ class BrowseUxUpgradeSmokeTests(unittest.TestCase):
 
     def test_smoke_e_advanced_filter_mass_min_max(self):
         app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_advanced_open"] = True
         app.session_state["comparison_filter_mass_min"] = 100000.0
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
@@ -622,6 +648,7 @@ class BrowseUxUpgradeSmokeTests(unittest.TestCase):
     def test_smoke_f_clear_filters_restores_full_catalog(self):
         app = AppTest.from_file(str(PAGE_PATH))
         app.session_state["comparison_filter_make"] = "QA"
+        app.session_state["comparison_filter_advanced_open"] = True
         app.session_state["comparison_filter_mass_min"] = 100000.0
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
@@ -629,7 +656,10 @@ class BrowseUxUpgradeSmokeTests(unittest.TestCase):
         clear_button = next(b for b in app.button if "Clear Filters" in b.label)
         clear_button.click().run(timeout=90)
         self.assertEqual(len(app.exception), 0)
-        self.assertIsNone(app.session_state["comparison_filter_mass_min"])
+        # Clear Filters also collapses Advanced Filters back behind its
+        # toggle, so its fields (including this one) no longer render at
+        # all -- absent from session_state, not merely reset to None.
+        self.assertNotIn("comparison_filter_mass_min", app.session_state)
         self.assertNotIn("comparison_filter_active_preset", app.session_state)
         self.assertEqual(self._matching_scenarios_value(app), "2")
 
@@ -941,6 +971,7 @@ class SelectionFilterPersistenceTests(unittest.TestCase):
                 app.session_state["comparison_selection"] = SelectionState(
                     reference_fuelcons_id=1, comparison_fuelcons_ids=(2,)
                 )
+                app.session_state["comparison_filter_advanced_open"] = True
                 app.session_state[min_key] = min_value
                 app.session_state[max_key] = max_value
                 app.run(timeout=90)

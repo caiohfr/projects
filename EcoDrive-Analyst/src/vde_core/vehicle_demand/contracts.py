@@ -194,7 +194,11 @@ class VehicleDemandProfile:
     because component attribution is not always available (see
     roadload_analysis.build_cycle_power_analysis's existing
     decomposition_available=False precedent) -- their absence is distinct
-    from a resolved value of 0.
+    from a resolved value of 0. residual_roadload_force_N is signed and may
+    legitimately go negative (Sprint 9B Sec 15-16): it is
+    authoritative_roadload_force_N minus whichever known contributions were
+    actually calculated, never clipped or redistributed, so it is the one
+    force field that is not itself a "how much resistance" magnitude.
     """
 
     roadload_basis: RoadloadBasis
@@ -259,7 +263,12 @@ class VehicleDemandSummary:
     the same convention. Aggregates that represent a quantity of energy are
     non-negative magnitudes (Sprint 9A Sec 7) -- direction is carried by the
     field's own name (e.g. braking_energy_required_MJ), never by a negative
-    sign on an aggregate.
+    sign on an aggregate. residual_roadload_energy_MJ is the one exception
+    to this non-negative-magnitude convention (Sprint 9B Sec 27): it is the
+    integral of authoritative-minus-known roadload power and may legitimately
+    be negative when known contributions exceed the authoritative roadload
+    (see VehicleDemandProfile.residual_roadload_force_N) -- clipping it to
+    zero would hide a real basis mismatch rather than report it.
 
     A None field means unavailable/not computed; it is never coerced to 0,
     and a 0 value is never coerced to None.

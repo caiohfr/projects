@@ -68,6 +68,37 @@ def build_grouped_bar_figure(
     return fig
 
 
+def build_vehicle_demand_breakdown_chart(rows: Sequence[dict[str, Any]]) -> go.Figure:
+    """One stacked horizontal bar per scenario: Known Rolling + Known Aero +
+    Residual/Unattributed, which always sum exactly to that scenario's
+    Roadload Energy -- Known + Residual = Authoritative is an explicit
+    Vehicle Demand Core identity (Sprint 9D Sec 18), never presented as if
+    every component sums to a fixed 100%. A component that is genuinely
+    unavailable (not zero) for every row is simply not added as a series,
+    rather than plotted as a zero-height segment.
+
+    barmode="relative" (not "stack"): Residual can be negative (Sprint 9B
+    Sec 16); "relative" stacks positive segments together and negative
+    segments together on the other side of zero, so a negative residual
+    stays visibly distinct rather than being silently absorbed into a
+    same-direction stack.
+
+    rows: [{"label", "known_rolling_MJ" (optional), "known_aero_MJ"
+    (optional), "residual_MJ"}].
+    """
+    fig = go.Figure()
+    if not rows:
+        return fig
+    labels = [row["label"] for row in rows]
+    if any(row.get("known_rolling_MJ") is not None for row in rows):
+        fig.add_bar(name="Known Rolling", y=labels, x=[row.get("known_rolling_MJ") for row in rows], orientation="h")
+    if any(row.get("known_aero_MJ") is not None for row in rows):
+        fig.add_bar(name="Known Aero", y=labels, x=[row.get("known_aero_MJ") for row in rows], orientation="h")
+    fig.add_bar(name="Residual / Unattributed", y=labels, x=[row.get("residual_MJ") for row in rows], orientation="h")
+    fig.update_layout(barmode="relative", xaxis_title="Energy [MJ]", yaxis_title=None)
+    return fig
+
+
 _PSE_GUIDE_COLOR = "rgba(107,114,128,0.55)"
 _PSE_GUIDE_LABEL_COLOR = "rgba(75,85,99,0.9)"
 

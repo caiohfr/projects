@@ -65,6 +65,7 @@ _UNIT_QUANTITY_MAP = {
     "force_n_per_kph2": "force_per_speed_squared",
     "rrc_n_per_kn": "rrc",
     "energy_mj_per_km": "energy_per_distance",
+    "energy_mj": "energy_mj",
     "wh_per_km": "energy_wh_per_distance",
     "gco2_per_km": "co2_per_distance",
     "ratio": "fraction",

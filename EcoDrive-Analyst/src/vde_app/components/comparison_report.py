@@ -36,7 +36,14 @@ from src.vde_app.comparison_report_charts import (
     build_fe_vde_figure,
     build_grouped_bar_figure,
     build_lineage_waterfall_chart,
+    build_vehicle_demand_breakdown_chart,
     build_walk_chart,
+)
+from src.vde_app.comparison_vehicle_demand_viewmodels import (
+    VEHICLE_DEMAND_SECTION_TITLE,
+    build_vehicle_demand_breakdown_rows,
+    build_vehicle_demand_comparison_rows,
+    resolve_vehicle_demand_outcomes,
 )
 from src.vde_app.comparison_report_viewmodels import (
     ComparisonItem,
@@ -109,6 +116,7 @@ from src.vde_core.comparison_report_service import (
 from src.vde_core.component_repositories import load_component_repository
 from src.vde_core.cycles import use_standard_cycle
 from src.vde_core.db import current_db_path
+from src.vde_core.vehicle_demand import RoadloadBasis
 
 _CELL_STYLE = {
     "BETTER": "background-color: rgba(34,197,94,0.18)",
@@ -721,10 +729,17 @@ def _render_section(section: ScorecardSection, header_titles: list[str]) -> None
         cell_texts = []
         cell_semantics = []
         for cell in cells:
+            # Sprint 9D: `if` rather than `elif` so a cell can show a delta
+            # AND a short warning together (e.g. a negative-residual "Review"
+            # flag next to its Reference delta). Behavior-preserving for
+            # every existing caller: warning and formatted_delta have always
+            # been mutually exclusive by construction elsewhere in this file
+            # (compare_metric's incompatible branch sets warning and leaves
+            # formatted_delta None; every other cell never sets warning).
             text = cell.formatted_value
             if cell.formatted_delta:
                 text = f"{text}\n{cell.formatted_delta}"
-            elif cell.warning:
+            if cell.warning:
                 text = f"{text}\n{cell.warning}"
             cell_texts.append(text)
             cell_semantics.append(cell.semantic)
@@ -1166,6 +1181,40 @@ def _render_cycle_phase_section(dataset: ComparisonDataset, boundaries: list[str
         st.caption("No recognized phase breakdown (EPA City/Highway or WLTP Low/Mid/High/Extra High) is available for the selected items.")
 
 
+_ROADLOAD_BASIS_BY_LABEL = {"TOTAL": RoadloadBasis.TOTAL, "NET": RoadloadBasis.NET}
+
+
+def _render_vehicle_demand_summary_section(dataset: ComparisonDataset, boundaries: list[str], unit_system: str) -> None:
+    """"Why is vehicle demand different?" (Sprint 9D) -- a compact table from
+    the frozen Vehicle Demand Core (Sprint 9A-9C), complementing (never
+    replacing) VDE by Cycle/Phase above. Pure consumer: no roadload/RRC/CdA/
+    air-density/inertia/tractive/energy-integration physics is computed
+    here -- everything comes from calculate_vehicle_demand() via
+    comparison_vehicle_demand_viewmodels.py.
+    """
+    st.markdown(f"**{VEHICLE_DEMAND_SECTION_TITLE}**")
+    st.caption(
+        "Authoritative roadload, known rolling/aero, residual/unattributed roadload, and wheel-side "
+        "tractive/braking energy for this cycle."
+    )
+    items = dataset_items(dataset)
+    header_titles = _dedupe_titles([build_scenario_header(item)["column_title"] for item in items])
+    outcomes = resolve_vehicle_demand_outcomes(dataset)
+    for boundary in boundaries:
+        basis = _ROADLOAD_BASIS_BY_LABEL[boundary]
+        if len(boundaries) > 1:
+            st.caption(boundary)
+        section = build_vehicle_demand_comparison_rows(dataset, basis, unit_system, outcomes=outcomes)
+        _render_section(section, header_titles)
+
+        breakdown = build_vehicle_demand_breakdown_rows(dataset, basis, outcomes=outcomes)
+        _render_exclusions(breakdown["excluded"])
+        if breakdown["rows"]:
+            with st.expander("Vehicle Demand Energy Breakdown", expanded=False):
+                st.caption("Known Rolling + Known Aero + Residual/Unattributed always sum to Roadload Energy.")
+                st.plotly_chart(build_vehicle_demand_breakdown_chart(breakdown["rows"]), width="stretch")
+
+
 def _render_cycle_demand_section(dataset: ComparisonDataset, boundaries: list[str]) -> None:
     st.markdown("**Demanded power over cycle**")
     if not st.checkbox("Show demanded power over cycle", value=False, key="roadload_show_cycle_demand"):
@@ -1190,11 +1239,12 @@ def _render_cycle_demand_section(dataset: ComparisonDataset, boundaries: list[st
 
 
 def _render_energy_drivers_tab(scorecard_dataset: ComparisonDataset | None) -> None:
-    """"Why is vehicle demand different?" (Package 8F). Storytelling order:
-    physical setup -> roadload force curve -> ABC coefficients -> VDE by
-    cycle/phase -> demanded power (lower priority/expandable). Mass/RRC/CdA
-    stay visually coupled with roadload/VDE rather than split into a
-    separate overview.
+    """"Why is vehicle demand different?" (Package 8F, extended Sprint 9D).
+    Storytelling order: physical setup -> roadload force curve -> ABC
+    coefficients -> VDE by cycle/phase -> Vehicle Demand Summary (compact
+    physical explanation table, Sprint 9D) -> demanded power (lower
+    priority/expandable). Mass/RRC/CdA stay visually coupled with roadload/
+    VDE rather than split into a separate overview.
     """
     source = st.radio(
         "Source",
@@ -1233,6 +1283,8 @@ def _render_energy_drivers_tab(scorecard_dataset: ComparisonDataset | None) -> N
     _render_abc_section(dataset, boundaries, unit_system)
     st.divider()
     _render_cycle_phase_section(dataset, boundaries, unit_system)
+    st.divider()
+    _render_vehicle_demand_summary_section(dataset, boundaries, unit_system)
     st.divider()
     _render_cycle_demand_section(dataset, boundaries)
 

@@ -420,6 +420,23 @@ polish, document, and freeze Sprint 9". Sprint 9's full commit sequence on
 this branch: `cae884c0`/`91913320` (9A), `66f1bc7a`/`1b3dd9cf` (9B),
 `d35b994a`/`9f474ac5` (9C), `409902af`/`3f359d85` (9D), `600143cb` (9E).
 
+### Post-freeze auditability hotfix
+
+Found immediately after the 9E freeze: `_render_section`'s pre-existing
+row-visibility rule (drop a row entirely when no cell in it is available)
+silently hid the "Known Aero Energy" row on every real comparison, because
+no Comparison-sourced `VehicleDemandRequest` has ever supplied ambient
+data -- Aero is unavailable for every scenario today, not just some. Fixed
+by adding a minimal, opt-in per-row `RowVisibility` (`AUTO`, default,
+byte-for-byte legacy behavior; `ALWAYS`, for basic/canonical engineering
+audit information -- "unavailable is information," never hidden). Applied
+to all 8 Vehicle Demand Summary rows and to 11 existing Registry metrics
+(Mass, CdA, RRC, A/B/C TOTAL, A/B/C NET, VDE TOTAL, VDE NET) via a new
+`MetricDefinition.always_visible` flag. No `src/vde_core/vehicle_demand`
+physics changed; no TOTAL/NET fallback introduced. 16 new tests plus one
+new AppTest smoke case. Commit `4f0adfae`. Full detail in that commit's
+message; this paragraph is the closure-doc pointer to it.
+
 ### Freeze statement
 
 ```text

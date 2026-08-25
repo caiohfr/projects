@@ -580,7 +580,7 @@ class TestVdeRequestCompactPersistence(unittest.TestCase):
 
         self.assertEqual(request_count, 3)
         self.assertEqual(proposal_count, 6)
-        self.assertEqual(vde_count, 13)
+        self.assertEqual(vde_count, 14)
         self.assertNotEqual(
             self._proposal_metrics(bundle_a)["requested_1"]["abc_total"],
             self._proposal_metrics(bundle_b)["requested_1"]["abc_total"],
@@ -610,7 +610,7 @@ class TestVdeRequestCompactPersistence(unittest.TestCase):
 
         self.assertEqual(request_count, 0)
         self.assertEqual(proposal_count, 0)
-        self.assertEqual(vde_count, 7)
+        self.assertEqual(vde_count, 8)
 
 
 if __name__ == "__main__":

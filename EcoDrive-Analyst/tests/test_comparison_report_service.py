@@ -509,7 +509,7 @@ class VdeCatalogTests(unittest.TestCase):
 
     def test_catalog_lists_qa_vde_rows_without_full_resolution(self):
         rows = list_vde_catalog()
-        self.assertEqual(len(rows), 7)
+        self.assertEqual(len(rows), 8)
         for row in rows:
             self.assertIn("vde_id", row)
             self.assertIn("legislation", row)

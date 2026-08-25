@@ -10,7 +10,7 @@ from streamlit.testing.v1 import AppTest
 
 from src.vde_app.comparison_report_viewmodels import PresentationState, SelectionState, TargetState
 from src.vde_core import db as db_module
-from src.vde_core.qa_mock_data import DEFAULT_QA_DB_PATH, seed_qa_database
+from src.vde_core.qa_mock_data import DEFAULT_QA_DB_PATH, seed_qa_database, seed_qa_fuelcons_mock_rows
 
 PAGE_PATH = Path(__file__).resolve().parents[1] / "pages" / "Comparison_Report.py"
 
@@ -179,10 +179,10 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
             con.execute("UPDATE vde_db SET engine_size_l=4.0 WHERE id=900002")
             con.commit()
         app = AppTest.from_file(str(PAGE_PATH))
-        # The slider's default spans the full catalog range (2.0-4.0), which
-        # is the "All" neutral state -- narrowing it off that default is what
-        # activates the filter (no separate checkbox).
-        app.session_state["comparison_filter_engine_size_range"] = (1.5, 2.5)
+        # A blank Min/Max Advanced Filters field is the "All" neutral state --
+        # setting either bound is what activates the filter.
+        app.session_state["comparison_filter_engine_size_min"] = 1.5
+        app.session_state["comparison_filter_engine_size_max"] = 2.5
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
         # Selectbox .options are format_func-applied display labels, not raw
@@ -194,10 +194,10 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
         self.assertFalse(any("TWC boundary lower" in opt for opt in compare_with.options))
 
     def test_engineering_filter_power_excludes_scenario_missing_power_metadata(self):
-        # id=1 and id=2 get distinct power values (so a real slider range
+        # id=1 and id=2 get distinct power values (so a real min/max range
         # exists); a third scenario (id=3, linked to a different VDE) is left
-        # with NULL power. Narrowing the slider -- even to a range that still
-        # covers both id=1 and id=2's values -- must still exclude id=3:
+        # with NULL power. Narrowing the range -- even to bounds that still
+        # cover both id=1 and id=2's values -- must still exclude id=3:
         # missing metadata is excluded once the filter is active, regardless
         # of the chosen bounds, never treated as 0.
         with sqlite3.connect(self.db_path) as con:
@@ -209,7 +209,8 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
             )
             con.commit()
         app = AppTest.from_file(str(PAGE_PATH))
-        app.session_state["comparison_filter_power_range"] = (150.0, 450.0)
+        app.session_state["comparison_filter_power_min"] = 150.0
+        app.session_state["comparison_filter_power_max"] = 450.0
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
         reference_select = app.selectbox(key="comparison_reference_select")
@@ -484,7 +485,6 @@ class BrowseUxUpgradeSmokeTests(unittest.TestCase):
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
         labels = [exp.label for exp in app.expander]
-        self.assertIn("Show advanced filters", labels)
         self.assertTrue(any(label.startswith("Browse Comparison Scenarios (") for label in labels))
         metric_labels = [m.label for m in app.metric]
         self.assertTrue(any("Matching scenarios" in label for label in metric_labels))
@@ -743,6 +743,94 @@ class ComparisonReportDbPathSelectorTests(unittest.TestCase):
         self.assertEqual(db_module.current_db_path(), other_db_path)
 
 
+class ComparisonReportQaFuelconsCoverageTests(unittest.TestCase):
+    """Comparison Browse Compact UX + QA Data package (Sec 10-11) -- the
+    Fuel Economy quick filter, "Fuel Economy Ready" and "Complete
+    Engineering Data" presets, and the "Fully populated" counter all had
+    nothing meaningful to filter before seed_qa_fuelcons_mock_rows() added
+    6 richer FuelCons scenarios (Fuel Economy present/missing, NET
+    present/missing, one WLTP baseline alongside several EPA ones). These
+    tests seed that richer set and confirm the filters/presets/counters
+    now produce non-trivial, correct results against it.
+    """
+
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "comparison_qa_fuelcons.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        seed_qa_fuelcons_mock_rows(self.db_path)
+        db_module.configure_db_path(self.db_path)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def _matching_scenarios_value(self, app: AppTest) -> str:
+        metric = next(m for m in app.metric if "Matching scenarios" in m.label)
+        return metric.value
+
+    def _metric_value(self, app: AppTest, label_substring: str) -> str:
+        metric = next(m for m in app.metric if label_substring in m.label)
+        return metric.value
+
+    def test_fuel_economy_quick_filter_narrows_to_scenarios_with_fuel_data(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_filter_availability"] = ["has_fuel_economy"]
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        # 5 of the 6 mock scenarios have Fuel Economy; 1 (id=900105) does not.
+        self.assertEqual(self._matching_scenarios_value(app), "5")
+
+    def test_fuel_economy_ready_preset_matches_the_quick_filter(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        preset_button = next(b for b in app.button if b.label == "Fuel Economy Ready")
+        preset_button.click().run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(self._matching_scenarios_value(app), "5")
+
+    def test_complete_engineering_data_preset_returns_meaningful_results(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        preset_button = next(b for b in app.button if b.label == "Complete Engineering Data")
+        preset_button.click().run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        # 4 of the 6 mock scenarios are fully populated (900102/103/104/106);
+        # 900101 (no NET) and 900105 (no Fuel Economy) are excluded.
+        self.assertEqual(self._matching_scenarios_value(app), "4")
+
+    def test_fully_populated_counter_matches_the_preset(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(self._metric_value(app, "Fully populated"), "4")
+
+    def test_epa_and_wltp_mock_scenarios_both_appear_in_the_browse_table(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        browse_table = next(
+            item.value
+            for item in app.dataframe
+            if getattr(getattr(item, "value", None), "columns", None) is not None
+            and "Legislation" in item.value.columns
+            and "Fuel [L/100km]" in item.value.columns
+        )
+        legislations = set(browse_table["Legislation"])
+        self.assertIn("EPA", legislations)
+        self.assertIn("WLTP", legislations)
+
+    def test_browse_table_still_renders_with_the_richer_mock_dataset(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        labels = [exp.label for exp in app.expander]
+        self.assertTrue(any(label.startswith("Browse Comparison Scenarios (") for label in labels))
+        self.assertGreaterEqual(len(app.dataframe), 1)
+
+
 class SelectionFilterPersistenceTests(unittest.TestCase):
     """Package 8F -- top-level filters (Make/Category/Legislation/
     Electrification/Displacement/Power/Provenance) are candidate-SEARCH
@@ -841,18 +929,20 @@ class SelectionFilterPersistenceTests(unittest.TestCase):
                 self.assertEqual(state.comparison_fuelcons_ids, (2,))
                 self.assertEqual(len(app.warning), 0)
 
-        # Displacement/power range sliders: narrow to the Lexus-only range
-        # (900001/900002 are 2.0L/150hp-equivalent, 900003 is 3.0L/300kW).
-        for key, value in (
-            ("comparison_filter_engine_size_range", (2.8, 3.2)),
-            ("comparison_filter_power_range", (250.0, 450.0)),
+        # Displacement/power Advanced Filters Min/Max fields: narrow to the
+        # Lexus-only range (900001/900002 are 2.0L/150hp-equivalent,
+        # 900003 is 3.0L/300kW).
+        for min_key, max_key, min_value, max_value in (
+            ("comparison_filter_engine_size_min", "comparison_filter_engine_size_max", 2.8, 3.2),
+            ("comparison_filter_power_min", "comparison_filter_power_max", 250.0, 450.0),
         ):
-            with self.subTest(filter_key=key):
+            with self.subTest(filter_key=min_key):
                 app = AppTest.from_file(str(PAGE_PATH))
                 app.session_state["comparison_selection"] = SelectionState(
                     reference_fuelcons_id=1, comparison_fuelcons_ids=(2,)
                 )
-                app.session_state[key] = value
+                app.session_state[min_key] = min_value
+                app.session_state[max_key] = max_value
                 app.run(timeout=90)
                 self.assertEqual(len(app.exception), 0)
                 state = app.session_state["comparison_selection"]

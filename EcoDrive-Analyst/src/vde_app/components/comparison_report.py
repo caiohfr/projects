@@ -244,33 +244,13 @@ def _render_exclusions(excluded: list[dict]) -> None:
 # -----------------------------------------------------------------------------
 
 
-# Icons deliberately reuse VDE Setup's own Executive Summary glyph vocabulary
-# (Mass "&#9878;", Transmission "&#8644;", VDE_NET "&#9313;" in
-# vde_setup.py's _overview_icon) as literal Unicode characters -- widget
-# labels here can't render HTML entities, but the same codepoint renders the
-# same glyph. New concepts (CdA, RRC, Fuel Economy, search, presets) get a
-# new-but-consistent symbol from the same plain-Unicode-dingbat/pictograph
-# family rather than a new icon language.
 _AVAILABILITY_OPTIONS = ("has_cda", "has_rrc", "has_net", "transmission_resolved", "has_fuel_economy")
-_AVAILABILITY_ICONS = {
-    "has_cda": "≋",  # aero/wave, paired with CdA
-    "has_rrc": "◎",  # wheel/tire, paired with RRC
-    "has_net": "②",  # reuses VDE Setup's own VDE_NET icon
-    "transmission_resolved": "⇄",  # reuses VDE Setup's own Transmission icon
-    "has_fuel_economy": "⛽",
-}
 _AVAILABILITY_LABELS = {
     "has_cda": "Has CdA",
     "has_rrc": "Has RRC",
     "has_net": "Has NET (ABC)",
     "transmission_resolved": "Transmission resolved",
     "has_fuel_economy": "Fuel Economy",
-}
-_PRESET_ICONS = {
-    "complete_engineering_data": "★",
-    "roadload_ready": "\U0001F6E3",
-    "has_net": "②",
-    "fuel_economy_ready": "⛽",
 }
 _COMPLETE_ENGINEERING_DATA_DEFINITION = (
     "Complete Engineering Data = Mass, ABC TOTAL, CdA, RRC, Transmission resolved, "
@@ -340,7 +320,7 @@ def _render_search_and_vehicle_filters(catalog_rows: list[dict]) -> list[dict]:
     query = st.text_input(
         "Search",
         key="comparison_filter_query",
-        placeholder="\U0001F50D  Search model, VDE ID or Fuelcons ID...",
+        placeholder="Search model, VDE ID or Fuelcons ID...",
         label_visibility="collapsed",
     )
     rows = search_browse_candidates(catalog_rows, query)
@@ -391,7 +371,7 @@ def _render_availability_and_presets(rows: list[dict]) -> list[dict]:
     selected_availability = st.pills(
         "Data availability",
         options=list(_AVAILABILITY_OPTIONS),
-        format_func=lambda option_key: f"{_AVAILABILITY_ICONS[option_key]} {_AVAILABILITY_LABELS[option_key]}",
+        format_func=lambda option_key: _AVAILABILITY_LABELS[option_key],
         selection_mode="multi",
         default=[],
         key="comparison_filter_availability",
@@ -409,27 +389,27 @@ def _render_availability_and_presets(rows: list[dict]) -> list[dict]:
     st.caption("Quick presets")
     preset_row1_col1, preset_row1_col2 = st.columns(2)
     if preset_row1_col1.button(
-        f"{_PRESET_ICONS['complete_engineering_data']} Complete Engineering Data",
+        "Complete Engineering Data",
         key="comparison_preset_complete_engineering_data",
         width="stretch",
     ):
         st.session_state["comparison_filter_active_preset"] = "complete_engineering_data"
     if preset_row1_col2.button(
-        f"{_PRESET_ICONS['roadload_ready']} Roadload Ready", key="comparison_preset_roadload_ready", width="stretch"
+        "Roadload Ready", key="comparison_preset_roadload_ready", width="stretch"
     ):
         st.session_state["comparison_filter_active_preset"] = "roadload_ready"
 
     preset_row2_col1, preset_row2_col2 = st.columns(2)
-    if preset_row2_col1.button(f"{_PRESET_ICONS['has_net']} Has NET", key="comparison_preset_has_net", width="stretch"):
+    if preset_row2_col1.button("Has NET", key="comparison_preset_has_net", width="stretch"):
         st.session_state["comparison_filter_active_preset"] = "has_net"
     if preset_row2_col2.button(
-        f"{_PRESET_ICONS['fuel_economy_ready']} Fuel Economy Ready",
+        "Fuel Economy Ready",
         key="comparison_preset_fuel_economy_ready",
         width="stretch",
     ):
         st.session_state["comparison_filter_active_preset"] = "fuel_economy_ready"
 
-    if st.button("✕ Clear Filters", key="comparison_clear_filters", width="stretch"):
+    if st.button("Clear Filters", key="comparison_clear_filters", width="stretch"):
         for widget_key in _FILTER_WIDGET_KEYS:
             st.session_state.pop(widget_key, None)
         st.rerun()
@@ -547,10 +527,10 @@ def _render_browse_summary_counters(rows: list[dict]) -> None:
     """
     counters = compute_browse_summary_counters(rows)
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("\U0001F698 Matching scenarios", counters.matching)
-    col2.metric(f"{_AVAILABILITY_ICONS['has_cda']} With CdA + RRC", counters.with_cda_and_rrc)
-    col3.metric(f"{_AVAILABILITY_ICONS['has_net']} With NET", counters.with_net)
-    col4.metric(f"{_PRESET_ICONS['complete_engineering_data']} Fully populated*", counters.fully_populated)
+    col1.metric("Matching scenarios", counters.matching)
+    col2.metric("With CdA + RRC", counters.with_cda_and_rrc)
+    col3.metric("With NET", counters.with_net)
+    col4.metric("Fully populated*", counters.fully_populated)
     st.caption(f"* {_COMPLETE_ENGINEERING_DATA_DEFINITION}")
 
 

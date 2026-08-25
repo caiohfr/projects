@@ -360,9 +360,10 @@ decide with real requirements in hand.
 
 ## Commit(s)
 
-See branch `sprint-9a-vehicle-demand-contracts` (Sprint 9C continues on the
+`d35b994a` on branch `sprint-9a-vehicle-demand-contracts` - "feat(vehicle-demand):
+add Sprint 9C canonical adapter and hardening". Sprint 9C continues on the
 same branch as 9A/9B, per this package's own Sec 1 instruction not to
-rename the branch). Commit hash recorded below once committed.
+rename the branch.
 
 ## Is the Vehicle Demand Core API safe to freeze?
 

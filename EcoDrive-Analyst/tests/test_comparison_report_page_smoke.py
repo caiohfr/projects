@@ -10,7 +10,7 @@ from streamlit.testing.v1 import AppTest
 
 from src.vde_app.comparison_report_viewmodels import PresentationState, SelectionState, TargetState
 from src.vde_core import db as db_module
-from src.vde_core.qa_mock_data import seed_qa_database
+from src.vde_core.qa_mock_data import DEFAULT_QA_DB_PATH, seed_qa_database
 
 PAGE_PATH = Path(__file__).resolve().parents[1] / "pages" / "Comparison_Report.py"
 
@@ -665,6 +665,82 @@ class BrowseUxUpgradeSmokeTests(unittest.TestCase):
         labels = [exp.label for exp in app.expander]
         self.assertTrue(any(label.startswith("Browse Comparison Scenarios (") for label in labels))
         self.assertGreaterEqual(len(app.dataframe), 1)
+
+
+class ComparisonReportDbPathSelectorTests(unittest.TestCase):
+    """Sidebar DB path selector (same apply pattern as VDE Setup's own
+    sidebar: a text input synced through st.session_state.ctx["db_path"],
+    applied via configure_db_path/ensure_db) plus one addition VDE Setup
+    doesn't have: one-click "Switch to QA data" / "Switch to default DB"
+    buttons. These tests exercise the real db_module global (like every
+    AppTest in this file does, since AppTest runs the page in-process) --
+    tearDown always restores whatever was active before the test.
+    """
+
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "comparison_db_path_selector.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        db_module.configure_db_path(self.db_path)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def test_sidebar_shows_db_path_input_and_switch_buttons(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        db_path_input = app.text_input(key="comparison_report_runtime_db_path")
+        self.assertEqual(db_path_input.value, str(self.db_path))
+        button_labels = [b.label for b in app.button]
+        self.assertIn("Switch to QA data", button_labels)
+        self.assertIn("Switch to default DB", button_labels)
+        self.assertTrue(any(c.value.startswith("Runtime DB:") for c in app.caption))
+
+    def test_switch_to_qa_button_points_runtime_db_at_the_qa_fixture(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        qa_button = next(b for b in app.button if b.label == "Switch to QA data")
+        qa_button.click().run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(db_module.current_db_path(), Path(DEFAULT_QA_DB_PATH))
+        db_path_input = app.text_input(key="comparison_report_runtime_db_path")
+        self.assertEqual(db_path_input.value, str(DEFAULT_QA_DB_PATH))
+
+    def test_switch_to_qa_button_does_not_error_when_qa_fixture_already_exists(self):
+        # seed_qa_database raises FileExistsError with overwrite=False -- the
+        # button must guard against that, since the QA fixture normally
+        # already exists on disk from a prior run.
+        self.assertTrue(Path(DEFAULT_QA_DB_PATH).exists())
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        qa_button = next(b for b in app.button if b.label == "Switch to QA data")
+        qa_button.click().run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+
+    def test_switch_to_default_button_restores_the_default_db_path(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.run(timeout=90)
+        qa_button = next(b for b in app.button if b.label == "Switch to QA data")
+        qa_button.click().run(timeout=90)
+        self.assertEqual(db_module.current_db_path(), Path(DEFAULT_QA_DB_PATH))
+
+        default_button = next(b for b in app.button if b.label == "Switch to default DB")
+        default_button.click().run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(db_module.current_db_path(), db_module.DEFAULT_DB_PATH)
+
+    def test_manually_typed_db_path_is_applied(self):
+        other_db_path = Path(self._temp_dir.name) / "another.db"
+        seed_qa_database(other_db_path, overwrite=False)
+        app = AppTest.from_file(str(PAGE_PATH))
+        app.session_state["comparison_report_runtime_db_path"] = str(other_db_path)
+        app.run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(db_module.current_db_path(), other_db_path)
 
 
 class SelectionFilterPersistenceTests(unittest.TestCase):

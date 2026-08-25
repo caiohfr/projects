@@ -43,12 +43,14 @@ class VehicleDemandSummarySmokeTests(unittest.TestCase):
             con.executemany(
                 "INSERT INTO fuelcons_db (id, vde_id, electrification, fuel_type, record_origin, "
                 "fuel_l_per_100km, gco2_per_km) VALUES (?, ?, 'ICE', 'Gasoline', 'HOMOLOGATED', 6.5, 150.0)",
-                [(1, 900001), (2, 900004), (3, 900005), (4, 900006)],
+                [(1, 900001), (2, 900004), (3, 900005), (4, 900006), (5, 900007)],
             )
             # A row with neither RRC nor CdA, for Smoke E (partial decomposition).
             con.execute(
                 "UPDATE vde_db SET rrc_N_per_kN = NULL, cda_m2 = NULL WHERE id = 900005;"
             )
+            # A row with physically invalid mass, for Smoke F (scenario failure isolation).
+            con.execute("UPDATE vde_db SET test_mass_kg = 0.0, mass_kg = 0.0 WHERE id = 900007;")
             con.commit()
 
     def tearDown(self):
@@ -76,6 +78,20 @@ class VehicleDemandSummarySmokeTests(unittest.TestCase):
         # counts in test_comparison_report_page_smoke.py for the same reason).
         summary_headings = [md.value for md in app.markdown if md.value == "**Vehicle Demand Summary**"]
         self.assertGreaterEqual(len(summary_headings), 1)
+
+        # Table density/units/deltas (Sprint 9E Sec 32): every primary KPI
+        # label is present, and cell text carries an explicit unit (MJ/km for
+        # VDE, MJ for the absolute-energy rows) plus a "." delta line for a
+        # non-Reference column -- never a bare unitless number.
+        texts = _dataframe_texts(app)
+        joined = " ".join(texts)
+        for label in ("VDE", "Roadload Energy", "Positive Tractive Energy", "Braking Energy Required"):
+            self.assertIn(label, joined)
+        self.assertTrue(any("MJ/km" in t for t in texts))
+        self.assertTrue(any(t.strip().endswith("MJ") for t in texts if "MJ" in t and "MJ/km" not in t))
+
+        # Breakdown chart expander present (opt-in, collapsed by default).
+        self.assertTrue(any("Vehicle Demand Energy Breakdown" in exp.label for exp in app.expander))
 
     # -- Smoke B: Reference-less ---------------------------------------------
 
@@ -128,6 +144,26 @@ class VehicleDemandSummarySmokeTests(unittest.TestCase):
         texts = _dataframe_texts(app)
         self.assertTrue(any("VDE" in t for t in texts))
         self.assertTrue(any("RRC" in t or "unavailable" in t.lower() for t in texts))
+
+
+    # -- Smoke F: scenario failure isolation ---------------------------------
+
+    def test_smoke_f_invalid_scenario_does_not_take_down_valid_ones(self):
+        app = AppTest.from_file(str(PAGE_PATH))
+        # fuelcons 5 -> VDE-QA-007, patched to have zero (invalid) mass.
+        app.session_state["comparison_selection"] = SelectionState(reference_fuelcons_id=1, comparison_fuelcons_ids=(5,))
+        self._open_energy_drivers(app)
+
+        texts = _dataframe_texts(app)
+        joined = " ".join(texts)
+        # The valid Reference (fuelcons 1) still shows real VDE values...
+        self.assertIn("MJ/km", joined)
+        # ...and the invalid scenario's cells degrade to "-" with a short,
+        # human-readable reason rather than a traceback/exception name.
+        self.assertIn("-", texts)
+        self.assertNotIn("Traceback", joined)
+        self.assertNotIn("ValueError", joined)
+        self.assertTrue("mass" in joined.lower() or "unavailable" in joined.lower())
 
 
 if __name__ == "__main__":

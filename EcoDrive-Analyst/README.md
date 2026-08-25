@@ -124,10 +124,47 @@ Core capabilities now include, at a high level:
 - explicit physical VDE lineage
 - strict TOTAL / NET semantics
 - provenance / stale-source visibility
+- Vehicle Demand Summary in Energy Drivers (Sprint 9)
 
 This is an accepted Sprint 8 product foundation for program / benchmark
 review workflows, not a finished final reporting product -- broader BI/
 benchmark-studio capabilities remain future work.
+
+### Vehicle Demand
+
+Canonical, reusable wheel-side demand layer delivered in Sprint 9 (CLOSED /
+FROZEN). Answers "what does the vehicle require at the wheels, and why is
+it different between scenarios?" from the project's existing authoritative
+VDE/roadload physics -- it does not implement a second/new VDE model, and
+it does not model how that demand is supplied (Powertrain).
+
+```text
+Resolved VDE / ComparisonItem
+        -> VehicleDemandRequest
+        -> Vehicle Demand Core (physics engine, frozen)
+        -> VehicleDemandResult
+        -> Comparison presentation layer (Energy Drivers -- Vehicle Demand Summary)
+```
+
+Core capabilities:
+
+- authoritative Roadload Energy, VDE, Positive Tractive Energy, Braking
+  Energy Required (wheel-side, not recovered regen)
+- Known Rolling / Known Aero energy, with Residual / Unattributed Roadload
+  as an explicit `Known + Residual = Authoritative` identity -- never a
+  forced decomposition
+- Positive Inertial Work
+- strict TOTAL / NET semantics with no fallback (matches Comparison's own
+  rule)
+- typed, Streamlit-independent, JSON-serializable contracts (architecture
+  readiness for a future API/agent boundary -- none is implemented)
+- currently surfaced through Comparison Report's Energy Drivers tab; a
+  future Quick Scenario (Sprint 10) is expected to reuse the same frozen
+  core with temporary overrides, not new physics
+
+See [Vehicle Demand Architecture](docs/architecture/vehicle_demand_architecture.md)
+and [Sprint 9 Closure](docs/sprints/SPRINT_9_VEHICLE_DEMAND_CLOSURE.md) for
+full detail, physical invariants, and known limitations.
 
 ## Stable Product Status
 
@@ -137,8 +174,39 @@ EcoDrive
 |-- Database Management   stable / official catalog administration
 |-- VDE Setup             stable / feature frozen
 |-- Comparison Report     stable / accepted Sprint 8 product foundation
+|-- Vehicle Demand        stable / CLOSED-FROZEN Sprint 9 canonical layer
 `-- Powertrain Scenario   existing capability / future development area
 ```
+
+## Roadmap
+
+```text
+Sprint 7   Database Management                          CLOSED
+Sprint 8   Comparison Report Foundation                  CLOSED
+Sprint 9   Vehicle Demand Model & Engineering KPIs        CLOSED
+Sprint 10  Interactive Quick Scenario
+Sprint 11  Powertrain Scenario L0
+Sprint 12  PWT + Comparison Integration
+           MVP PRODUCT GATE
+```
+
+Notes on near-term direction (see
+[Sprint 9 Closure](docs/sprints/SPRINT_9_VEHICLE_DEMAND_CLOSURE.md) for the
+full handoff):
+
+- **Sprint 10 (Quick Scenario)** applies temporary overrides (Mass, CdA,
+  RRC first) to an existing resolved scenario and produces a
+  `VehicleDemandRequest` consumed by the same frozen Vehicle Demand Core --
+  it must not introduce new physics. Temperature/Pressure ambient overrides
+  can enter through the same architecture once an owner for authoritative-
+  roadload condition correction is defined; the former standalone "Roadload
+  Condition Scenarios" concept is expected to be absorbed here rather than
+  remain an independent capability.
+- **Database Import** remains an important operational capability but is
+  not treated as a blocker for the Product MVP gate above.
+
+This is the current top-level state, not a full redesign of the post-MVP
+roadmap.
 
 ## Documentation Index
 
@@ -149,6 +217,11 @@ Sprint documentation:
 - [Sprint 7 Database Management Checkpoint](docs/sprints/SPRINT_7_DATABASE_MANAGEMENT.md)
 - [Sprint 8 Comparison Report Freeze (Package 8E)](docs/sprints/PACKAGE_8E_COMPARISON_FREEZE.md)
 - [Sprint 8F Program Review Redesign](docs/sprints/PACKAGE_8F_PROGRAM_REVIEW_REDESIGN.md)
+- [Sprint 9 Closure - Vehicle Demand Model & Engineering KPIs](docs/sprints/SPRINT_9_VEHICLE_DEMAND_CLOSURE.md)
+  - [9A Canonical Vehicle Demand Contracts](docs/sprints/PACKAGE_9A_VEHICLE_DEMAND_CONTRACTS.md)
+  - [9B Vehicle Demand Physics Engine](docs/sprints/PACKAGE_9B_VEHICLE_DEMAND_ENGINE.md)
+  - [9C Real Scenario Validation & Hardening](docs/sprints/PACKAGE_9C_VEHICLE_DEMAND_HARDENING.md)
+  - [9D Comparison / Energy Drivers Integration](docs/sprints/PACKAGE_9D_COMPARISON_ENERGY_DRIVERS_INTEGRATION.md)
 - [VDE Setup Guide](docs/VDE_SETUP_GUIDE.md)
 - [VDE Setup v2.2 Final Stable Contract](docs/VDE_SETUP_V22_FINAL_CHECKPOINT.md)
 - [Powertrain Scenario Guide](docs/POWERTRAIN_SCENARIO_GUIDE.md)
@@ -159,6 +232,7 @@ Architecture references:
 - [Project Structure](docs/architecture/project_structure.md)
 - [Roadload Pipeline](docs/architecture/roadload_pipeline.md)
 - [UI and Backend Boundary](docs/architecture/ui_backend_boundary.md)
+- [Vehicle Demand Architecture](docs/architecture/vehicle_demand_architecture.md)
 - [Sprint 5 Architecture Checkpoint](docs/sprints/SPRINT_5_VDE_FUEL_ARCHITECTURE_2026-06-19.md)
 
 Notebook notes:
@@ -274,6 +348,24 @@ See [ML / SHAP / Nearest Peers](docs/ML_SHAP_NEAREST_PEERS.md) for the detailed 
 - current `PSE` is cycle-effective system efficiency, not pure engine efficiency.
 - temperature and ambient-pressure roadload conditions are deferred to derived
   scenarios in Comparison Report; they are not persisted by VDE Setup.
+- Vehicle Demand's Known decomposition covers Rolling + Aero only; Residual /
+  Unattributed Roadload may contain brake, driveline, bearing, parasitic,
+  and other unattributed effects, and is never presented as a specific
+  named component.
+- Vehicle Demand does not model powertrain efficiency, and Braking Energy
+  Required is a wheel-side theoretical figure only -- no regen capture
+  model exists yet.
+- `AmbientState` supports Aero-density calculation (explicit density, or
+  from temperature + pressure) but does not correct the authoritative
+  roadload ABC itself; no regulatory-reference ambient default exists.
+- `VehicleDemandProfile` is computed on demand and is not persisted.
+- synthetic QA fixture `vde_total_mj_per_km`/`vde_net_mj_per_km` values are
+  not guaranteed to be physically derived from that fixture's own ABC/mass/
+  cycle and must not be treated as physical golden outputs for regression
+  -- see [Vehicle Demand Architecture](docs/architecture/vehicle_demand_architecture.md#qa-persisted-vde-debt).
+- `KinematicPhase`, VSP, and driving-aggressiveness classification are
+  deferred; Vehicle Demand's `EnergyMode` (IDLE/TRACTION/COASTING/BRAKING)
+  is the only classification implemented.
 
 ## Sprint 5 Status
 
@@ -298,7 +390,8 @@ Current sprint closure:
 - Technical diagnostics were moved behind advanced / technical details by default.
 - No schema, VDE formula, or ML training changes were introduced in this closure.
 
-This closure predates Sprint 7 and Sprint 8, both since delivered:
-`Database Management` (Sprint 7) and the `Comparison Report` engineering
-foundation described above (Sprint 8) are no longer forward-looking items --
+This closure predates Sprint 7, Sprint 8, and Sprint 9, all since delivered:
+`Database Management` (Sprint 7), the `Comparison Report` engineering
+foundation described above (Sprint 8), and the `Vehicle Demand` canonical
+layer described above (Sprint 9) are no longer forward-looking items --
 see the Documentation Index for their closure records.

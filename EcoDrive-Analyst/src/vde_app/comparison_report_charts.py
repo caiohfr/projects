@@ -90,12 +90,22 @@ def build_vehicle_demand_breakdown_chart(rows: Sequence[dict[str, Any]]) -> go.F
     if not rows:
         return fig
     labels = [row["label"] for row in rows]
+    hover = "%{y}<br>%{fullData.name}: %{x:.3f} MJ<extra></extra>"
     if any(row.get("known_rolling_MJ") is not None for row in rows):
-        fig.add_bar(name="Known Rolling", y=labels, x=[row.get("known_rolling_MJ") for row in rows], orientation="h")
+        fig.add_bar(
+            name="Known Rolling", y=labels, x=[row.get("known_rolling_MJ") for row in rows],
+            orientation="h", hovertemplate=hover,
+        )
     if any(row.get("known_aero_MJ") is not None for row in rows):
-        fig.add_bar(name="Known Aero", y=labels, x=[row.get("known_aero_MJ") for row in rows], orientation="h")
-    fig.add_bar(name="Residual / Unattributed", y=labels, x=[row.get("residual_MJ") for row in rows], orientation="h")
-    fig.update_layout(barmode="relative", xaxis_title="Energy [MJ]", yaxis_title=None)
+        fig.add_bar(
+            name="Known Aero", y=labels, x=[row.get("known_aero_MJ") for row in rows],
+            orientation="h", hovertemplate=hover,
+        )
+    fig.add_bar(
+        name="Residual / Unattributed", y=labels, x=[row.get("residual_MJ") for row in rows],
+        orientation="h", hovertemplate=hover,
+    )
+    fig.update_layout(barmode="relative", xaxis_title="Energy [MJ]", yaxis_title=None, legend_title_text="Component")
     return fig
 
 

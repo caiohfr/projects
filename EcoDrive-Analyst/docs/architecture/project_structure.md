@@ -74,6 +74,9 @@ Support modules now include:
   dependency review, and spreadsheet staging;
 - `comparison_report_service.py` for report-facing data loading outside the page;
 - `tire_roadload_service.py` for tire-roadload CRUD, preview, and VDE application flow;
+- `vehicle_demand/` (Sprint 9, frozen) for the canonical wheel-side demand
+  contracts and physics engine -- see
+  [Vehicle Demand Architecture](vehicle_demand_architecture.md);
 - `experimental/` for preserved non-canonical heuristics and CSV experiments;
 - `roadload/physics_legacy.py` for older physical experiments kept outside the active pipeline.
 

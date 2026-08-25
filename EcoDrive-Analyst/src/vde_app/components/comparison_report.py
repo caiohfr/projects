@@ -1194,8 +1194,8 @@ def _render_vehicle_demand_summary_section(dataset: ComparisonDataset, boundarie
     """
     st.markdown(f"**{VEHICLE_DEMAND_SECTION_TITLE}**")
     st.caption(
-        "Authoritative roadload, known rolling/aero, residual/unattributed roadload, and wheel-side "
-        "tractive/braking energy for this cycle."
+        "Top rows: overall demand (VDE, tractive/braking energy). Lower rows: the roadload "
+        "explanation behind it (known rolling/aero, residual/unattributed, inertial work)."
     )
     items = dataset_items(dataset)
     header_titles = _dedupe_titles([build_scenario_header(item)["column_title"] for item in items])

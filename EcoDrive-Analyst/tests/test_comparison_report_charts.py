@@ -12,6 +12,7 @@ from src.vde_app.comparison_report_charts import (
     build_fe_vde_figure,
     build_grouped_bar_figure,
     build_lineage_waterfall_chart,
+    build_vehicle_demand_breakdown_chart,
     build_walk_chart,
 )
 from src.vde_app.comparison_report_viewmodels import (
@@ -61,6 +62,49 @@ class GroupedBarFigureTests(unittest.TestCase):
         colors = list(fig.data[0].marker.color)
         self.assertNotEqual(colors[0], colors[1])
         self.assertNotEqual(colors[0], colors[2])
+
+
+class VehicleDemandBreakdownChartTests(unittest.TestCase):
+    """Sprint 9E UI sanity: barmode relative (not stacked-to-100%), a
+    component missing for every row is omitted as a series rather than
+    plotted as zero, negative residual stays a real (visible) value, and
+    hover/legend/axis text is explicit about units and component identity.
+    """
+
+    def test_empty_rows_returns_empty_figure(self):
+        fig = build_vehicle_demand_breakdown_chart([])
+        self.assertIsInstance(fig, go.Figure)
+        self.assertEqual(len(fig.data), 0)
+
+    def test_barmode_is_relative_not_stack_or_percent(self):
+        rows = [{"label": "A", "known_rolling_MJ": 1.0, "known_aero_MJ": 0.5, "residual_MJ": 0.2}]
+        fig = build_vehicle_demand_breakdown_chart(rows)
+        self.assertEqual(fig.layout.barmode, "relative")
+
+    def test_missing_component_across_all_rows_is_omitted_not_zero(self):
+        rows = [
+            {"label": "A", "known_rolling_MJ": 1.0, "known_aero_MJ": None, "residual_MJ": 0.2},
+            {"label": "B", "known_rolling_MJ": 2.0, "known_aero_MJ": None, "residual_MJ": 0.1},
+        ]
+        fig = build_vehicle_demand_breakdown_chart(rows)
+        trace_names = [trace.name for trace in fig.data]
+        self.assertIn("Known Rolling", trace_names)
+        self.assertNotIn("Known Aero", trace_names)
+        self.assertIn("Residual / Unattributed", trace_names)
+
+    def test_negative_residual_value_is_preserved_not_clipped(self):
+        rows = [{"label": "A", "known_rolling_MJ": 5.0, "known_aero_MJ": None, "residual_MJ": -0.4}]
+        fig = build_vehicle_demand_breakdown_chart(rows)
+        residual_trace = next(trace for trace in fig.data if trace.name == "Residual / Unattributed")
+        self.assertEqual(list(residual_trace.x), [-0.4])
+
+    def test_axis_and_hover_are_unit_explicit(self):
+        rows = [{"label": "A", "known_rolling_MJ": 1.0, "known_aero_MJ": 0.5, "residual_MJ": 0.2}]
+        fig = build_vehicle_demand_breakdown_chart(rows)
+        self.assertIn("MJ", fig.layout.xaxis.title.text)
+        for trace in fig.data:
+            self.assertIn("MJ", trace.hovertemplate)
+            self.assertIn("%{fullData.name}", trace.hovertemplate)
 
 
 class FeVdeFigureTests(unittest.TestCase):

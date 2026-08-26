@@ -16,6 +16,7 @@ from typing import Any, Mapping
 from .contracts import (
     QUICK_SCENARIO_CONTRACT_VERSION,
     DomainReadiness,
+    MassQuickChange,
     PseProvenance,
     QuickScenario,
     QuickVehicleReadiness,
@@ -78,6 +79,18 @@ def scalar_change_from_dict(data: Mapping[str, Any] | None) -> ScalarChange | No
     return ScalarChange(mode=ScalarChangeMode(data["mode"]), value=float(data["value"]))
 
 
+def mass_quick_change_from_dict(data: Mapping[str, Any] | None) -> MassQuickChange | None:
+    if data is None:
+        return None
+    return MassQuickChange(
+        curb_change=scalar_change_from_dict(_get(data, "curb_change")),
+        twc_shift_steps=_get(data, "twc_shift_steps"),
+        twc_shift_side=_get(data, "twc_shift_side"),
+        twc_curb_position=_get(data, "twc_curb_position"),
+        wltp_line_type=_get(data, "wltp_line_type"),
+    )
+
+
 def tire_pressure_delta_from_dict(data: Mapping[str, Any] | None) -> TirePressureDelta | None:
     if data is None:
         return None
@@ -108,8 +121,12 @@ def tire_quick_change_from_dict(data: Mapping[str, Any] | None) -> TireQuickChan
 def vehicle_quick_overrides_from_dict(data: Mapping[str, Any] | None) -> VehicleQuickOverrides:
     data = data or {}
     return VehicleQuickOverrides(
-        mass_change=scalar_change_from_dict(_get(data, "mass_change")),
+        mass_change=mass_quick_change_from_dict(_get(data, "mass_change")),
         cda_change=scalar_change_from_dict(_get(data, "cda_change")),
+        aero_reference_cda_m2=_get(data, "aero_reference_cda_m2"),
+        aero_reference_cda_provenance=_enum_or_none(
+            ReferencePressureProvenance, _get(data, "aero_reference_cda_provenance")
+        ),
         tire_change=tire_quick_change_from_dict(_get(data, "tire_change")),
     )
 
@@ -140,6 +157,7 @@ def quick_scenario_from_dict(data: Mapping[str, Any]) -> QuickScenario:
 __all__ = [
     "to_serializable",
     "scalar_change_from_dict",
+    "mass_quick_change_from_dict",
     "tire_pressure_delta_from_dict",
     "tire_quick_change_from_dict",
     "vehicle_quick_overrides_from_dict",

@@ -262,17 +262,71 @@ class TireQuickChange:
 
 
 @dataclass(frozen=True)
+class MassQuickChange:
+    """Sec 4.1: Vehicle/Curb Mass supports two mutually-exclusive request
+    shapes that a single generic ScalarChange cannot represent:
+
+    - `curb_change`: an Absolute/Delta/Percent change to curb mass, which
+      the canonical Mass resolver turns into a regulatory mass via
+      `EPA_CURB_TO_TWC` (EPA) or `WLTP_MASS_LINE` (WLTP) -- "Target TWC" /
+      "canonical supported WLTP mass behavior."
+    - `twc_shift_steps`: an EPA-only step count from the *current* TWC
+      bracket (no curb-mass input at all) -- "TWC Shift", resolved via
+      `MASS_TWC_SHIFT`.
+
+    Exactly one of the two must be set; `__post_init__` enforces this so an
+    ambiguous or empty request is rejected at construction time rather than
+    silently defaulting to one interpretation. `twc_shift_side`/
+    `twc_curb_position`/`wltp_line_type` are optional pass-throughs to the
+    canonical resolver's own defaults ("Up"/"Top"/"TML") when omitted.
+    """
+
+    curb_change: ScalarChange | None = None
+    twc_shift_steps: float | None = None
+    twc_shift_side: str | None = None
+    twc_curb_position: str | None = None
+    wltp_line_type: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.curb_change is None) == (self.twc_shift_steps is None):
+            raise ValueError(
+                "MassQuickChange requires exactly one of curb_change or "
+                "twc_shift_steps (Sec 4.1: Target TWC / WLTP mass line vs. "
+                "TWC Shift are distinct request shapes)."
+            )
+
+
+@dataclass(frozen=True)
 class VehicleQuickOverrides:
     """Sec 4-8: the "Vehicle Quick" layer -- Mass, CdA (Aero), and Tire
     overrides requested against one source Comparison scenario. Resolution
     order (conceptually Mass -> Tire -> Aero, Sec 8) is owned by whichever
     canonical resolver a later package wires these fields into; this
     contract only carries the requested inputs.
+
+    `aero_reference_cda_m2`/`aero_reference_cda_provenance` mirror
+    `TirePressureDelta`'s reference-value shape: the canonical Aero resolver
+    always requires a reference CdA to convert an Absolute CdA request into
+    a roadload-C delta, even when the request itself needs no source
+    (Sec 5). When source CdA is unavailable, a resolver may fall back to
+    this explicit, user-provided reference instead of guessing one --
+    never silently defaulting it to zero.
     """
 
-    mass_change: ScalarChange | None = None
+    mass_change: MassQuickChange | None = None
     cda_change: ScalarChange | None = None
+    aero_reference_cda_m2: float | None = None
+    aero_reference_cda_provenance: ReferencePressureProvenance | None = None
     tire_change: TireQuickChange | None = None
+
+    def __post_init__(self) -> None:
+        if self.aero_reference_cda_provenance is ReferencePressureProvenance.USER_PROVIDED:
+            if self.aero_reference_cda_m2 is None:
+                raise ValueError(
+                    "VehicleQuickOverrides.aero_reference_cda_m2 is required when "
+                    "aero_reference_cda_provenance is USER_PROVIDED (Sec 5: no silent "
+                    "reference-CdA default)."
+                )
 
     @property
     def is_empty(self) -> bool:
@@ -375,6 +429,7 @@ __all__ = [
     "ReferencePressureProvenance",
     "TirePressureDelta",
     "TireQuickChange",
+    "MassQuickChange",
     "VehicleQuickOverrides",
     "PseProvenance",
     "build_quick_scenario_identity",

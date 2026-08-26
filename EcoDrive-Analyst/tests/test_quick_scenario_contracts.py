@@ -4,6 +4,7 @@ import unittest
 
 from src.vde_core.quick_scenario import (
     DomainReadiness,
+    MassQuickChange,
     PseProvenance,
     QuickScenario,
     QuickVehicleReadiness,
@@ -29,7 +30,7 @@ def _full_scenario() -> QuickScenario:
         slot=1,
         label="What if 20kg lighter?",
         vehicle_overrides=VehicleQuickOverrides(
-            mass_change=ScalarChange(mode=ScalarChangeMode.DELTA, value=-20.0),
+            mass_change=MassQuickChange(curb_change=ScalarChange(mode=ScalarChangeMode.DELTA, value=-20.0)),
             cda_change=ScalarChange(mode=ScalarChangeMode.PERCENT, value=-5.0),
             tire_change=TireQuickChange(
                 source=TireSource.TIRE_DB,
@@ -97,8 +98,54 @@ class VehicleQuickOverridesTests(unittest.TestCase):
         self.assertIsNone(overrides.tire_change)
 
     def test_any_populated_field_is_not_empty(self):
-        overrides = VehicleQuickOverrides(mass_change=ScalarChange(ScalarChangeMode.DELTA, 0.0))
+        overrides = VehicleQuickOverrides(
+            mass_change=MassQuickChange(curb_change=ScalarChange(ScalarChangeMode.DELTA, 0.0))
+        )
         self.assertFalse(overrides.is_empty)
+
+    def test_aero_reference_user_provided_requires_value(self):
+        with self.assertRaises(ValueError):
+            VehicleQuickOverrides(
+                aero_reference_cda_provenance=ReferencePressureProvenance.USER_PROVIDED
+            )
+
+    def test_aero_reference_user_provided_with_value_is_valid(self):
+        overrides = VehicleQuickOverrides(
+            aero_reference_cda_m2=0.62,
+            aero_reference_cda_provenance=ReferencePressureProvenance.USER_PROVIDED,
+        )
+        self.assertEqual(overrides.aero_reference_cda_m2, 0.62)
+
+    def test_aero_reference_source_provenance_does_not_require_a_value(self):
+        overrides = VehicleQuickOverrides(
+            aero_reference_cda_provenance=ReferencePressureProvenance.SOURCE
+        )
+        self.assertIsNone(overrides.aero_reference_cda_m2)
+
+
+class MassQuickChangeValidationTests(unittest.TestCase):
+    def test_neither_curb_change_nor_twc_shift_is_rejected(self):
+        with self.assertRaises(ValueError):
+            MassQuickChange()
+
+    def test_both_curb_change_and_twc_shift_is_rejected(self):
+        with self.assertRaises(ValueError):
+            MassQuickChange(
+                curb_change=ScalarChange(ScalarChangeMode.DELTA, -20.0),
+                twc_shift_steps=1.0,
+            )
+
+    def test_curb_change_alone_is_valid(self):
+        change = MassQuickChange(curb_change=ScalarChange(ScalarChangeMode.ABSOLUTE, 1500.0))
+        self.assertIsNone(change.twc_shift_steps)
+
+    def test_twc_shift_steps_alone_is_valid(self):
+        change = MassQuickChange(twc_shift_steps=1.0, twc_shift_side="Up")
+        self.assertIsNone(change.curb_change)
+
+    def test_twc_shift_steps_zero_is_explicit_not_blank(self):
+        change = MassQuickChange(twc_shift_steps=0.0)
+        self.assertEqual(change.twc_shift_steps, 0.0)
 
 
 class TireQuickChangeValidationTests(unittest.TestCase):
@@ -332,7 +379,7 @@ class QuickScenarioSerializationTests(unittest.TestCase):
 
     def test_serialized_payload_uses_plain_json_types(self):
         payload = to_serializable(_full_scenario())
-        self.assertEqual(payload["vehicle_overrides"]["mass_change"]["mode"], "DELTA")
+        self.assertEqual(payload["vehicle_overrides"]["mass_change"]["curb_change"]["mode"], "DELTA")
         self.assertEqual(
             payload["vehicle_overrides"]["tire_change"]["source"],
             "TIRE_DB",

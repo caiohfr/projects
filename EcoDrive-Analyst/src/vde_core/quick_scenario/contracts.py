@@ -354,6 +354,89 @@ class VehicleQuickOverrides:
         return self.mass_change is None and self.cda_change is None and self.tire_change is None
 
 
+MAX_TECH_DELTAS_PER_SCENARIO = 3
+
+
+@dataclass(frozen=True)
+class TechDeltaAssumption:
+    """Sec 13-17: one Technology Delta planning assumption. Reuses the
+    existing canonical Technology Delta vocabulary extracted (verbatim, not
+    redesigned) into `src.vde_core.technology_delta` from the existing
+    Powertrain Scenario contract -- this is not a second Technology Delta
+    schema, just the same field names carried by a typed Quick Scenario
+    input. `effect_basis` must be one of
+    `technology_delta.normalize_delta_effect_basis`'s recognized keys (e.g.
+    `"pse_percent_delta"`, `"fuel_delta"`) for the assumption to apply
+    quantitatively; an unrecognized basis is preserved as a registered-only
+    (non-quantitative) entry by the resolver, never silently dropped.
+
+    `effect_value` has no default (Sec 17: "No hidden default magnitude") --
+    a custom assumption must state its own numeric effect explicitly.
+    """
+
+    name: str
+    effect_basis: str
+    effect_value: float
+    affected_subsystem: str = "whole powertrain"
+    source_type: str = "manual"
+    maturity_level: str = "engineering_assumption"
+    confidence: str = "unknown"
+    notes: str = ""
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("TechDeltaAssumption.name is required.")
+        if not self.effect_basis:
+            raise ValueError("TechDeltaAssumption.effect_basis is required.")
+
+
+@dataclass(frozen=True)
+class EfficiencyQuickInputs:
+    """Sec 2/5/9/13: the "Efficiency Quick" layer's requested inputs --
+    kept as a sibling of `VehicleQuickOverrides`, never nested inside it
+    (Sec 2: "Vehicle and Powertrain/Efficiency must remain separate").
+
+    `benchmark_source_identity`, when set, must be a full Comparison
+    identity string for the DONOR scenario (`fc:<id>`/`vde:<id>`), mirroring
+    `QuickScenario.source_identity`'s own rule -- never a bare vde_id.
+    `request_ml_recommendation` is an explicit opt-in (ML inference has a
+    real cost -- deserializing the artifact per call -- and is itself a
+    user action akin to "Use ML recommendation", Sec 5/10).
+    `technology_deltas` is capped at `MAX_TECH_DELTAS_PER_SCENARIO` (Sec 15:
+    "a product complexity limit, not a new physics rule").
+
+    None of these fields, on their own, changes Final PSE (Sec 5/14): they
+    only make references/recommendations computable for the resolver to
+    expose -- adoption is a separate, explicit act of setting
+    `QuickScenario.final_pse_percent`/`pse_provenance`.
+    """
+
+    benchmark_source_identity: str | None = None
+    request_ml_recommendation: bool = False
+    technology_deltas: tuple[TechDeltaAssumption, ...] = ()
+
+    def __post_init__(self) -> None:
+        if len(self.technology_deltas) > MAX_TECH_DELTAS_PER_SCENARIO:
+            raise ValueError(
+                "EfficiencyQuickInputs.technology_deltas exceeds the Sprint 10D "
+                f"product limit of {MAX_TECH_DELTAS_PER_SCENARIO} (Sec 15)."
+            )
+        if self.benchmark_source_identity is not None and not self.benchmark_source_identity:
+            raise ValueError(
+                "EfficiencyQuickInputs.benchmark_source_identity must be a non-empty "
+                "identity string or None."
+            )
+
+    @property
+    def is_empty(self) -> bool:
+        return (
+            self.benchmark_source_identity is None
+            and not self.request_ml_recommendation
+            and not self.technology_deltas
+        )
+
+
 class PseProvenance(_TextEnum):
     """Sec 9-14: Final PSE provenance. References/recommendations
     (benchmark, ML, Tech Delta) only reach Final PSE once the user
@@ -403,6 +486,7 @@ class QuickScenario:
     label: str | None = None
     vehicle_overrides: VehicleQuickOverrides = field(default_factory=VehicleQuickOverrides)
     vehicle_readiness: QuickVehicleReadiness = field(default_factory=QuickVehicleReadiness)
+    efficiency_inputs: EfficiencyQuickInputs = field(default_factory=EfficiencyQuickInputs)
     final_pse_percent: float | None = None
     pse_provenance: PseProvenance | None = None
     issues: tuple[str, ...] = ()
@@ -452,6 +536,9 @@ __all__ = [
     "TireQuickChange",
     "MassQuickChange",
     "VehicleQuickOverrides",
+    "MAX_TECH_DELTAS_PER_SCENARIO",
+    "TechDeltaAssumption",
+    "EfficiencyQuickInputs",
     "PseProvenance",
     "build_quick_scenario_identity",
     "QuickScenario",

@@ -1,0 +1,9 @@
+tech_id,subsystem,technology,effect_basis,default_value,source_type,maturity_level,confidence,notes
+TECH-QA-001,hybrid/ESS,Improved ESS efficiency,pse_percent_delta,2.0,engineering_assumption,engineering_assumption,medium,Synthetic planning example.
+TECH-QA-002,transmission,Lower-friction transmission,pse_percent_delta,1.0,engineering_assumption,engineering_assumption,medium,Synthetic planning example.
+TECH-QA-003,engine,Friction reduction package,pse_percent_delta,1.5,engineering_assumption,engineering_assumption,low,Synthetic planning example.
+TECH-QA-004,electrical/alternator,Higher-efficiency alternator,pse_percent_delta,0.5,engineering_assumption,engineering_assumption,low,Synthetic planning example.
+TECH-QA-005,auxiliary loads,Reduced parasitic accessory load,pse_delta,0.005,engineering_assumption,engineering_assumption,low,Synthetic planning example; absolute PSE delta, not a percent.
+TECH-QA-006,calibration,Optimized shift/torque calibration,pse_percent_delta,1.0,engineering_assumption,engineering_assumption,medium,Synthetic planning example.
+TECH-QA-007,thermal,Improved thermal management,pse_percent_delta,0.8,engineering_assumption,engineering_assumption,low,Synthetic planning example.
+TECH-QA-008,whole powertrain,General efficiency program (planning placeholder),metadata_only,0.0,metadata_only,metadata_only,unknown,Synthetic planning example; registered only, no quantitative effect.

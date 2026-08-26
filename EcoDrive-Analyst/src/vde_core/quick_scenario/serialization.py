@@ -16,6 +16,7 @@ from typing import Any, Mapping
 from .contracts import (
     QUICK_SCENARIO_CONTRACT_VERSION,
     DomainReadiness,
+    EfficiencyQuickInputs,
     MassQuickChange,
     PseProvenance,
     QuickScenario,
@@ -23,6 +24,7 @@ from .contracts import (
     ReferencePressureProvenance,
     ScalarChange,
     ScalarChangeMode,
+    TechDeltaAssumption,
     TirePressureDelta,
     TireQuickChange,
     TireSource,
@@ -140,6 +142,31 @@ def quick_vehicle_readiness_from_dict(data: Mapping[str, Any] | None) -> QuickVe
     )
 
 
+def tech_delta_assumption_from_dict(data: Mapping[str, Any]) -> TechDeltaAssumption:
+    return TechDeltaAssumption(
+        name=data["name"],
+        effect_basis=data["effect_basis"],
+        effect_value=float(data["effect_value"]),
+        affected_subsystem=_get(data, "affected_subsystem", "whole powertrain"),
+        source_type=_get(data, "source_type", "manual"),
+        maturity_level=_get(data, "maturity_level", "engineering_assumption"),
+        confidence=_get(data, "confidence", "unknown"),
+        notes=_get(data, "notes", ""),
+        enabled=bool(_get(data, "enabled", True)),
+    )
+
+
+def efficiency_quick_inputs_from_dict(data: Mapping[str, Any] | None) -> EfficiencyQuickInputs:
+    data = data or {}
+    return EfficiencyQuickInputs(
+        benchmark_source_identity=_get(data, "benchmark_source_identity"),
+        request_ml_recommendation=bool(_get(data, "request_ml_recommendation", False)),
+        technology_deltas=tuple(
+            tech_delta_assumption_from_dict(item) for item in _get(data, "technology_deltas") or ()
+        ),
+    )
+
+
 def quick_scenario_from_dict(data: Mapping[str, Any]) -> QuickScenario:
     return QuickScenario(
         source_identity=data["source_identity"],
@@ -147,6 +174,7 @@ def quick_scenario_from_dict(data: Mapping[str, Any]) -> QuickScenario:
         label=_get(data, "label"),
         vehicle_overrides=vehicle_quick_overrides_from_dict(_get(data, "vehicle_overrides")),
         vehicle_readiness=quick_vehicle_readiness_from_dict(_get(data, "vehicle_readiness")),
+        efficiency_inputs=efficiency_quick_inputs_from_dict(_get(data, "efficiency_inputs")),
         final_pse_percent=_get(data, "final_pse_percent"),
         pse_provenance=_enum_or_none(PseProvenance, _get(data, "pse_provenance")),
         issues=tuple(_get(data, "issues") or ()),
@@ -162,5 +190,7 @@ __all__ = [
     "tire_quick_change_from_dict",
     "vehicle_quick_overrides_from_dict",
     "quick_vehicle_readiness_from_dict",
+    "tech_delta_assumption_from_dict",
+    "efficiency_quick_inputs_from_dict",
     "quick_scenario_from_dict",
 ]

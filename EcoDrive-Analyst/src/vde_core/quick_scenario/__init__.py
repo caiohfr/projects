@@ -22,9 +22,11 @@ this package was designed against.
 
 from .contracts import (
     MAX_QUICK_SCENARIOS_PER_SOURCE,
+    MAX_TECH_DELTAS_PER_SCENARIO,
     QUICK_SCENARIO_CONTRACT_VERSION,
     QUICK_SCENARIO_IDENTITY_PREFIX,
     DomainReadiness,
+    EfficiencyQuickInputs,
     MassQuickChange,
     PseProvenance,
     QuickScenario,
@@ -32,6 +34,7 @@ from .contracts import (
     ReferencePressureProvenance,
     ScalarChange,
     ScalarChangeMode,
+    TechDeltaAssumption,
     TirePressureDelta,
     TireQuickChange,
     TireSource,
@@ -39,13 +42,26 @@ from .contracts import (
     VehicleQuickOverrides,
     build_quick_scenario_identity,
 )
+from .efficiency_resolution import (
+    MlPseRecommendation,
+    PseReference,
+    QuickEfficiencyResolution,
+    TechDeltaSuggestion,
+)
+from .efficiency_resolver import resolve_quick_efficiency_scenario
 from .resolution import QuickVehicleResolution
 from .resolver import resolve_quick_vehicle_scenario
+from .tech_delta_catalog import (
+    DEFAULT_QUICK_TECH_DELTA_CATALOG_PATH,
+    load_quick_tech_delta_catalog,
+)
 from .serialization import (
+    efficiency_quick_inputs_from_dict,
     mass_quick_change_from_dict,
     quick_scenario_from_dict,
     quick_vehicle_readiness_from_dict,
     scalar_change_from_dict,
+    tech_delta_assumption_from_dict,
     tire_pressure_delta_from_dict,
     tire_quick_change_from_dict,
     to_serializable,
@@ -55,10 +71,17 @@ from .serialization import (
 __all__ = [
     "QuickVehicleResolution",
     "resolve_quick_vehicle_scenario",
+    "QuickEfficiencyResolution",
+    "PseReference",
+    "MlPseRecommendation",
+    "TechDeltaSuggestion",
+    "resolve_quick_efficiency_scenario",
     "MAX_QUICK_SCENARIOS_PER_SOURCE",
+    "MAX_TECH_DELTAS_PER_SCENARIO",
     "QUICK_SCENARIO_CONTRACT_VERSION",
     "QUICK_SCENARIO_IDENTITY_PREFIX",
     "DomainReadiness",
+    "EfficiencyQuickInputs",
     "MassQuickChange",
     "PseProvenance",
     "QuickScenario",
@@ -66,16 +89,21 @@ __all__ = [
     "ReferencePressureProvenance",
     "ScalarChange",
     "ScalarChangeMode",
+    "TechDeltaAssumption",
     "TirePressureDelta",
     "TireQuickChange",
     "TireSource",
     "TireTransformMode",
     "VehicleQuickOverrides",
+    "DEFAULT_QUICK_TECH_DELTA_CATALOG_PATH",
+    "load_quick_tech_delta_catalog",
     "build_quick_scenario_identity",
+    "efficiency_quick_inputs_from_dict",
     "mass_quick_change_from_dict",
     "quick_scenario_from_dict",
     "quick_vehicle_readiness_from_dict",
     "scalar_change_from_dict",
+    "tech_delta_assumption_from_dict",
     "tire_pressure_delta_from_dict",
     "tire_quick_change_from_dict",
     "to_serializable",

@@ -4,6 +4,7 @@ import unittest
 
 from src.vde_core.quick_scenario import (
     DomainReadiness,
+    EfficiencyQuickInputs,
     MassQuickChange,
     PseProvenance,
     QuickScenario,
@@ -11,6 +12,7 @@ from src.vde_core.quick_scenario import (
     ReferencePressureProvenance,
     ScalarChange,
     ScalarChangeMode,
+    TechDeltaAssumption,
     TirePressureDelta,
     TireQuickChange,
     TireSource,
@@ -20,6 +22,7 @@ from src.vde_core.quick_scenario import (
     quick_scenario_from_dict,
     to_serializable,
 )
+from src.vde_core.quick_scenario.contracts import MAX_TECH_DELTAS_PER_SCENARIO
 from src.vde_core.quick_scenario import contracts as quick_scenario_contracts
 from src.vde_core.quick_scenario import serialization as quick_scenario_serialization
 
@@ -48,6 +51,22 @@ def _full_scenario() -> QuickScenario:
             mass=DomainReadiness.READY,
             aero=DomainReadiness.READY,
             tire=DomainReadiness.READY,
+        ),
+        efficiency_inputs=EfficiencyQuickInputs(
+            benchmark_source_identity="fc:99",
+            request_ml_recommendation=True,
+            technology_deltas=(
+                TechDeltaAssumption(
+                    name="Improved ESS efficiency",
+                    effect_basis="pse_percent_delta",
+                    effect_value=2.0,
+                    affected_subsystem="hybrid/ESS",
+                    source_type="engineering_assumption",
+                    maturity_level="engineering_assumption",
+                    confidence="medium",
+                    notes="Synthetic planning example.",
+                ),
+            ),
         ),
         final_pse_percent=27.5,
         pse_provenance=PseProvenance.USER_PROVIDED,
@@ -421,6 +440,65 @@ class QuickScenarioSerializationTests(unittest.TestCase):
         payload = to_serializable(QuickScenario(source_identity="fc:1", slot=1))
         self.assertIn("mass_change", payload["vehicle_overrides"])
         self.assertIsNone(payload["vehicle_overrides"]["mass_change"])
+
+
+class TechDeltaAssumptionValidationTests(unittest.TestCase):
+    def test_requires_name(self):
+        with self.assertRaises(ValueError):
+            TechDeltaAssumption(name="", effect_basis="pse_percent_delta", effect_value=2.0)
+
+    def test_requires_effect_basis(self):
+        with self.assertRaises(ValueError):
+            TechDeltaAssumption(name="ESS", effect_basis="", effect_value=2.0)
+
+    def test_effect_value_has_no_hidden_default(self):
+        with self.assertRaises(TypeError):
+            TechDeltaAssumption(name="ESS", effect_basis="pse_percent_delta")  # missing effect_value
+
+    def test_zero_effect_value_is_explicit_not_blank(self):
+        delta = TechDeltaAssumption(name="No-op", effect_basis="pse_percent_delta", effect_value=0.0)
+        self.assertEqual(delta.effect_value, 0.0)
+
+    def test_defaults_match_canonical_normalization_defaults(self):
+        delta = TechDeltaAssumption(name="ESS", effect_basis="pse_percent_delta", effect_value=2.0)
+        self.assertEqual(delta.affected_subsystem, "whole powertrain")
+        self.assertEqual(delta.source_type, "manual")
+        self.assertEqual(delta.maturity_level, "engineering_assumption")
+        self.assertEqual(delta.confidence, "unknown")
+        self.assertTrue(delta.enabled)
+
+
+class EfficiencyQuickInputsValidationTests(unittest.TestCase):
+    def test_blank_inputs_mean_no_override(self):
+        inputs = EfficiencyQuickInputs()
+        self.assertTrue(inputs.is_empty)
+        self.assertIsNone(inputs.benchmark_source_identity)
+        self.assertFalse(inputs.request_ml_recommendation)
+        self.assertEqual(inputs.technology_deltas, ())
+
+    def test_up_to_max_tech_deltas_allowed(self):
+        deltas = tuple(
+            TechDeltaAssumption(name=f"Delta {i}", effect_basis="pse_percent_delta", effect_value=1.0)
+            for i in range(MAX_TECH_DELTAS_PER_SCENARIO)
+        )
+        inputs = EfficiencyQuickInputs(technology_deltas=deltas)
+        self.assertEqual(len(inputs.technology_deltas), MAX_TECH_DELTAS_PER_SCENARIO)
+
+    def test_exceeding_max_tech_deltas_is_rejected(self):
+        deltas = tuple(
+            TechDeltaAssumption(name=f"Delta {i}", effect_basis="pse_percent_delta", effect_value=1.0)
+            for i in range(MAX_TECH_DELTAS_PER_SCENARIO + 1)
+        )
+        with self.assertRaises(ValueError):
+            EfficiencyQuickInputs(technology_deltas=deltas)
+
+    def test_empty_benchmark_source_identity_is_rejected(self):
+        with self.assertRaises(ValueError):
+            EfficiencyQuickInputs(benchmark_source_identity="")
+
+    def test_any_populated_field_is_not_empty(self):
+        self.assertFalse(EfficiencyQuickInputs(request_ml_recommendation=True).is_empty)
+        self.assertFalse(EfficiencyQuickInputs(benchmark_source_identity="fc:1").is_empty)
 
 
 class QuickScenarioNoPersistenceTests(unittest.TestCase):

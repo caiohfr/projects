@@ -340,9 +340,18 @@ two failures are the documented pre-existing failures in
 `tests/test_vde_request_resolver.py`:
 `test_component_lookup_provenance_does_not_change_parasitic_math` and
 `test_axle_hubs_lookup_snapshot_preserves_boundary_metadata`.  The total is
-14 higher than the previously recorded 10B total because the pre-existing,
-untracked `test_quick_scenario_resolver_parity.py` was present and discovered
-in this worktree; it was not changed by the hotfix.
+14 higher than the previously recorded 10B total: five are the hotfix's
+save-plan regressions and nine are the resolver-level closure tests below.
+
+`tests/test_quick_scenario_resolver_parity.py` preserves the nine Sprint
+10B resolver-level Mass/Aero parity cases separately from downstream-engine
+parity.  It independently calls `resolve_mass_proposal()`, `cdA_to_C()`, and
+`resolve_roadload_boundaries()` to establish EPA inside/crossing-TWC,
+explicit TWC shift (up/down), WLTP, absolute/delta/percent CdA, and combined
+Mass+CdA expected state.  It does not call either VDE engine and therefore
+does not rely on the cross-engine result comparison.  The closure test module
+passed **9/9**.  This supplements, rather than replaces, the original 10B
+committed resolver and vehicle-demand integration coverage.
 
 The local-database audit was read-only and covered the repository's active
 and canonical QA databases: `data/db/eco_drive.db`,

@@ -307,6 +307,61 @@ regressions** (1407 baseline + 44 net new: +8 in
 `test_quick_scenario_resolver.py` + 5 new in
 `test_quick_scenario_vehicle_demand_integration.py`).
 
+---
+
+## Closure hotfix: canonical EPA mass persistence
+
+The resolver-level physical state remains the Quick <-> VDE Setup parity
+boundary.  Quick writes its temporary synthetic row with
+`vde_calculation_mass_kg`; it does not persist a VDE record and no Quick
+Scenario or Vehicle Demand physics changed in this hotfix.
+
+The live VDE Setup v2.2 save boundary had the same two resolver values
+available, but `_proposal_row_payload()` wrote
+`resolved_mass_setup.test_mass_kg` to `vde_db.test_mass_kg`.  For EPA this
+is the physical curb+136 kg value, whereas Comparison and Vehicle Demand
+read `vde_db.test_mass_kg` as their canonical calculation mass.  The save
+path now writes `resolved_mass_setup.vde_calculation_mass_kg` whenever it is
+nonblank, then explicitly falls back to the prior resolved/snapshot value.
+The fallback deliberately does not use Python truthiness, so a present zero
+is not silently discarded.  WLTP is unchanged because its physical and
+canonical values are equal by construction.
+
+`tests/test_vde_request_save.py` now exercises the real save-plan boundary
+after resolving each mass proposal: EPA curb-to-TWC, a change within one
+TWC, a TWC-boundary crossing, an EPA TWC shift, and WLTP mass-line behavior.
+The base EPA regression explicitly proves that the persisted value equals
+`vde_calculation_mass_kg` and differs from physical curb+136 kg.
+
+Focused persistence coverage passed: **24/24**
+(`python -m unittest -v tests.test_vde_request_save`).  Full discovery
+after the hotfix ran **1,465 tests in 936.942 s; 1,463 passed**.  The only
+two failures are the documented pre-existing failures in
+`tests/test_vde_request_resolver.py`:
+`test_component_lookup_provenance_does_not_change_parasitic_math` and
+`test_axle_hubs_lookup_snapshot_preserves_boundary_metadata`.  The total is
+14 higher than the previously recorded 10B total because the pre-existing,
+untracked `test_quick_scenario_resolver_parity.py` was present and discovered
+in this worktree; it was not changed by the hotfix.
+
+The local-database audit was read-only and covered the repository's active
+and canonical QA databases: `data/db/eco_drive.db`,
+`data/db/eco_drive_qa.db`, `data/qa/eco_drive.db`, and
+`data/qa/eco_drive_qa.db`.  A row was a strict candidate only when it was
+EPA, declared `test_mass_basis = PHYSICAL_TEST_MASS`, stored
+`test_mass_kg = mass_kg + 136 kg`, and that value differed from its stored
+`inertia_class`.  Result: **0 strict candidates** (0 QA, 0 non-QA); the
+production database had 5,002 EPA rows but none with the physical-mass
+basis/signature, and the canonical QA database had 7 EPA rows but none.
+Older rows without this provenance cannot be attributed to this v2.2 save
+defect from stored fields alone, so they were intentionally not guessed or
+modified.
+
+The legacy phase-weighted VDE output is still **not expected** to equal the
+Sprint 9 frozen Vehicle Demand whole-trace output for EPA without the
+separate EPA policy phase recombination described above; that established
+cross-engine distinction is not affected by this persistence correction.
+
 ## Backlog / deferred (not fixed in 10B)
 
 - Tire/RRC Quick resolution -- deferred to a later package, per scope.

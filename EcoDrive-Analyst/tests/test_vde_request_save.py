@@ -13,6 +13,8 @@ from src.vde_core.vde_request_save import (
     execute_vde_request_save_plan,
     generate_auto_proposal_name,
 )
+from src.vde_core.test_mass import inertia_step_for_mass
+from src.vde_core.vde_mass_proposal_resolver import resolve_mass_proposal
 
 
 def _proposal_result(
@@ -167,7 +169,79 @@ def _request_state() -> dict:
     }
 
 
+def _saved_test_mass_from_resolved_mass(source: dict, proposal_type: str, inputs: dict) -> tuple[dict, dict]:
+    resolved = resolve_mass_proposal(source, proposal_type, inputs)
+    if resolved["status"] != "OK":
+        raise AssertionError(f"Fixture mass resolution failed: {resolved}")
+
+    mass_setup = dict(resolved["resolved_snapshot"])
+    snapshot = {
+        "legislation": source["legislation"],
+        "mass_kg": mass_setup["mass_kg"],
+        "test_mass_kg": mass_setup["test_mass_kg"],
+        "CdA": 0.62,
+        "resolved_mass_setup": mass_setup,
+    }
+    plan = build_vde_request_save_plan(
+        _resolution_result(
+            [_proposal_result("proposal_req_1", display_index=1, resolved_snapshot=snapshot)]
+        ),
+        save_mode=SAVE_MODE_VALID_ONLY,
+        request_state=_request_state(),
+        current_fingerprint="fp1",
+        resolution_fingerprint="fp1",
+    )
+    return mass_setup, plan["proposals_to_save"][0]["row_payload"]
+
+
 class VdeRequestSavePlanTests(unittest.TestCase):
+    def test_epa_curb_to_twc_persists_canonical_mass_not_physical_test_mass(self):
+        source = {"legislation": "EPA", "mass_kg": 1500.0, "test_mass_kg": 1644.0, "inertia_class": 1644.0}
+        mass_setup, row = _saved_test_mass_from_resolved_mass(source, "EPA_CURB_TO_TWC", {"mass_kg": 1500.0})
+
+        self.assertEqual(row["test_mass_kg"], mass_setup["vde_calculation_mass_kg"])
+        self.assertNotEqual(row["test_mass_kg"], mass_setup["test_mass_kg"])
+
+    def test_epa_curb_change_inside_twc_persists_same_canonical_mass(self):
+        source = {"legislation": "EPA", "mass_kg": 1500.0, "test_mass_kg": 1644.0, "inertia_class": 1644.0}
+        source_twc = inertia_step_for_mass(source["mass_kg"])["inertia_class_kg"]
+        mass_setup, row = _saved_test_mass_from_resolved_mass(source, "EPA_CURB_TO_TWC", {"mass_kg": 1501.0})
+
+        self.assertEqual(mass_setup["vde_calculation_mass_kg"], source_twc)
+        self.assertEqual(row["test_mass_kg"], source_twc)
+
+    def test_epa_curb_change_crossing_twc_persists_new_canonical_mass(self):
+        source = {"legislation": "EPA", "mass_kg": 1500.0, "test_mass_kg": 1644.0, "inertia_class": 1644.0}
+        source_step = inertia_step_for_mass(source["mass_kg"])
+        target_curb = float(source_step["upper_bound_inclusive"]) + 1.0
+        mass_setup, row = _saved_test_mass_from_resolved_mass(source, "EPA_CURB_TO_TWC", {"mass_kg": target_curb})
+
+        self.assertNotEqual(mass_setup["vde_calculation_mass_kg"], source_step["inertia_class_kg"])
+        self.assertEqual(row["test_mass_kg"], mass_setup["vde_calculation_mass_kg"])
+
+    def test_epa_twc_shift_persists_shifted_canonical_mass(self):
+        source = {"legislation": "EPA", "mass_kg": 1500.0, "test_mass_kg": 1644.0, "inertia_class": 1644.0}
+        mass_setup, row = _saved_test_mass_from_resolved_mass(
+            source, "MASS_TWC_SHIFT", {"shift_steps": 1.0, "target_side": "Up"}
+        )
+
+        self.assertGreater(mass_setup["vde_calculation_mass_kg"], source["inertia_class"])
+        self.assertEqual(row["test_mass_kg"], mass_setup["vde_calculation_mass_kg"])
+
+    def test_wltp_save_plan_keeps_canonical_test_mass(self):
+        source = {
+            "legislation": "WLTP",
+            "mass_kg": 1600.0,
+            "test_mass_kg": 1780.0,
+            "payload_kg": 180.0,
+            "options_kg": 0.0,
+            "wltp_category": "M1",
+        }
+        mass_setup, row = _saved_test_mass_from_resolved_mass(source, "WLTP_MASS_LINE", {"mass_kg": 1580.0})
+
+        self.assertEqual(mass_setup["vde_calculation_mass_kg"], mass_setup["test_mass_kg"])
+        self.assertEqual(row["test_mass_kg"], mass_setup["test_mass_kg"])
+
     def test_save_plan_allows_ok_proposal(self):
         resolution = _resolution_result([_proposal_result("proposal_req_1", display_index=1)])
 

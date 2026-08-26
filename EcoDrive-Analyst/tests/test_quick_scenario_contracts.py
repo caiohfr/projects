@@ -209,6 +209,32 @@ class TireQuickChangeValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             TireQuickChange(source=TireSource.CURRENT, transform_mode=TireTransformMode.TARGET_RRC)
 
+    def test_improvement_and_pressure_stacking_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "exactly one transformation"):
+            TireQuickChange(
+                source=TireSource.CURRENT,
+                transform_mode=TireTransformMode.IMPROVEMENT_PCT,
+                improvement_pct=5.0,
+                pressure_delta=TirePressureDelta(front_delta_psi=2.0),
+            )
+
+    def test_target_rrc_and_pressure_stacking_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "exactly one transformation"):
+            TireQuickChange(
+                source=TireSource.CURRENT,
+                transform_mode=TireTransformMode.TARGET_RRC,
+                target_rrc_n_per_kn=7.5,
+                pressure_delta=TirePressureDelta(front_delta_psi=2.0),
+            )
+
+    def test_none_with_improvement_field_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "exactly one transformation"):
+            TireQuickChange(source=TireSource.CURRENT, improvement_pct=5.0)
+
+    def test_current_rejects_tire_db_id(self):
+        with self.assertRaisesRegex(ValueError, "only valid"):
+            TireQuickChange(source=TireSource.CURRENT, tire_db_id=99)
+
 
 class TirePressureDeltaProvenanceTests(unittest.TestCase):
     def test_user_provided_requires_reference_pressure(self):
@@ -252,6 +278,10 @@ class QuickVehicleReadinessTests(unittest.TestCase):
 
     def test_one_missing_requested_domain_blocks_readiness(self):
         readiness = QuickVehicleReadiness(mass=DomainReadiness.READY, tire=DomainReadiness.MISSING)
+        self.assertFalse(readiness.all_ready)
+
+    def test_invalid_requested_domain_blocks_readiness(self):
+        readiness = QuickVehicleReadiness(tire=DomainReadiness.INVALID)
         self.assertFalse(readiness.all_ready)
 
 

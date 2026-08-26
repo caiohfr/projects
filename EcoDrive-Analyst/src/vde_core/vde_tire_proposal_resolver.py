@@ -121,7 +121,7 @@ def resolve_tire_proposal(source_snapshot, proposal_type, inputs, *, current_sna
             resolved["tire_adjusted_rrc_N_per_kN"] = lookup_rrc
             resolved["tire_adjustment_method"] = "DB lookup RRC"
             if _is_iso_tire(resolved_tire):
-                reference_pressure_psi = _tire_reference_pressure_psi(resolved_tire)
+                reference_pressure_psi = tire_reference_pressure_psi(resolved_tire)
                 resolved["tire_reference_front_pressure_psi"] = reference_pressure_psi
                 resolved["tire_reference_rear_pressure_psi"] = reference_pressure_psi
                 if reference_pressure_psi is None:
@@ -481,7 +481,15 @@ def _is_iso_tire(tire: dict | None) -> bool:
     return str(dict(tire or {}).get("standard_family") or "").strip().upper() == "ISO"
 
 
-def _tire_reference_pressure_psi(tire: dict | None) -> float | None:
+def tire_reference_pressure_psi(tire: dict | None) -> float | None:
+    """Return a Tire DB record's canonical reference pressure in psi.
+
+    This is deliberately a unit-normalization adapter, not a pressure/RRC
+    model. Quick Scenario uses it to construct explicit front/rear pressure
+    requests before delegating all physical resolution back to
+    :func:`resolve_tire_proposal`.
+    """
+
     data = dict(tire or {})
     test_pressure = _to_float(data.get("test_pressure_value"))
     if test_pressure is not None:

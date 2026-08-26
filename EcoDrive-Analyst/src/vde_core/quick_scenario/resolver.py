@@ -1,11 +1,13 @@
 # src/vde_core/quick_scenario/resolver.py
 # -----------------------------------------------------------------------------
-# Sprint 10B - Quick Mass + Aero resolution.
+# Sprint 10C - Quick Mass + Tire + Aero resolution.
 #
 # Turns a QuickScenario's Vehicle overrides into a resolved temporary
 # physical state and feeds it through the FROZEN Sprint 9 Vehicle Demand
 # Core. Reuses the canonical resolvers directly:
 #   - Mass:  resolve_mass_proposal() (vde_mass_proposal_resolver.py)
+#   - Tire:  resolve_tire_proposal() (vde_tire_proposal_resolver.py)
+#            owns RRC, pressure, load and Tire ABC physics.
 #   - Aero:  cdA_to_C()              (roadload/engine.py), same two-line
 #            delta-to-C composition _resolve_aero() already uses
 #            (vde_request_resolver.py) -- never a second CdA->C formula.
@@ -42,7 +44,12 @@ from src.vde_core.database_management_contract import EntityType
 from src.vde_core.database_management_service import get_record
 from src.vde_core.repositories import fetch_vde_by_id
 from src.vde_core.roadload import cdA_to_C
+from src.vde_core.tire_roadload_service import get_tire_by_id
 from src.vde_core.vde_mass_proposal_resolver import resolve_mass_proposal
+from src.vde_core.vde_tire_proposal_resolver import (
+    resolve_tire_proposal,
+    tire_reference_pressure_psi,
+)
 from src.vde_core.vehicle_demand import RoadloadCoefficients, calculate_vehicle_demand
 from src.vde_core.vehicle_demand.adapters import (
     build_vehicle_demand_request,
@@ -56,6 +63,9 @@ from .contracts import (
     QuickVehicleReadiness,
     ReferencePressureProvenance,
     ScalarChange,
+    TireQuickChange,
+    TireSource,
+    TireTransformMode,
     VehicleQuickOverrides,
 )
 from .resolution import QuickVehicleResolution
@@ -164,8 +174,352 @@ def _resolve_mass(
         # test_mass_kg/resolved_test_mass_kg output field (curb+136 for EPA).
         "test_mass_kg": vde_calculation_mass_kg,
         "vde_mass_basis": resolved.get("vde_mass_basis"),
+        # Tire is the next Quick stage. Preserve the canonical mass
+        # resolver's regulatory/load fields so resolve_tire_proposal() sees
+        # the newly resolved scenario mass, never stale source-row values.
+        "inertia_class": resolved.get("inertia_class"),
+        "tire_load_mass_used_kg": resolved.get("tire_load_mass_used_kg"),
+        "tire_load_mass_basis": resolved.get("tire_load_mass_basis"),
     }
     return updates, DomainReadiness.READY, issues
+
+
+_TIRE_STATE_FIELDS = (
+    "tire_db_id",
+    "tire_code",
+    "tire_snapshot",
+    "front_pressure_psi",
+    "rear_pressure_psi",
+    "rrc_N_per_kN",
+    "target_rrc_N_per_kN",
+    "tire_source_rrc_N_per_kN",
+    "tire_target_rrc_N_per_kN",
+    "tire_adjusted_rrc_N_per_kN",
+    "tire_delta_rrc_N_per_kN",
+    "tire_reference_front_pressure_psi",
+    "tire_reference_rear_pressure_psi",
+    "tire_requested_front_pressure_psi",
+    "tire_requested_rear_pressure_psi",
+    "tire_front_weight_fraction",
+    "tire_pressure_sensitivity",
+    "tire_adjustment_method",
+    "tire_abc_method",
+    "tire_review_status",
+    "tire_rule_status",
+    "tire_rule_notes",
+    "tire_load_mass_basis",
+    "tire_load_mass_used_kg",
+    "source_tire_load_mass_used_kg",
+    "tire_A_final",
+    "tire_B_final",
+    "tire_C_final",
+)
+
+
+def _tire_readiness(outcome: Mapping[str, Any]) -> DomainReadiness:
+    status = str(outcome.get("status") or "").strip().upper()
+    if status == "INVALID":
+        return DomainReadiness.INVALID
+    if status == "MISSING":
+        return DomainReadiness.MISSING
+    return DomainReadiness.READY
+
+
+def _tire_issue_messages(outcome: Mapping[str, Any]) -> list[str]:
+    return [
+        str(item.get("message") or "Tire resolution issue.")
+        for item in list(outcome.get("issues") or ())
+    ]
+
+
+def _apply_tire_outcome(
+    working_row: Mapping[str, Any], outcome: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Apply canonical Tire state and its delta to authoritative TOTAL ABC.
+
+    The delta itself is produced exclusively by resolve_tire_proposal().
+    Missing TOTAL coefficients remain missing; this adapter never performs
+    a TOTAL/NET fallback.
+    """
+
+    row = dict(working_row)
+    resolved = dict(outcome.get("resolved_snapshot") or {})
+    for field_name in _TIRE_STATE_FIELDS:
+        if field_name in resolved:
+            row[field_name] = resolved.get(field_name)
+
+    delta = dict(resolved.get("tire_delta_abc") or {})
+    for total_field, component in (
+        ("coast_A_N", "A"),
+        ("coast_B_N_per_kph", "B"),
+        ("coast_C_N_per_kph2", "C"),
+    ):
+        base_value = row.get(total_field)
+        delta_value = delta.get(component)
+        if base_value is not None and delta_value is not None:
+            row[total_field] = float(base_value) + float(delta_value)
+    return row
+
+
+def _canonical_tire_call(
+    source_row: Mapping[str, Any],
+    current_row: Mapping[str, Any],
+    proposal_type: str,
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    resolver_inputs = dict(inputs)
+    tire_current = dict(current_row)
+    for pressure_field in ("front_pressure_psi", "rear_pressure_psi"):
+        if resolver_inputs.get(pressure_field) is not None:
+            tire_current[pressure_field] = resolver_inputs[pressure_field]
+    return resolve_tire_proposal(
+        dict(source_row),
+        proposal_type,
+        resolver_inputs,
+        current_snapshot=tire_current,
+    )
+
+
+def _source_tire_record(source_row: Mapping[str, Any]) -> dict[str, Any] | None:
+    snapshot = dict(source_row.get("tire_snapshot") or {})
+    if snapshot:
+        return snapshot
+    tire_id = source_row.get("tire_db_id") or source_row.get("front_tire_id")
+    if tire_id is None:
+        return None
+    try:
+        return dict(get_tire_by_id(int(tire_id)) or {}) or None
+    except Exception:
+        return None
+
+
+def _pressure_reference_pair(
+    source_row: Mapping[str, Any],
+    selected_tire: Mapping[str, Any] | None,
+    tire_change: TireQuickChange,
+) -> tuple[float | None, float | None, ReferencePressureProvenance]:
+    pressure_change = tire_change.pressure_delta
+    assert pressure_change is not None
+    if pressure_change.reference_pressure_provenance is ReferencePressureProvenance.USER_PROVIDED:
+        reference = pressure_change.reference_pressure_psi
+        return reference, reference, ReferencePressureProvenance.USER_PROVIDED
+
+    db_reference = tire_reference_pressure_psi(dict(selected_tire or {}))
+    source_front = source_row.get("front_pressure_psi")
+    source_rear = source_row.get("rear_pressure_psi")
+    if tire_change.source is TireSource.TIRE_DB and db_reference is not None:
+        return db_reference, db_reference, ReferencePressureProvenance.SOURCE
+    if source_front is not None and source_rear is not None:
+        return float(source_front), float(source_rear), ReferencePressureProvenance.SOURCE
+    if db_reference is not None:
+        return db_reference, db_reference, ReferencePressureProvenance.SOURCE
+    return None, None, ReferencePressureProvenance.SOURCE
+
+
+def _pressure_proposal_type(
+    tire_change: TireQuickChange,
+    selected_tire: Mapping[str, Any] | None,
+    pressure_provenance: ReferencePressureProvenance,
+) -> str:
+    family = str(dict(selected_tire or {}).get("standard_family") or "").strip().upper()
+    # Canonical DB lookup dispatches SAE to its richer load/pressure model
+    # and ISO to the approved reference-point pressure estimate. A current
+    # tire without either characterization uses the canonical pressure-only
+    # TIRE_TARGET_RRC path with target intentionally blank.
+    if family == "SAE":
+        return "TIRE_DB_LOOKUP" if tire_change.source is TireSource.TIRE_DB else "INHERIT"
+    if (
+        tire_change.source is TireSource.TIRE_DB
+        and family == "ISO"
+        and pressure_provenance is not ReferencePressureProvenance.USER_PROVIDED
+    ):
+        return "TIRE_DB_LOOKUP"
+    return "TIRE_TARGET_RRC"
+
+
+def _resolve_tire(
+    source_row: Mapping[str, Any],
+    mass_resolved_row: Mapping[str, Any],
+    tire_change: TireQuickChange | None,
+) -> tuple[
+    dict[str, Any],
+    DomainReadiness,
+    list[str],
+    dict[str, Any] | None,
+    ReferencePressureProvenance | None,
+]:
+    if tire_change is None:
+        return dict(mass_resolved_row), DomainReadiness.NOT_REQUESTED, [], None, None
+
+    selected_tire: dict[str, Any] | None
+    if tire_change.source is TireSource.TIRE_DB:
+        try:
+            selected_tire = dict(get_tire_by_id(int(tire_change.tire_db_id)) or {}) or None
+        except Exception:
+            selected_tire = None
+        if selected_tire is None:
+            return (
+                dict(mass_resolved_row),
+                DomainReadiness.MISSING,
+                [f"No Tire DB row found for tire_db_id={tire_change.tire_db_id}."],
+                None,
+                None,
+            )
+    else:
+        selected_tire = _source_tire_record(source_row)
+
+    base_inputs: dict[str, Any] = {}
+    if selected_tire is not None:
+        base_inputs["tire_snapshot"] = dict(selected_tire)
+    if tire_change.source is TireSource.TIRE_DB:
+        base_inputs["tire_db_id"] = tire_change.tire_db_id
+        if selected_tire.get("tire_code") or selected_tire.get("code"):
+            base_inputs["tire_code"] = selected_tire.get("tire_code") or selected_tire.get("code")
+
+    mode = tire_change.transform_mode
+    pressure_provenance: ReferencePressureProvenance | None = None
+    outcome_base_row = mass_resolved_row
+
+    if tire_change.source is TireSource.TIRE_DB:
+        source_outcome = _canonical_tire_call(
+            source_row, mass_resolved_row, "TIRE_DB_LOOKUP", base_inputs
+        )
+        source_status = _tire_readiness(source_outcome)
+        if source_status is not DomainReadiness.READY:
+            return (
+                dict(mass_resolved_row),
+                source_status,
+                _tire_issue_messages(source_outcome),
+                dict(source_outcome.get("resolved_snapshot") or {}),
+                None,
+            )
+        selected_row = _apply_tire_outcome(mass_resolved_row, source_outcome)
+        if mode is TireTransformMode.NONE:
+            return (
+                selected_row,
+                DomainReadiness.READY,
+                _tire_issue_messages(source_outcome),
+                dict(source_outcome.get("resolved_snapshot") or {}),
+                None,
+            )
+        if mode is TireTransformMode.IMPROVEMENT_PCT:
+            improvement_outcome = _canonical_tire_call(
+                selected_row,
+                selected_row,
+                "TIRE_IMPROVEMENT_PCT",
+                {"tire_improvement_pct": tire_change.improvement_pct},
+            )
+            final_status = _tire_readiness(improvement_outcome)
+            return (
+                _apply_tire_outcome(selected_row, improvement_outcome),
+                final_status,
+                _tire_issue_messages(source_outcome) + _tire_issue_messages(improvement_outcome),
+                dict(improvement_outcome.get("resolved_snapshot") or {}),
+                None,
+            )
+
+    if mode is TireTransformMode.NONE:
+        outcome = _canonical_tire_call(source_row, mass_resolved_row, "INHERIT", {})
+    elif mode is TireTransformMode.TARGET_RRC:
+        outcome = _canonical_tire_call(
+            source_row,
+            mass_resolved_row,
+            "TIRE_TARGET_RRC",
+            {"target_rrc_N_per_kN": tire_change.target_rrc_n_per_kn},
+        )
+    elif mode is TireTransformMode.RRC_DELTA:
+        reference_outcome = _canonical_tire_call(source_row, mass_resolved_row, "INHERIT", {})
+        reference_rrc = reference_outcome.get("resolved_rrc_N_per_kN")
+        if reference_rrc is None:
+            return (
+                dict(mass_resolved_row),
+                DomainReadiness.MISSING,
+                _tire_issue_messages(reference_outcome)
+                + ["Current Tire RRC is required for an RRC Delta; no value was assumed."],
+                dict(reference_outcome.get("resolved_snapshot") or {}),
+                None,
+            )
+        outcome = _canonical_tire_call(
+            source_row,
+            mass_resolved_row,
+            "TIRE_TARGET_RRC",
+            {
+                "target_rrc_N_per_kN": float(reference_rrc)
+                + float(tire_change.rrc_delta_n_per_kn)
+            },
+        )
+    elif mode is TireTransformMode.IMPROVEMENT_PCT:
+        outcome = _canonical_tire_call(
+            source_row,
+            mass_resolved_row,
+            "TIRE_IMPROVEMENT_PCT",
+            {"tire_improvement_pct": tire_change.improvement_pct},
+        )
+    elif mode is TireTransformMode.PRESSURE_DELTA:
+        reference_front, reference_rear, pressure_provenance = _pressure_reference_pair(
+            source_row, selected_tire, tire_change
+        )
+        if reference_front is None or reference_rear is None:
+            return (
+                dict(mass_resolved_row),
+                DomainReadiness.MISSING,
+                [
+                    "Pressure Delta requires reference front/rear pressure from the source/Tire DB "
+                    "or an explicit USER_PROVIDED reference_pressure_psi."
+                ],
+                None,
+                pressure_provenance,
+            )
+        pressure_change = tire_change.pressure_delta
+        assert pressure_change is not None
+        rear_delta = (
+            pressure_change.front_delta_psi
+            if pressure_change.rear_delta_psi is None
+            else pressure_change.rear_delta_psi
+        )
+        pressure_inputs = dict(base_inputs)
+        pressure_inputs.update(
+            {
+                "front_pressure_psi": float(reference_front) + pressure_change.front_delta_psi,
+                "rear_pressure_psi": float(reference_rear) + rear_delta,
+            }
+        )
+        pressure_source = dict(source_row)
+        pressure_source["front_pressure_psi"] = reference_front
+        pressure_source["rear_pressure_psi"] = reference_rear
+        pressure_proposal_type = _pressure_proposal_type(
+            tire_change, selected_tire, pressure_provenance
+        )
+        pressure_current = mass_resolved_row
+        if tire_change.source is TireSource.TIRE_DB and pressure_proposal_type == "TIRE_TARGET_RRC":
+            # Selection was stage one; the canonical pressure-only path now
+            # treats that resolved DB tire as its source. This is required
+            # for CUSTOM/reference-point tires and for an explicit manual
+            # reference that must not be replaced by the DB value.
+            pressure_source = dict(selected_row)
+            pressure_source["front_pressure_psi"] = reference_front
+            pressure_source["rear_pressure_psi"] = reference_rear
+            pressure_current = dict(selected_row)
+            outcome_base_row = selected_row
+            pressure_inputs.pop("tire_db_id", None)
+            pressure_inputs.pop("tire_snapshot", None)
+        outcome = _canonical_tire_call(
+            pressure_source,
+            pressure_current,
+            pressure_proposal_type,
+            pressure_inputs,
+        )
+    else:  # pragma: no cover - contract validation makes this unreachable
+        raise ValueError(f"Unsupported Tire transform mode: {mode!r}")
+
+    status = _tire_readiness(outcome)
+    return (
+        _apply_tire_outcome(outcome_base_row, outcome),
+        status,
+        _tire_issue_messages(outcome),
+        dict(outcome.get("resolved_snapshot") or {}),
+        pressure_provenance,
+    )
 
 
 def _resolve_aero(
@@ -230,10 +584,12 @@ def _resolve_aero(
 def _build_synthetic_row(
     source_row: Mapping[str, Any],
     mass_updates: Mapping[str, Any],
+    tire_updates: Mapping[str, Any],
     aero_updates: Mapping[str, Any],
 ) -> dict[str, Any]:
     synthetic = dict(source_row)
     synthetic.update(mass_updates)
+    synthetic.update(tire_updates)
     synthetic.update(aero_updates)
     return synthetic
 
@@ -247,7 +603,7 @@ def _roadload_coefficients(boundary: RoadloadBoundary) -> RoadloadCoefficients |
 def resolve_quick_vehicle_scenario(
     quick_scenario: QuickScenario, *, source_vde_row: Mapping[str, Any] | None = None
 ) -> QuickVehicleResolution:
-    """Resolve a QuickScenario's Vehicle Quick layer (Mass + Aero).
+    """Resolve a QuickScenario's Vehicle Quick layer (Mass + Tire + Aero).
 
     Mirrors the existing `build_vde_comparison_item(vde_id, vde_row=None)`
     optional-row pattern: pass an already-fetched `source_vde_row` for
@@ -266,21 +622,21 @@ def resolve_quick_vehicle_scenario(
     overrides: VehicleQuickOverrides = quick_scenario.vehicle_overrides
 
     mass_updates, mass_status, mass_issues = _resolve_mass(source_row, overrides.mass_change)
+    mass_resolved_row = dict(source_row)
+    mass_resolved_row.update(mass_updates)
+    (
+        tire_resolved_row,
+        tire_status,
+        tire_issues,
+        tire_state,
+        pressure_provenance,
+    ) = _resolve_tire(source_row, mass_resolved_row, overrides.tire_change)
     aero_updates, aero_status, aero_issues = _resolve_aero(
-        source_row,
+        tire_resolved_row,
         overrides.cda_change,
         overrides.aero_reference_cda_m2,
         overrides.aero_reference_cda_provenance,
     )
-
-    tire_status = DomainReadiness.NOT_REQUESTED
-    tire_issues: list[str] = []
-    if overrides.tire_change is not None:
-        # Sec 18: no silent partial override -- Tire is out of scope for
-        # 10B, so a requested Tire change blocks the whole scenario rather
-        # than being silently ignored.
-        tire_status = DomainReadiness.MISSING
-        tire_issues = ["Tire Quick resolution is not implemented yet (deferred to a later package)."]
 
     readiness = QuickVehicleReadiness(mass=mass_status, aero=aero_status, tire=tire_status)
     issues = tuple(mass_issues + aero_issues + tire_issues)
@@ -292,7 +648,12 @@ def resolve_quick_vehicle_scenario(
             issues=issues,
         )
 
-    synthetic_row = _build_synthetic_row(source_row, mass_updates, aero_updates)
+    tire_updates = {
+        key: value
+        for key, value in tire_resolved_row.items()
+        if key not in source_row or source_row.get(key) != value
+    }
+    synthetic_row = _build_synthetic_row(source_row, mass_updates, tire_updates, aero_updates)
 
     boundaries = resolve_roadload_boundaries(synthetic_row)
     cycle_results = resolve_cycle_vde_results(synthetic_row)
@@ -316,6 +677,29 @@ def resolve_quick_vehicle_scenario(
         resolved_vde_calculation_mass_kg=synthetic_row.get("test_mass_kg"),
         resolved_vde_mass_basis=synthetic_row.get("vde_mass_basis"),
         resolved_cda_m2=synthetic_row.get("cda_m2"),
+        resolved_tire_db_id=synthetic_row.get("tire_db_id"),
+        resolved_tire_code=synthetic_row.get("tire_code"),
+        resolved_rrc_n_per_kn=synthetic_row.get("rrc_N_per_kN"),
+        reference_rrc_n_per_kn=(tire_state or {}).get("tire_source_rrc_N_per_kN"),
+        resolved_front_pressure_psi=synthetic_row.get("front_pressure_psi"),
+        resolved_rear_pressure_psi=synthetic_row.get("rear_pressure_psi"),
+        reference_front_pressure_psi=(tire_state or {}).get(
+            "tire_reference_front_pressure_psi"
+        ),
+        reference_rear_pressure_psi=(tire_state or {}).get(
+            "tire_reference_rear_pressure_psi"
+        ),
+        reference_pressure_provenance=(
+            None if pressure_provenance is None else pressure_provenance.value
+        ),
+        resolved_tire_a_n=synthetic_row.get("tire_A_final"),
+        resolved_tire_b_n_per_kph=synthetic_row.get("tire_B_final"),
+        resolved_tire_c_n_per_kph2=synthetic_row.get("tire_C_final"),
+        tire_calculation_source=synthetic_row.get("tire_adjustment_method")
+        or synthetic_row.get("tire_calc_source"),
+        tire_abc_method=synthetic_row.get("tire_abc_method"),
+        tire_load_mass_basis=synthetic_row.get("tire_load_mass_basis"),
+        tire_load_mass_used_kg=synthetic_row.get("tire_load_mass_used_kg"),
         abc_total=_roadload_coefficients(boundaries["total"]),
         abc_net=_roadload_coefficients(boundaries["net"]),
         vde_total_mj_per_km=cycle_results["total"].aggregate,

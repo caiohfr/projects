@@ -341,15 +341,16 @@ class MassAndAeroCombinedTests(unittest.TestCase):
         self.assertIsNone(result.vde_total_mj_per_km)
 
 
-class TireRequestedButUnimplementedTests(unittest.TestCase):
-    def test_requesting_tire_change_blocks_the_scenario(self):
+class TireNeutralResolutionTests(unittest.TestCase):
+    def test_requesting_current_tire_none_is_ready(self):
         row = _epa_row()
         overrides = VehicleQuickOverrides(
             tire_change=TireQuickChange(source=TireSource.CURRENT)
         )
         result = resolve_quick_vehicle_scenario(_scenario(overrides), source_vde_row=row)
-        self.assertFalse(result.is_ready)
-        self.assertEqual(result.readiness.tire, DomainReadiness.MISSING)
+        self.assertTrue(result.is_ready)
+        self.assertEqual(result.readiness.tire, DomainReadiness.READY)
+        self.assertEqual(result.resolved_rrc_n_per_kn, row["rrc_N_per_kN"])
 
 
 class ReuseProofTests(unittest.TestCase):

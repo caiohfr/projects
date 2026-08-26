@@ -1,21 +1,22 @@
 """
 Canonical, Streamlit-free contracts and resolver for Interactive Quick
-Scenarios (Sprint 10A contracts + Sprint 10B Mass/Aero resolution).
+Scenarios (Sprint 10A contracts + Sprint 10B/10C Vehicle resolution).
 
     Existing resolved Comparison scenario (source_identity)
         -> QuickScenario (Vehicle overrides + Final PSE assumption)
-        -> resolve_quick_vehicle_scenario() (Mass + Aero; Tire deferred)
+        -> resolve_quick_vehicle_scenario() (Mass -> Tire -> Aero)
         -> QuickVehicleResolution (resolved state + VehicleDemandRequest/Result)
         -> Temporary Comparison Result (never persisted)
 
 `contracts.py`/`serialization.py` (10A) define data shape only and stay
-Streamlit- and vehicle_demand-free. `resolution.py`/`resolver.py` (10B) are
+Streamlit- and vehicle_demand-free. `resolution.py`/`resolver.py` (10B/10C) are
 where this package first depends on the frozen Sprint 9 Vehicle Demand Core
 (src/vde_core/vehicle_demand/) -- expected, since consuming that frozen core
 is the entire point of resolving a QuickScenario. No file in this package
 imports Streamlit or any Comparison UI module. See
 docs/sprints/SPRINT_10A_QUICK_SCENARIO_CONTRACT_AUDIT.md and
-docs/sprints/SPRINT_10B_QUICK_MASS_AERO_RESOLUTION.md for the reuse audits
+docs/sprints/SPRINT_10B_QUICK_MASS_AERO_RESOLUTION.md plus
+docs/sprints/SPRINT_10C_QUICK_TIRE_RESOLUTION.md for the reuse audits
 this package was designed against.
 """
 

@@ -107,13 +107,14 @@ class ScalarChange:
 class DomainReadiness(_TextEnum):
     """Per-domain readiness for a requested Vehicle Quick transformation
     (Sec 18). NOT_REQUESTED means the user did not ask for a change in that
-    domain -- it never blocks scenario readiness. READY/MISSING apply only
-    to domains that were actually requested.
+    domain -- it never blocks scenario readiness. READY/MISSING/INVALID
+    apply only to domains that were actually requested.
     """
 
     NOT_REQUESTED = "NOT_REQUESTED"
     READY = "READY"
     MISSING = "MISSING"
+    INVALID = "INVALID"
 
 
 @dataclass(frozen=True)
@@ -246,7 +247,7 @@ class TireQuickChange:
         if self.transform_mode not in allowed:
             raise ValueError(
                 f"TireTransformMode.{self.transform_mode.value} is not supported for "
-                f"TireSource.{self.source.value} in Sprint 10A (Sec 6-7 tire "
+                f"TireSource.{self.source.value} (Sec 6-7 tire "
                 "transformation limit)."
             )
         if self.source is TireSource.TIRE_DB and self.tire_db_id is None:
@@ -259,6 +260,27 @@ class TireQuickChange:
             raise ValueError("TireQuickChange.improvement_pct is required for IMPROVEMENT_PCT.")
         if self.transform_mode is TireTransformMode.PRESSURE_DELTA and self.pressure_delta is None:
             raise ValueError("TireQuickChange.pressure_delta is required for PRESSURE_DELTA.")
+
+        supplied_transform_fields = {
+            TireTransformMode.TARGET_RRC: self.target_rrc_n_per_kn,
+            TireTransformMode.RRC_DELTA: self.rrc_delta_n_per_kn,
+            TireTransformMode.IMPROVEMENT_PCT: self.improvement_pct,
+            TireTransformMode.PRESSURE_DELTA: self.pressure_delta,
+        }
+        extraneous = [
+            mode.value
+            for mode, value in supplied_transform_fields.items()
+            if value is not None and mode is not self.transform_mode
+        ]
+        if extraneous:
+            raise ValueError(
+                "TireQuickChange permits exactly one transformation after source selection; "
+                f"{self.transform_mode.value} cannot be stacked with {', '.join(extraneous)}."
+            )
+        if self.source is TireSource.CURRENT and self.tire_db_id is not None:
+            raise ValueError(
+                "TireQuickChange.tire_db_id is only valid when source is TIRE_DB."
+            )
 
 
 @dataclass(frozen=True)
@@ -300,9 +322,8 @@ class MassQuickChange:
 class VehicleQuickOverrides:
     """Sec 4-8: the "Vehicle Quick" layer -- Mass, CdA (Aero), and Tire
     overrides requested against one source Comparison scenario. Resolution
-    order (conceptually Mass -> Tire -> Aero, Sec 8) is owned by whichever
-    canonical resolver a later package wires these fields into; this
-    contract only carries the requested inputs.
+    order is Mass -> Tire -> Aero (Sec 8), implemented by resolver.py; this
+    contract only carries and validates the requested inputs.
 
     `aero_reference_cda_m2`/`aero_reference_cda_provenance` mirror
     `TirePressureDelta`'s reference-value shape: the canonical Aero resolver

@@ -1,6 +1,6 @@
 # src/vde_core/quick_scenario/resolution.py
 # -----------------------------------------------------------------------------
-# Sprint 10B - the Quick Vehicle Scenario *output* contract.
+# Sprint 10C - the Quick Vehicle Scenario *output* contract.
 #
 # Unlike contracts.py (Sprint 10A, deliberately Streamlit- and
 # vehicle_demand-free), this module depends on the frozen Sprint 9 Vehicle
@@ -28,7 +28,7 @@ from .contracts import QuickVehicleReadiness
 @dataclass(frozen=True)
 class QuickVehicleResolution:
     """The resolved physical outcome of one QuickScenario's Vehicle Quick
-    layer (Mass + Aero, Sprint 10B; Tire deferred to a later package).
+    layer (Mass + Tire + Aero, Sprint 10C).
 
     `vehicle_demand_request`/`vehicle_demand_result` and every resolved
     physical field stay None whenever `not readiness.all_ready` -- a
@@ -50,6 +50,23 @@ class QuickVehicleResolution:
     resolved_vde_mass_basis: str | None = None
 
     resolved_cda_m2: float | None = None
+
+    resolved_tire_db_id: int | None = None
+    resolved_tire_code: str | None = None
+    resolved_rrc_n_per_kn: float | None = None
+    reference_rrc_n_per_kn: float | None = None
+    resolved_front_pressure_psi: float | None = None
+    resolved_rear_pressure_psi: float | None = None
+    reference_front_pressure_psi: float | None = None
+    reference_rear_pressure_psi: float | None = None
+    reference_pressure_provenance: str | None = None
+    resolved_tire_a_n: float | None = None
+    resolved_tire_b_n_per_kph: float | None = None
+    resolved_tire_c_n_per_kph2: float | None = None
+    tire_calculation_source: str | None = None
+    tire_abc_method: str | None = None
+    tire_load_mass_basis: str | None = None
+    tire_load_mass_used_kg: float | None = None
 
     abc_total: RoadloadCoefficients | None = None
     abc_net: RoadloadCoefficients | None = None

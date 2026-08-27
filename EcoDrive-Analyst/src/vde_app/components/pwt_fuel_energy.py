@@ -27,6 +27,7 @@ from src.vde_core.pwt_fuel_energy_service import (
     compare_saved_scenario_revision,
     default_electrification_from_vde,
     delete_fuelcons_row,
+    derive_reference_pse as _derive_reference_pse,
     fetch_distinct_transmission_models,
     fetch_filter_values,
     fetch_fuelcons_all,
@@ -34,6 +35,9 @@ from src.vde_core.pwt_fuel_energy_service import (
     fetch_fuelcons_by_vde,
     fetch_vde_row,
     fetch_vde_rows_by_ids,
+    list_benchmark_fuelcons_candidates,
+    load_json_blob as _load_json_blob,
+    resolve_reference_fuel_type as _fuel_type_from_reference_row,
     resolve_vde_energy_values,
     resolve_vde_source_revision,
     summarize_saved_scenario_revision_states,
@@ -662,11 +666,7 @@ def _reference_candidates_for_type(vde_id: int, source_type: str) -> pd.DataFram
         df["vde_id"] = int(vde_id)
         return df
     if source_type == "Another fuelcons_db line":
-        df = fetch_fuelcons_all({})
-        if df is None or df.empty:
-            return pd.DataFrame()
-        df = df.loc[df["vde_id"] != int(vde_id)].copy()
-        return df
+        return pd.DataFrame(list_benchmark_fuelcons_candidates(vde_id))
     if source_type == "Saved powertrain scenario":
         df = fetch_fuelcons_all({})
         if df is None or df.empty:
@@ -679,44 +679,11 @@ def _reference_candidates_for_type(vde_id: int, source_type: str) -> pd.DataFram
     return pd.DataFrame()
 
 
-def _fuel_type_from_reference_row(row: dict[str, Any]) -> str | None:
-    assumptions = _load_json_blob(row.get("assumptions_json"))
-    provenance = _load_json_blob(row.get("provenance_json"))
-    fuel_type = assumptions.get("fuel_type")
-    if fuel_type in (None, ""):
-        fuel_type = dict(provenance.get("scenario_feature_values") or {}).get("fuel_type")
-    text = str(fuel_type).strip() if fuel_type not in (None, "") else None
-    return text or None
+# _fuel_type_from_reference_row is imported from src.vde_core.pwt_fuel_energy_service
+# (as resolve_reference_fuel_type) above (Sprint 10E ownership cleanup).
 
-
-def _derive_reference_pse(reference_row: dict[str, Any]) -> dict[str, Any]:
-    source_vde_id = reference_row.get("vde_id")
-    if source_vde_id in (None, ""):
-        return {"value": None, "status": "unavailable", "basis": None}
-    try:
-        source_vde = fetch_vde_row(int(source_vde_id))
-    except Exception:
-        return {"value": None, "status": "unavailable", "basis": None}
-    energy_values = resolve_vde_energy_values(source_vde)
-    energy_basis = str(reference_row.get("energy_basis") or "VDE_TOTAL").upper()
-    demand_value = energy_values["vde_net_mj_per_km"] if energy_basis == "VDE_NET" else energy_values["vde_total_mj_per_km"]
-    if demand_value is None:
-        return {"value": None, "status": "missing_demand", "basis": energy_basis}
-
-    fuel_l_100km = to_float(reference_row.get("fuel_l_per_100km"))
-    if fuel_l_100km is not None:
-        fuel_type = _fuel_type_from_reference_row(reference_row) or "Gasoline"
-        lhv = float(LHV_MJ_PER_L.get(fuel_type, LHV_MJ_PER_L["Gasoline"]))
-        consumed = (fuel_l_100km / 100.0) * lhv
-        if consumed > 0:
-            return {"value": float(demand_value) / consumed, "status": "available", "basis": energy_basis}
-
-    energy_wh_km = to_float(reference_row.get("energy_Wh_per_km"))
-    if energy_wh_km is not None:
-        consumed = float(energy_wh_km) / MJ_TO_Wh
-        if consumed > 0:
-            return {"value": float(demand_value) / consumed, "status": "available", "basis": energy_basis}
-    return {"value": None, "status": "missing_observed_result", "basis": energy_basis}
+# _derive_reference_pse is imported from src.vde_core.pwt_fuel_energy_service above
+# (Sprint 10E ownership cleanup).
 
 
 def _reference_metadata_from_row(reference_row: dict[str, Any]) -> dict[str, Any]:
@@ -4558,16 +4525,8 @@ def _render_phase_outputs_table(phase_outputs: Dict[str, Any]) -> None:
     st.dataframe(phase_df, use_container_width=True, hide_index=True)
 
 
-def _load_json_blob(raw_value: Any) -> dict[str, Any]:
-    if raw_value in (None, ""):
-        return {}
-    if isinstance(raw_value, dict):
-        return dict(raw_value)
-    try:
-        parsed = json.loads(str(raw_value))
-        return parsed if isinstance(parsed, dict) else {}
-    except Exception:
-        return {}
+# _load_json_blob is imported from src.vde_core.pwt_fuel_energy_service above
+# (Sprint 10E ownership cleanup).
 
 
 def _saved_scenario_label(row: pd.Series | dict) -> str:

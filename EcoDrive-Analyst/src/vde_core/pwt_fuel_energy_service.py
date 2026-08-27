@@ -300,8 +300,10 @@ def fetch_vde_rows_by_ids(vde_ids) -> pd.DataFrame:
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
-def _load_json_blob(raw_value: Any) -> dict[str, Any]:
-    """Verbatim extraction of `pwt_fuel_energy._load_json_blob`."""
+def load_json_blob(raw_value: Any) -> dict[str, Any]:
+    """Verbatim extraction of `pwt_fuel_energy._load_json_blob`, made public
+    here since it is now imported back into that module (Sprint 10E
+    ownership cleanup)."""
 
     if raw_value in (None, ""):
         return {}
@@ -320,8 +322,8 @@ def resolve_reference_fuel_type(row: dict[str, Any]) -> str | None:
     also needs it for the active/source row, not just for donor rows.
     """
 
-    assumptions = _load_json_blob(row.get("assumptions_json"))
-    provenance = _load_json_blob(row.get("provenance_json"))
+    assumptions = load_json_blob(row.get("assumptions_json"))
+    provenance = load_json_blob(row.get("provenance_json"))
     fuel_type = assumptions.get("fuel_type")
     if fuel_type in (None, ""):
         fuel_type = dict(provenance.get("scenario_feature_values") or {}).get("fuel_type")

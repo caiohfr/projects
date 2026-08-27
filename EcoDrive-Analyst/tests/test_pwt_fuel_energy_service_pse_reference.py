@@ -11,10 +11,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from src.vde_app.components import pwt_fuel_energy
 from src.vde_core import db as db_module
 from src.vde_core.pwt_fuel_energy_service import (
     derive_reference_pse,
     list_benchmark_fuelcons_candidates,
+    load_json_blob,
     resolve_reference_fuel_type,
 )
 from src.vde_core.qa_mock_data import seed_qa_database, seed_qa_fuelcons_mock_rows
@@ -105,6 +107,47 @@ class DeriveReferencePseWithQaDatabaseTests(unittest.TestCase):
         candidates = list_benchmark_fuelcons_candidates(900001)
         candidate_vde_ids = {candidate.get("vde_id") for candidate in candidates}
         self.assertTrue(candidate_vde_ids)
+
+
+class PowertrainAndQuickScenarioShareBenchmarkPseCoreTests(unittest.TestCase):
+    """Sprint 10E pre-flight: pwt_fuel_energy.py's own benchmark-PSE helpers
+    (_derive_reference_pse, _fuel_type_from_reference_row, _load_json_blob,
+    and the "Another fuelcons_db line" branch of _reference_candidates_for_type)
+    must delegate to the same pwt_fuel_energy_service functions that Quick
+    Scenario's Efficiency resolver uses -- these tests prove that ownership
+    directly (identity + numeric agreement), never by re-deriving the
+    expected value with a third implementation.
+    """
+
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "pse_reference_shared_ownership_qa.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        seed_qa_fuelcons_mock_rows(self.db_path)
+        db_module.configure_db_path(self.db_path)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def test_pwt_fuel_energy_module_holds_the_canonical_functions_not_copies(self):
+        self.assertIs(pwt_fuel_energy._derive_reference_pse, derive_reference_pse)
+        self.assertIs(pwt_fuel_energy._fuel_type_from_reference_row, resolve_reference_fuel_type)
+        self.assertIs(pwt_fuel_energy._load_json_blob, load_json_blob)
+
+    def test_reference_candidates_for_type_another_fuelcons_line_matches_canonical_core(self):
+        ui_result = pwt_fuel_energy._reference_candidates_for_type(900001, "Another fuelcons_db line")
+        canonical_result = list_benchmark_fuelcons_candidates(900001)
+        self.assertTrue(canonical_result)
+        self.assertEqual(sorted(ui_result["id"].tolist()), sorted(row["id"] for row in canonical_result))
+
+    def test_derive_reference_pse_agrees_between_ui_and_core(self):
+        reference_row = {"vde_id": 900001, "fuel_l_per_100km": 6.5, "energy_basis": "VDE_TOTAL"}
+        ui_result = pwt_fuel_energy._derive_reference_pse(reference_row)
+        canonical_result = derive_reference_pse(reference_row)
+        self.assertEqual(ui_result, canonical_result)
 
 
 if __name__ == "__main__":

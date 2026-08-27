@@ -460,13 +460,21 @@ same 2 known pre-existing failures, zero new regressions.
   (Decision 1) is preserved, documented, and regression-tested, not fixed
   -- fixing it, if ever desired, is a Powertrain Scenario concern, not a
   Quick Scenario one.
-- `pwt_fuel_energy.py`'s benchmark-PSE flow (`_derive_reference_pse`,
+- ~~`pwt_fuel_energy.py`'s benchmark-PSE flow (`_derive_reference_pse`,
   `_reference_candidates_for_type`) still duplicates (not reuses) the
   Decision-2 extractions in `pwt_fuel_energy_service.py`
   (`derive_reference_pse`, `list_benchmark_fuelcons_candidates`) -- only
   the Technology Delta duplication was in scope for this follow-up
   inspection; the benchmark-PSE duplication remains a known, smaller,
-  not-yet-addressed instance of the same pattern.
+  not-yet-addressed instance of the same pattern.~~ **Resolved in the
+  Sprint 10E pre-flight** (Section 3): `pwt_fuel_energy.py` now imports
+  `derive_reference_pse`, `list_benchmark_fuelcons_candidates`,
+  `load_json_blob`, and `resolve_reference_fuel_type` directly from
+  `pwt_fuel_energy_service.py` instead of holding local copies; the two
+  genuinely UI-specific `_reference_candidates_for_type` branches ("Same
+  vehicle fuelcons_db line", "Saved powertrain scenario") were left
+  untouched. See `docs/sprints/SPRINT_10E_QUICK_SCENARIO_UI_COMPARISON.md`
+  and commit `refactor(powertrain): centralize benchmark PSE references`.
 
 ## Freeze / handoff statement
 

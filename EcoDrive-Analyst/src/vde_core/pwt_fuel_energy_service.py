@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, Optional
 
 import pandas as pd
 
 from src.vde_core.fuel_estimation import FuelEstimateRequest, run_fuel_estimation
+from src.vde_core.fuel_energy import LHV_MJ_PER_L, MJ_TO_Wh
 from src.vde_core.repositories import (
     delete_fuelcons_by_id,
     fetch_fuelcons_allowed_columns,
@@ -296,3 +298,99 @@ def fetch_scatter_join_rows() -> list[dict]:
 def fetch_vde_rows_by_ids(vde_ids) -> pd.DataFrame:
     rows = fetch_vde_by_ids(vde_ids)
     return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def load_json_blob(raw_value: Any) -> dict[str, Any]:
+    """Verbatim extraction of `pwt_fuel_energy._load_json_blob`, made public
+    here since it is now imported back into that module (Sprint 10E
+    ownership cleanup)."""
+
+    if raw_value in (None, ""):
+        return {}
+    if isinstance(raw_value, dict):
+        return dict(raw_value)
+    try:
+        parsed = json.loads(str(raw_value))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def resolve_reference_fuel_type(row: dict[str, Any]) -> str | None:
+    """Verbatim extraction of `pwt_fuel_energy._fuel_type_from_reference_row`,
+    renamed and made public here since Sprint 10D's Efficiency Quick resolver
+    also needs it for the active/source row, not just for donor rows.
+    """
+
+    assumptions = load_json_blob(row.get("assumptions_json"))
+    provenance = load_json_blob(row.get("provenance_json"))
+    fuel_type = assumptions.get("fuel_type")
+    if fuel_type in (None, ""):
+        fuel_type = dict(provenance.get("scenario_feature_values") or {}).get("fuel_type")
+    text = str(fuel_type).strip() if fuel_type not in (None, "") else None
+    return text or None
+
+
+def derive_reference_pse(reference_row: dict[str, Any]) -> dict[str, Any]:
+    """Sprint 10D: verbatim extraction of `pwt_fuel_energy._derive_reference_pse`.
+
+    Computes a `reference_row`'s OWN cycle-effective PSE from its own linked
+    VDE demand and its own recorded fuel/energy consumption -- never the
+    active Quick vehicle's demand. Used both for "Current PSE" (pointed at
+    the Quick Scenario's own source fuelcons row) and "Benchmark PSE"
+    (pointed at a donor fuelcons row); both are the same computation, just
+    applied to different rows, matching Sec 9's "do not implement a second
+    benchmark-PSE formula" instruction and avoiding a third formula for
+    "current" PSE as well.
+
+    Returns `{"value": float | None, "status": str, "basis": str | None}`,
+    `status` one of `"unavailable" | "missing_demand" | "available" |
+    "missing_observed_result"`.
+    """
+
+    source_vde_id = reference_row.get("vde_id")
+    if source_vde_id in (None, ""):
+        return {"value": None, "status": "unavailable", "basis": None}
+    try:
+        source_vde = fetch_vde_row(int(source_vde_id))
+    except Exception:
+        return {"value": None, "status": "unavailable", "basis": None}
+    energy_values = resolve_vde_energy_values(source_vde)
+    energy_basis = str(reference_row.get("energy_basis") or "VDE_TOTAL").upper()
+    demand_value = (
+        energy_values["vde_net_mj_per_km"]
+        if energy_basis == "VDE_NET"
+        else energy_values["vde_total_mj_per_km"]
+    )
+    if demand_value is None:
+        return {"value": None, "status": "missing_demand", "basis": energy_basis}
+
+    fuel_l_100km = to_float(reference_row.get("fuel_l_per_100km"))
+    if fuel_l_100km is not None:
+        fuel_type = resolve_reference_fuel_type(reference_row) or "Gasoline"
+        lhv = float(LHV_MJ_PER_L.get(fuel_type, LHV_MJ_PER_L["Gasoline"]))
+        consumed = (fuel_l_100km / 100.0) * lhv
+        if consumed > 0:
+            return {"value": float(demand_value) / consumed, "status": "available", "basis": energy_basis}
+
+    energy_wh_km = to_float(reference_row.get("energy_Wh_per_km"))
+    if energy_wh_km is not None:
+        consumed = float(energy_wh_km) / MJ_TO_Wh
+        if consumed > 0:
+            return {"value": float(demand_value) / consumed, "status": "available", "basis": energy_basis}
+    return {"value": None, "status": "missing_observed_result", "basis": energy_basis}
+
+
+def list_benchmark_fuelcons_candidates(vde_id: int) -> list[dict[str, Any]]:
+    """Sprint 10D: Streamlit-free equivalent of
+    `pwt_fuel_energy._reference_candidates_for_type(vde_id, "Another
+    fuelcons_db line")` -- every `fuelcons_db` row NOT linked to the active
+    `vde_id`, i.e. every candidate donor for "what if my active vehicle had
+    this benchmark's PSE?" (Sec 9).
+    """
+
+    df = fetch_fuelcons_all({})
+    if df is None or df.empty:
+        return []
+    candidates = df.loc[df["vde_id"] != int(vde_id)].copy()
+    return candidates.to_dict("records")

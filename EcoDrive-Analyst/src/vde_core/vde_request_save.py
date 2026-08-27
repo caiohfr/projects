@@ -227,6 +227,24 @@ def _baseline_reference_snapshot(resolution_result: dict | None) -> dict:
     return snapshot
 
 
+def _persisted_vde_calculation_mass(mass_setup: dict, snapshot: dict):
+    """Return the canonical mass consumed by persisted VDE readers.
+
+    EPA mass resolution intentionally publishes the physical test mass and
+    the regulatory TWC separately.  ``vde_db.test_mass_kg`` is the legacy
+    column read by Comparison and Vehicle Demand, so it must receive the
+    latter whenever the resolver has supplied it.
+    """
+    canonical_mass = mass_setup.get("vde_calculation_mass_kg")
+    if not is_blank(canonical_mass):
+        return canonical_mass
+
+    resolved_test_mass = mass_setup.get("test_mass_kg")
+    if not is_blank(resolved_test_mass):
+        return resolved_test_mass
+    return snapshot.get("test_mass_kg")
+
+
 def _proposal_row_payload(
     resolution_result: dict | None,
     proposal_result: dict | None,
@@ -254,7 +272,7 @@ def _proposal_row_payload(
         "year": snapshot.get("year") or baseline_ref.get("year") or datetime.now(timezone.utc).year,
         "notes": note_text or final_name,
         "mass_kg": snapshot.get("mass_kg"),
-        "test_mass_kg": mass_setup.get("test_mass_kg") or snapshot.get("test_mass_kg"),
+        "test_mass_kg": _persisted_vde_calculation_mass(mass_setup, snapshot),
         "test_mass_low_kg": mass_setup.get("test_mass_low_kg") or snapshot.get("test_mass_low_kg"),
         "test_mass_high_kg": mass_setup.get("test_mass_high_kg") or snapshot.get("test_mass_high_kg"),
         "test_mass_basis": mass_setup.get("test_mass_basis") or snapshot.get("test_mass_basis"),

@@ -27,6 +27,7 @@ from src.vde_core.pwt_fuel_energy_service import (
     compare_saved_scenario_revision,
     default_electrification_from_vde,
     delete_fuelcons_row,
+    derive_reference_pse as _derive_reference_pse,
     fetch_distinct_transmission_models,
     fetch_filter_values,
     fetch_fuelcons_all,
@@ -34,12 +35,29 @@ from src.vde_core.pwt_fuel_energy_service import (
     fetch_fuelcons_by_vde,
     fetch_vde_row,
     fetch_vde_rows_by_ids,
+    list_benchmark_fuelcons_candidates,
+    load_json_blob as _load_json_blob,
+    resolve_reference_fuel_type as _fuel_type_from_reference_row,
     resolve_vde_energy_values,
     resolve_vde_source_revision,
     summarize_saved_scenario_revision_states,
     update_fuelcons_payload,
 )
 from src.vde_core.regression import fit_regression_y_vs_vde, load_regression_dataset, predict_current_consumption
+from src.vde_core.technology_delta import (
+    DELTA_CONFIDENCE_OPTIONS,
+    DELTA_EFFECT_BASIS_ADVANCED_OPTIONS,
+    DELTA_EFFECT_BASIS_OPTIONS,
+    DELTA_MATURITY_OPTIONS,
+    DELTA_SOURCE_TYPE_OPTIONS,
+    DELTA_SUBSYSTEM_OPTIONS,
+)
+from src.vde_core.technology_delta import apply_delta_stack_to_baseline as _canonical_apply_delta_stack_to_baseline
+from src.vde_core.technology_delta import delta_status_counts as _delta_status_counts
+from src.vde_core.technology_delta import maturity_rank as _maturity_rank
+from src.vde_core.technology_delta import normalize_delta_effect_basis as _normalize_delta_effect_basis
+from src.vde_core.technology_delta import normalize_technology_delta as _normalize_technology_delta
+from src.vde_core.technology_delta import proposal_confidence_label as _proposal_confidence_label
 from src.vde_core.vde_setup_service import load_baselines_df, to_float
 
 PWT_ESTIMATION_METHODS = [
@@ -118,58 +136,11 @@ POWERTRAIN_REFERENCE_SOURCE_HELP = {
     "Manual definition": "Starts a new scenario draft so you can continue with ML prediction, regression estimate, assume efficiency, or enter an observed/imported result.",
 }
 
-DELTA_SUBSYSTEM_OPTIONS = [
-    "engine",
-    "transmission",
-    "hybrid/ESS",
-    "electrical/alternator",
-    "auxiliary loads",
-    "calibration",
-    "thermal",
-    "fuel system",
-    "whole powertrain",
-]
-
-DELTA_SOURCE_TYPE_OPTIONS = [
-    "engineering_assumption",
-    "supplier_data",
-    "imported_map",
-    "simulation_result",
-    "map_analysis",
-    "test_data",
-    "manual",
-    "metadata_only",
-]
-
-DELTA_MATURITY_OPTIONS = [
-    "metadata_only",
-    "engineering_assumption",
-    "supplier_data",
-    "imported_map",
-    "simulation_ready",
-    "simulation_result",
-    "correlated_model",
-    "validated_against_test",
-]
-
-DELTA_EFFECT_BASIS_OPTIONS = [
-    "Fuel consumption percent delta",
-    "PSE percent delta",
-    "CO2 percent delta",
-    "Efficiency multiplier",
-    "Metadata-only / registered-only",
-]
-
-DELTA_EFFECT_BASIS_ADVANCED_OPTIONS = [
-    "PSE delta",
-    "PSE multiplier",
-    "fuel delta",
-    "CO2 delta",
-    "energy delta",
-    "map-based effect",
-]
-
-DELTA_CONFIDENCE_OPTIONS = ["unknown", "low", "medium", "high"]
+# DELTA_SUBSYSTEM_OPTIONS, DELTA_SOURCE_TYPE_OPTIONS, DELTA_MATURITY_OPTIONS,
+# DELTA_EFFECT_BASIS_OPTIONS, DELTA_EFFECT_BASIS_ADVANCED_OPTIONS, and
+# DELTA_CONFIDENCE_OPTIONS are imported from src.vde_core.technology_delta
+# above (Sprint 10D centralization) -- this is the same Technology Delta
+# vocabulary Quick Scenario's Efficiency layer uses, not a second schema.
 
 PWT_DRAFT_RESET_KEYS = [
     "pwt_scenario_name",
@@ -660,11 +631,8 @@ def _reference_type_help_text(source_type: str | None) -> str:
     return POWERTRAIN_REFERENCE_SOURCE_HELP.get(key, "")
 
 
-def _maturity_rank(level: str | None) -> int:
-    try:
-        return DELTA_MATURITY_OPTIONS.index(str(level or "").strip())
-    except ValueError:
-        return -1
+# _maturity_rank is imported from src.vde_core.technology_delta above
+# (Sprint 10D centralization).
 
 
 def _clean_dict(value: dict[str, Any]) -> dict[str, Any]:
@@ -698,11 +666,7 @@ def _reference_candidates_for_type(vde_id: int, source_type: str) -> pd.DataFram
         df["vde_id"] = int(vde_id)
         return df
     if source_type == "Another fuelcons_db line":
-        df = fetch_fuelcons_all({})
-        if df is None or df.empty:
-            return pd.DataFrame()
-        df = df.loc[df["vde_id"] != int(vde_id)].copy()
-        return df
+        return pd.DataFrame(list_benchmark_fuelcons_candidates(vde_id))
     if source_type == "Saved powertrain scenario":
         df = fetch_fuelcons_all({})
         if df is None or df.empty:
@@ -715,44 +679,11 @@ def _reference_candidates_for_type(vde_id: int, source_type: str) -> pd.DataFram
     return pd.DataFrame()
 
 
-def _fuel_type_from_reference_row(row: dict[str, Any]) -> str | None:
-    assumptions = _load_json_blob(row.get("assumptions_json"))
-    provenance = _load_json_blob(row.get("provenance_json"))
-    fuel_type = assumptions.get("fuel_type")
-    if fuel_type in (None, ""):
-        fuel_type = dict(provenance.get("scenario_feature_values") or {}).get("fuel_type")
-    text = str(fuel_type).strip() if fuel_type not in (None, "") else None
-    return text or None
+# _fuel_type_from_reference_row is imported from src.vde_core.pwt_fuel_energy_service
+# (as resolve_reference_fuel_type) above (Sprint 10E ownership cleanup).
 
-
-def _derive_reference_pse(reference_row: dict[str, Any]) -> dict[str, Any]:
-    source_vde_id = reference_row.get("vde_id")
-    if source_vde_id in (None, ""):
-        return {"value": None, "status": "unavailable", "basis": None}
-    try:
-        source_vde = fetch_vde_row(int(source_vde_id))
-    except Exception:
-        return {"value": None, "status": "unavailable", "basis": None}
-    energy_values = resolve_vde_energy_values(source_vde)
-    energy_basis = str(reference_row.get("energy_basis") or "VDE_TOTAL").upper()
-    demand_value = energy_values["vde_net_mj_per_km"] if energy_basis == "VDE_NET" else energy_values["vde_total_mj_per_km"]
-    if demand_value is None:
-        return {"value": None, "status": "missing_demand", "basis": energy_basis}
-
-    fuel_l_100km = to_float(reference_row.get("fuel_l_per_100km"))
-    if fuel_l_100km is not None:
-        fuel_type = _fuel_type_from_reference_row(reference_row) or "Gasoline"
-        lhv = float(LHV_MJ_PER_L.get(fuel_type, LHV_MJ_PER_L["Gasoline"]))
-        consumed = (fuel_l_100km / 100.0) * lhv
-        if consumed > 0:
-            return {"value": float(demand_value) / consumed, "status": "available", "basis": energy_basis}
-
-    energy_wh_km = to_float(reference_row.get("energy_Wh_per_km"))
-    if energy_wh_km is not None:
-        consumed = float(energy_wh_km) / MJ_TO_Wh
-        if consumed > 0:
-            return {"value": float(demand_value) / consumed, "status": "available", "basis": energy_basis}
-    return {"value": None, "status": "missing_observed_result", "basis": energy_basis}
+# _derive_reference_pse is imported from src.vde_core.pwt_fuel_energy_service above
+# (Sprint 10E ownership cleanup).
 
 
 def _reference_metadata_from_row(reference_row: dict[str, Any]) -> dict[str, Any]:
@@ -866,35 +797,14 @@ def _technology_deltas(*, include_form_preview: bool = False) -> list[dict[str, 
         preview_delta = _draft_delta_from_form()
         if preview_delta is not None:
             raw = raw + [preview_delta]
-    normalized: list[dict[str, Any]] = []
-    for index, item in enumerate(raw, start=1):
-        row = dict(item or {})
-        row.setdefault("id", index)
-        row.setdefault("name", f"Delta {index}")
-        row.setdefault("affected_subsystem", "whole powertrain")
-        row.setdefault("source_type", "manual")
-        row.setdefault("maturity_level", "engineering_assumption")
-        row.setdefault("effect_basis", "metadata only")
-        row.setdefault("confidence", "unknown")
-        row.setdefault("enabled", True)
-        row.setdefault("notes", "")
-        row.setdefault("reference_description", "")
-        effect_value = to_float(row.get("effect_value"))
-        row["effect_value"] = effect_value
-        effect_basis = _normalize_delta_effect_basis(row.get("effect_basis") or "metadata_only")
-        row["effect_basis"] = effect_basis
-        if not bool(row.get("enabled")):
-            row["quantitative_status"] = "disabled"
-        elif effect_basis in {"map_based_effect"}:
-            row["quantitative_status"] = "pending_model"
-        elif effect_basis in {"metadata_only"} or str(row.get("source_type") or "") == "metadata_only":
-            row["quantitative_status"] = "registered_only"
-        elif effect_value is None:
-            row["quantitative_status"] = "registered_only"
-        else:
-            row["quantitative_status"] = "applied"
-        normalized.append(row)
-    return normalized
+    # Sprint 10D centralization: per-item normalization (defaults + status
+    # derivation) delegates to the canonical, Streamlit-free
+    # src.vde_core.technology_delta.normalize_technology_delta -- the same
+    # function Quick Scenario's Efficiency layer uses. Session-state
+    # sourcing (raw, above) remains here since it's a UI concern.
+    return [
+        _normalize_technology_delta(item, index=index) for index, item in enumerate(raw, start=1)
+    ]
 
 
 def _reset_delta_form() -> None:
@@ -910,22 +820,8 @@ def _reset_delta_form() -> None:
     st.session_state["pwt_delta_reference"] = ""
 
 
-def _delta_status_counts(deltas: list[dict[str, Any]]) -> dict[str, int]:
-    summary = {"applied": 0, "registered_only": 0, "pending_model": 0, "disabled": 0}
-    for delta in deltas:
-        status = str(delta.get("quantitative_status") or "registered_only")
-        if status in summary:
-            summary[status] += 1
-    return summary
-
-
-def _proposal_confidence_label(baseline_confidence: str | None, deltas: list[dict[str, Any]]) -> str:
-    level = str(baseline_confidence or "low").strip().lower()
-    if any(str(delta.get("confidence") or "").lower() == "low" for delta in deltas if delta.get("quantitative_status") == "applied"):
-        return "low"
-    if any(str(delta.get("quantitative_status") or "") in {"registered_only", "pending_model"} for delta in deltas):
-        return "medium" if level == "high" else level or "medium"
-    return level or "low"
+# _delta_status_counts and _proposal_confidence_label are imported from
+# src.vde_core.technology_delta above (Sprint 10D centralization).
 
 
 def _apply_delta_stack_to_baseline(
@@ -934,113 +830,26 @@ def _apply_delta_stack_to_baseline(
     ctx: dict[str, Any],
     deltas: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    if baseline_result is None:
-        return {
-            "status": "Proposal pending",
-            "baseline": {},
-            "proposal": {},
-            "applied_deltas": [],
-            "registered_only_deltas": list(deltas),
-            "confidence": "low",
-            "warnings": ["baseline_pending"],
-            "delta_counts": _delta_status_counts(deltas),
-        }
+    """Delegates the Technology Delta stacking math to
+    src.vde_core.technology_delta.apply_delta_stack_to_baseline (Sprint 10D
+    centralization) -- the exact same function Quick Scenario's Efficiency
+    layer calls, so both consumers share one canonical implementation.
 
-    assumptions = dict((baseline_result.assumptions or {}) or {})
-    pse_summary = dict(assumptions.get("pse_summary") or {})
-    demand_mj_per_km = to_float(ctx.get("energy_value_mj_per_km"))
-    baseline = {
-        "pse": to_float(pse_summary.get("value")),
-        "fuel_l_100km": to_float(baseline_result.fuel_l_100km),
-        "energy_Wh_km": to_float(baseline_result.energy_Wh_km),
-        "gco2_km": to_float(baseline_result.gco2_km),
-        "method": _pwt_method_label(baseline_result.method),
-        "confidence": str(baseline_result.confidence or "-"),
-    }
-    proposal = dict(baseline)
-    applied_deltas: list[dict[str, Any]] = []
-    registered_only: list[dict[str, Any]] = []
-    warnings: list[str] = []
-    fuel_type = str(baseline_result.request.powertrain_features.get("fuel_type") or "Gasoline")
-    lhv = float(baseline_result.request.powertrain_features.get("LHV_MJ_per_L") or LHV_MJ_PER_L.get(fuel_type, LHV_MJ_PER_L["Gasoline"]))
-    gco2_per_l = float(baseline_result.request.powertrain_features.get("gCO2_per_L") or GCO2_PER_L.get(fuel_type, GCO2_PER_L["Gasoline"]))
+    The only local behavior preserved here is this page's own method-label
+    decoration (`_pwt_method_label`): the canonical extraction stores the
+    raw `FuelEstimateResult.method` string instead (that field is never
+    read by the stacking math itself), so it's re-applied here to keep this
+    page's own display text unchanged.
+    """
 
-    for delta in deltas:
-        status = str(delta.get("quantitative_status") or "registered_only")
-        if status != "applied":
-            registered_only.append(delta)
-            continue
-        effect_basis = _normalize_delta_effect_basis(delta.get("effect_basis") or "")
-        value = to_float(delta.get("effect_value"))
-        if value is None:
-            registered_only.append(delta)
-            continue
-        if effect_basis == "pse_delta" and proposal.get("pse") is not None:
-            proposal["pse"] = float(proposal["pse"]) + float(value)
-        elif effect_basis == "pse_percent_delta" and proposal.get("pse") is not None:
-            proposal["pse"] = float(proposal["pse"]) * (1.0 + float(value) / 100.0)
-        elif effect_basis in {"pse_multiplier", "efficiency_multiplier"} and proposal.get("pse") is not None:
-            proposal["pse"] = float(proposal["pse"]) * float(value)
-        elif effect_basis == "fuel_delta" and proposal.get("fuel_l_100km") is not None:
-            proposal["fuel_l_100km"] = float(proposal["fuel_l_100km"]) + float(value)
-        elif effect_basis == "fuel_percent_delta" and proposal.get("fuel_l_100km") is not None:
-            proposal["fuel_l_100km"] = float(proposal["fuel_l_100km"]) * (1.0 + float(value) / 100.0)
-        elif effect_basis == "co2_delta" and proposal.get("gco2_km") is not None:
-            proposal["gco2_km"] = float(proposal["gco2_km"]) + float(value)
-        elif effect_basis == "co2_percent_delta" and proposal.get("gco2_km") is not None:
-            proposal["gco2_km"] = float(proposal["gco2_km"]) * (1.0 + float(value) / 100.0)
-        elif effect_basis == "energy_delta" and proposal.get("energy_Wh_km") is not None:
-            proposal["energy_Wh_km"] = float(proposal["energy_Wh_km"]) + float(value)
-        else:
-            delta = dict(delta)
-            delta["quantitative_status"] = "registered_only"
-            registered_only.append(delta)
-            continue
-        applied_deltas.append(delta)
-
-    if proposal.get("pse") is not None and demand_mj_per_km is not None and proposal["pse"] > 0:
-        if baseline_result.request.vehicle_features.get("electrification") == "BEV":
-            proposal["energy_Wh_km"] = demand_mj_per_km / proposal["pse"] * MJ_TO_Wh
-        elif proposal.get("fuel_l_100km") is None or any(
-            _normalize_delta_effect_basis(delta.get("effect_basis") or "") in {"pse_delta", "pse_multiplier", "efficiency_multiplier", "pse_percent_delta"}
-            for delta in applied_deltas
-        ):
-            proposal["fuel_l_100km"] = (demand_mj_per_km / proposal["pse"]) / lhv * 100.0
-        if proposal.get("fuel_l_100km") is not None:
-            proposal["gco2_km"] = (proposal["fuel_l_100km"] / 100.0) * gco2_per_l
-
-    if proposal.get("fuel_l_100km") is not None and demand_mj_per_km is not None and lhv > 0:
-        consumed_mj = (proposal["fuel_l_100km"] / 100.0) * lhv
-        if consumed_mj > 0:
-            proposal["pse"] = demand_mj_per_km / consumed_mj
-        proposal["gco2_km"] = (proposal["fuel_l_100km"] / 100.0) * gco2_per_l
-
-    if proposal.get("energy_Wh_km") is not None and demand_mj_per_km is not None and proposal["energy_Wh_km"] > 0 and baseline_result.request.vehicle_features.get("electrification") == "BEV":
-        proposal["pse"] = demand_mj_per_km / (proposal["energy_Wh_km"] / MJ_TO_Wh)
-
-    counts = _delta_status_counts(deltas)
-    if not applied_deltas and registered_only:
-        status = "No quantitative delta"
-        warnings.append("registered_only_deltas")
-    elif applied_deltas:
-        status = "Estimated"
-    else:
-        status = "Proposal pending"
-
-    highest_maturity = "-"
-    if deltas:
-        highest_maturity = max((str(delta.get("maturity_level") or "-") for delta in deltas), key=_maturity_rank)
-    return {
-        "status": status,
-        "baseline": baseline,
-        "proposal": proposal,
-        "applied_deltas": applied_deltas,
-        "registered_only_deltas": registered_only,
-        "confidence": _proposal_confidence_label(baseline_result.confidence, deltas),
-        "warnings": warnings,
-        "delta_counts": counts,
-        "highest_maturity": highest_maturity,
-    }
+    result = _canonical_apply_delta_stack_to_baseline(baseline_result, ctx=ctx, deltas=deltas)
+    if baseline_result is not None:
+        label = _pwt_method_label(baseline_result.method)
+        if result.get("baseline"):
+            result["baseline"] = {**result["baseline"], "method": label}
+        if result.get("proposal"):
+            result["proposal"] = {**result["proposal"], "method": label}
+    return result
 
 
 def _scenario_override_label() -> str:
@@ -1078,25 +887,8 @@ def _compact_delta_basis_label(effect_basis: str | None) -> str:
     return mapping.get(str(effect_basis or "").strip(), str(effect_basis or "-"))
 
 
-def _normalize_delta_effect_basis(effect_basis: str | None) -> str:
-    mapping = {
-        "Fuel consumption percent delta": "fuel_percent_delta",
-        "PSE percent delta": "pse_percent_delta",
-        "CO2 percent delta": "co2_percent_delta",
-        "Efficiency multiplier": "efficiency_multiplier",
-        "Metadata-only / registered-only": "metadata_only",
-        "fuel delta": "fuel_delta",
-        "fuel percent delta": "fuel_percent_delta",
-        "PSE delta": "pse_delta",
-        "PSE multiplier": "pse_multiplier",
-        "CO2 percent delta": "co2_percent_delta",
-        "CO2 delta": "co2_delta",
-        "energy delta": "energy_delta",
-        "efficiency multiplier": "efficiency_multiplier",
-        "metadata only": "metadata_only",
-        "map-based effect": "map_based_effect",
-    }
-    return mapping.get(str(effect_basis or "").strip(), str(effect_basis or "").strip())
+# _normalize_delta_effect_basis is imported from src.vde_core.technology_delta
+# above (Sprint 10D centralization).
 
 
 def _draft_delta_from_form() -> dict[str, Any] | None:
@@ -4733,16 +4525,8 @@ def _render_phase_outputs_table(phase_outputs: Dict[str, Any]) -> None:
     st.dataframe(phase_df, use_container_width=True, hide_index=True)
 
 
-def _load_json_blob(raw_value: Any) -> dict[str, Any]:
-    if raw_value in (None, ""):
-        return {}
-    if isinstance(raw_value, dict):
-        return dict(raw_value)
-    try:
-        parsed = json.loads(str(raw_value))
-        return parsed if isinstance(parsed, dict) else {}
-    except Exception:
-        return {}
+# _load_json_blob is imported from src.vde_core.pwt_fuel_energy_service above
+# (Sprint 10E ownership cleanup).
 
 
 def _saved_scenario_label(row: pd.Series | dict) -> str:

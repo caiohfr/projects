@@ -139,15 +139,12 @@ def render_quick_scenario_tab(dataset: ComparisonDataset) -> ComparisonDataset:
     removed_slot: int | None = None
     for slot in sorted(slots):
         vehicle_resolution, efficiency_resolution = results.get(slot, (None, None))
-        state = derive_quick_slot_calculation_state(
-            slots[slot], last_calculated.get(slot), vehicle_resolution, efficiency_resolution
-        )
         updated, remove = _render_slot_editor(
             active,
             active_source_vde_id,
             slot,
             slots[slot],
-            state,
+            last_calculated.get(slot),
             vehicle_resolution,
             efficiency_resolution,
         )
@@ -191,11 +188,22 @@ def _render_slot_editor(
     source_vde_id: int | None,
     slot: int,
     scenario: QuickScenario,
-    state: QuickSlotCalculationState,
+    last_calculated_scenario: QuickScenario | None,
     vehicle_resolution,
     efficiency_resolution,
 ) -> tuple[QuickScenario, bool]:
-    """Renders one slot's editor. Returns (possibly-updated scenario, remove_requested)."""
+    """Renders one slot's editor. Returns (possibly-updated scenario, remove_requested).
+
+    The calculation-state badge is computed from the FRESHLY-rebuilt
+    `updated` scenario (after all domain widgets below have been read),
+    not from `scenario` as passed in -- computing it from the pre-render
+    scenario would show a state that is one render behind whatever the
+    user just typed (found by the Sprint 10E closure audit: editing a
+    value and rerunning showed the OLD "Ready" badge instead of "Needs
+    recalculation" until a second, unrelated interaction). A placeholder
+    keeps the badge visually in the header row despite being filled in
+    after the domain sections render.
+    """
 
     with st.container(border=True):
         header_col, state_col, remove_col = st.columns([3, 2, 1])
@@ -206,7 +214,7 @@ def _render_slot_editor(
                 key=f"comparison_quick_label_{source_identity}_{slot}",
             )
         with state_col:
-            st.caption(f"Slot {slot} -- {_STATE_LABELS[state]}")
+            state_placeholder = st.empty()
             for issue in (vehicle_resolution.issues if vehicle_resolution is not None else ()):
                 st.caption(f"Note: {issue}")
         with remove_col:
@@ -243,6 +251,10 @@ def _render_slot_editor(
             final_pse_percent=final_pse_percent,
             pse_provenance=pse_provenance,
         )
+        state = derive_quick_slot_calculation_state(
+            updated, last_calculated_scenario, vehicle_resolution, efficiency_resolution
+        )
+        state_placeholder.caption(f"Slot {slot} -- {_STATE_LABELS[state]}")
         return updated, remove
 
 
@@ -473,13 +485,28 @@ def _render_efficiency_section(
     current_value = scenario.final_pse_percent
     accepted_value = st.session_state.pop(f"{key_prefix}_accept_value", None)
     accepted_provenance = st.session_state.pop(f"{key_prefix}_accept_provenance", None)
+
+    enabled_key = f"{key_prefix}_final_enabled"
+    value_key = f"{key_prefix}_final_value"
     if accepted_value is not None:
         current_value = accepted_value
+        # A keyed widget only honors value=/index= the FIRST time that key
+        # is ever instantiated; on every later rerun Streamlit keeps
+        # whatever is already in session_state for that key regardless of
+        # what value= is passed. Setting session_state directly BEFORE
+        # instantiating the widgets below is the only way an Accept click
+        # (a value arriving from a different widget's callback) can
+        # actually override an already-existing number_input/checkbox --
+        # found by the Sprint 10E closure audit, since without this the
+        # Accept button silently failed to update Final PSE after the
+        # widgets' first render.
+        st.session_state[enabled_key] = True
+        st.session_state[value_key] = float(accepted_value)
 
     manual_enabled = st.checkbox(
         "Set Final PSE for this Quick Scenario",
         value=current_value is not None,
-        key=f"{key_prefix}_final_enabled",
+        key=enabled_key,
     )
     if not manual_enabled:
         return efficiency_inputs, None, None
@@ -487,9 +514,9 @@ def _render_efficiency_section(
     new_value = st.number_input(
         "Final PSE (%)",
         value=float(current_value) if current_value is not None else 0.0,
-        key=f"{key_prefix}_final_value",
+        key=value_key,
     )
-    if accepted_provenance is not None and float(new_value) == accepted_value:
+    if accepted_provenance is not None and accepted_value is not None and float(new_value) == float(accepted_value):
         provenance = accepted_provenance
     elif current_value is not None and float(new_value) == current_value and scenario.pse_provenance is not None:
         provenance = scenario.pse_provenance

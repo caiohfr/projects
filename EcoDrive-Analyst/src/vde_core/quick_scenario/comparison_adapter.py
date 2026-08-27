@@ -31,7 +31,7 @@ from src.vde_core.comparison_report_service import (
 from .contracts import QuickScenario
 from .efficiency_resolution import QuickEfficiencyResolution
 from .resolution import QuickVehicleResolution
-from .resolver import fetch_quick_source_rows, resolve_quick_vehicle_scenario
+from .resolver import _parse_source_identity, fetch_quick_source_rows, resolve_quick_vehicle_scenario
 
 try:  # Sprint 10D efficiency resolver -- optional import keeps this module
     # usable for Vehicle-only Quick Scenarios without a hard dependency on
@@ -59,14 +59,28 @@ class QuickSlotCalculationState(str, Enum):
 _QUICK_RECORD_ORIGIN = "QUICK_SCENARIO"
 
 
-def quick_slot_sentinel_id(source_vde_id: int, slot: int) -> int:
-    """A deterministic negative id, unique per (source_vde_id, slot), that
+_SOURCE_KIND_SENTINEL_CODE = {"fc": 1, "vde": 2}
+
+
+def quick_slot_sentinel_id(source_identity: str, slot: int) -> int:
+    """A deterministic negative id, unique per (source_identity, slot), that
     never collides with a real (positive) vde_db/fuelcons_db primary key.
     Stable across reruns so the same Quick slot always maps to the same
     sentinel identity within one session.
+
+    Keyed off the full `source_identity` (kind + record id) rather than the
+    resolved vde_id: two distinct fuelcons_db scenarios sharing one vde_id
+    (the established "fc:900102"/"fc:900104" -> vde_id=900001 QA fixture
+    pattern used throughout Sprints 10A-10D) each get their OWN up-to-3
+    Quick slots (MAX_QUICK_SCENARIOS_PER_SOURCE is scoped per source, not
+    per vde_id) -- keying by vde_id alone would collide their same-numbered
+    slots into one sentinel id, silently conflating two distinct Quick
+    Scenarios. Found by the Sprint 10E closure traceability audit.
     """
 
-    return -(abs(int(source_vde_id)) * 10 + int(slot))
+    kind, record_id = _parse_source_identity(source_identity)
+    kind_code = _SOURCE_KIND_SENTINEL_CODE[kind]
+    return -(kind_code * 10**15 + abs(int(record_id)) * 10 + int(slot))
 
 
 def fetch_quick_source_rows_once(
@@ -176,8 +190,7 @@ def build_quick_comparison_item(
     if not vehicle_resolution.is_ready or vehicle_resolution.resolved_vde_row is None:
         return None
 
-    source_vde_id = vehicle_resolution.resolved_vde_row.get("id")
-    sentinel_vde_id = quick_slot_sentinel_id(int(source_vde_id), quick_scenario.slot)
+    sentinel_vde_id = quick_slot_sentinel_id(quick_scenario.source_identity, quick_scenario.slot)
     stamped_row = _stamped_vde_row(vehicle_resolution, sentinel_vde_id)
 
     label = _quick_source_label(quick_scenario)

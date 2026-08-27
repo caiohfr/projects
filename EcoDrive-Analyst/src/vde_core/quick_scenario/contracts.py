@@ -152,7 +152,7 @@ class TireSource(_TextEnum):
 class TireTransformMode(_TextEnum):
     """Sec 7: one Tire transformation after source selection. Which modes
     are valid depends on TireSource -- see TireQuickChange.__post_init__ and
-    _ALLOWED_TIRE_TRANSFORMS_BY_SOURCE below.
+    ALLOWED_TIRE_TRANSFORMS_BY_SOURCE below.
     """
 
     NONE = "NONE"
@@ -164,8 +164,11 @@ class TireTransformMode(_TextEnum):
 
 # Sec 7: allowed (source, transform) combinations. TIRE_DB deliberately
 # excludes TARGET_RRC/RRC_DELTA ("Do not initially support: Tire DB +
-# arbitrary Target RRC, Tire DB + arbitrary RRC Delta", Sec 6).
-_ALLOWED_TIRE_TRANSFORMS_BY_SOURCE: Mapping[TireSource, frozenset[TireTransformMode]] = {
+# arbitrary Target RRC, Tire DB + arbitrary RRC Delta", Sec 6). Public (not
+# `_`-prefixed) since Sprint 10E's UI reads it directly to restrict which
+# TireTransformMode widget options are even offered for a given TireSource,
+# rather than maintaining a second, UI-side copy of this mapping.
+ALLOWED_TIRE_TRANSFORMS_BY_SOURCE: Mapping[TireSource, frozenset[TireTransformMode]] = {
     TireSource.CURRENT: frozenset(
         {
             TireTransformMode.NONE,
@@ -243,7 +246,7 @@ class TireQuickChange:
     pressure_delta: TirePressureDelta | None = None
 
     def __post_init__(self) -> None:
-        allowed = _ALLOWED_TIRE_TRANSFORMS_BY_SOURCE[self.source]
+        allowed = ALLOWED_TIRE_TRANSFORMS_BY_SOURCE[self.source]
         if self.transform_mode not in allowed:
             raise ValueError(
                 f"TireTransformMode.{self.transform_mode.value} is not supported for "
@@ -531,6 +534,7 @@ __all__ = [
     "QuickVehicleReadiness",
     "TireSource",
     "TireTransformMode",
+    "ALLOWED_TIRE_TRANSFORMS_BY_SOURCE",
     "ReferencePressureProvenance",
     "TirePressureDelta",
     "TireQuickChange",

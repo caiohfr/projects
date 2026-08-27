@@ -20,7 +20,17 @@ docs/sprints/SPRINT_10C_QUICK_TIRE_RESOLUTION.md for the reuse audits
 this package was designed against.
 """
 
+from .comparison_adapter import (
+    QuickSlotCalculationState,
+    build_quick_comparison_item,
+    derive_quick_slot_calculation_state,
+    fetch_quick_source_rows_once,
+    merge_quick_items_into_dataset,
+    quick_slot_sentinel_id,
+    resolve_quick_slot,
+)
 from .contracts import (
+    ALLOWED_TIRE_TRANSFORMS_BY_SOURCE,
     MAX_QUICK_SCENARIOS_PER_SOURCE,
     MAX_TECH_DELTAS_PER_SCENARIO,
     QUICK_SCENARIO_CONTRACT_VERSION,
@@ -69,6 +79,14 @@ from .serialization import (
 )
 
 __all__ = [
+    "ALLOWED_TIRE_TRANSFORMS_BY_SOURCE",
+    "QuickSlotCalculationState",
+    "build_quick_comparison_item",
+    "derive_quick_slot_calculation_state",
+    "fetch_quick_source_rows_once",
+    "merge_quick_items_into_dataset",
+    "quick_slot_sentinel_id",
+    "resolve_quick_slot",
     "QuickVehicleResolution",
     "resolve_quick_vehicle_scenario",
     "QuickEfficiencyResolution",

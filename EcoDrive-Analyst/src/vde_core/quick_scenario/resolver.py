@@ -706,7 +706,27 @@ def resolve_quick_vehicle_scenario(
         vde_net_mj_per_km=cycle_results["net"].aggregate,
         vehicle_demand_request=vehicle_demand_request,
         vehicle_demand_result=vehicle_demand_result,
+        resolved_vde_row=synthetic_row,
     )
 
 
-__all__ = ["resolve_quick_vehicle_scenario"]
+def fetch_quick_source_rows(source_identity: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Sprint 10E: fetch the vde_db row (and, for a `fc:`-kind identity, the
+    linked fuelcons_db row) backing `source_identity` exactly once, so a UI
+    orchestrator resolving up to 3 sibling Quick Scenarios for the same
+    source can pass both rows into every sibling's resolve_quick_vehicle_scenario/
+    resolve_quick_efficiency_scenario call instead of re-fetching per slot.
+    Reuses the same parsing/fetch this module already uses internally
+    (_parse_source_identity/_fetch_source_vde_row) -- no second identity
+    parser or DB access path.
+    """
+
+    kind, record_id = _parse_source_identity(source_identity)
+    vde_row = _fetch_source_vde_row(source_identity)
+    if kind != "fc":
+        return vde_row, None
+    fuelcons_row = get_record(EntityType.FUEL_CONSUMPTION, record_id)
+    return vde_row, (dict(fuelcons_row) if fuelcons_row else None)
+
+
+__all__ = ["resolve_quick_vehicle_scenario", "fetch_quick_source_rows"]

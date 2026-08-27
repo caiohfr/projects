@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Mapping
 
 from src.vde_core.vehicle_demand import (
     RoadloadCoefficients,
@@ -75,6 +76,14 @@ class QuickVehicleResolution:
 
     vehicle_demand_request: VehicleDemandRequest | None = None
     vehicle_demand_result: VehicleDemandResult | None = None
+
+    # Sprint 10E: the same synthetic vde_db-shaped row (source row + Mass/
+    # Tire/Aero updates merged on top) that fed resolve_roadload_boundaries/
+    # resolve_cycle_vde_results above, exposed here (only when
+    # readiness.all_ready) so a Comparison adapter can hand it straight to
+    # build_vde_comparison_item/build_scenario_comparison_item's own
+    # vde_row= override -- never rebuilt independently, never new physics.
+    resolved_vde_row: Mapping[str, Any] | None = None
 
     @property
     def is_ready(self) -> bool:

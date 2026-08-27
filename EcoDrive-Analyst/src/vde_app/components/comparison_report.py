@@ -105,6 +105,7 @@ from src.vde_app.comparison_report_viewmodels import (
     sync_comparisons_from_widget,
     visible_rows,
 )
+from src.vde_app.components.comparison_quick_scenario_tab import render_quick_scenario_tab
 from src.vde_app.components.pwt_fuel_energy import (
     render_comparison_report_page,
     resolve_comparison_report_anchor,
@@ -1855,9 +1856,14 @@ def render_comparison_report() -> None:
         _render_presentation_roles(dataset)
         primary_kpi = _render_primary_kpi_and_target()
 
-    program_review_tab, energy_drivers_tab, scorecard_tab, explore_tab = st.tabs(
-        ["Program Review", "Energy Drivers", "Technical Scorecard", "Explore"]
+    program_review_tab, energy_drivers_tab, scorecard_tab, explore_tab, quick_scenarios_tab = st.tabs(
+        ["Program Review", "Energy Drivers", "Technical Scorecard", "Explore", "Quick Scenarios"]
     )
+    with quick_scenarios_tab:
+        if dataset is not None:
+            dataset = render_quick_scenario_tab(dataset)
+        else:
+            st.info("Select a Reference or Compare-with scenario above to build Quick Scenarios from it.")
     with program_review_tab:
         _render_program_review_tab(dataset, primary_kpi)
     with energy_drivers_tab:

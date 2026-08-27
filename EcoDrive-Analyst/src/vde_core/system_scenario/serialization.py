@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from src.vde_core.quick_scenario.serialization import tech_delta_assumption_from_dict
 from src.vde_core.vehicle_demand.serialization import to_serializable
 
 from .contracts import (
@@ -140,7 +141,11 @@ def controls_configuration_from_dict(data: Mapping[str, Any] | None) -> Controls
 
 def aux_thermal_configuration_from_dict(data: Mapping[str, Any] | None) -> AuxThermalConfiguration:
     data = data or {}
-    return AuxThermalConfiguration(notes=_get(data, "notes"))
+    return AuxThermalConfiguration(
+        ambient_temp_c=_get(data, "ambient_temp_c"),
+        ac_on=_get(data, "ac_on"),
+        notes=_get(data, "notes"),
+    )
 
 
 _CONFIGURATION_FROM_DICT_BY_DOMAIN = {
@@ -212,7 +217,10 @@ def domain_proposal_from_dict(data: Mapping[str, Any]) -> DomainProposal:
         based_on=effective_domain_state_from_dict(data["based_on"]),
         label=_get(data, "label"),
         l0_effective_assumption=dict(_get(data, "l0_effective_assumption") or {}),
-        technology_delta_ids=tuple(_get(data, "technology_delta_ids") or ()),
+        technology_deltas=tuple(
+            tech_delta_assumption_from_dict(item) for item in _get(data, "technology_deltas") or ()
+        ),
+        requested_changes=dict(_get(data, "requested_changes") or {}),
         notes=_get(data, "notes", ""),
     )
 

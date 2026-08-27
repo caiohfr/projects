@@ -8,6 +8,7 @@ across Sprints 10A-10E.
 from __future__ import annotations
 
 import gc
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,6 +27,10 @@ from src.vde_core.system_scenario import (
     TransmissionConfiguration,
     VehicleDemandConfiguration,
     architecture_domain_state_from_legacy_vde_row,
+    aux_thermal_domain_state_from_legacy_row,
+    controls_domain_state_from_legacy_row,
+    electric_drive_domain_state_sparse,
+    energy_storage_domain_state_from_legacy_row,
     engine_domain_state_from_legacy_row,
     transmission_domain_state_from_legacy_row,
     vehicle_demand_domain_state_from_legacy_vde_row,
@@ -156,6 +161,110 @@ class LegacyAdapterNoDbTests(unittest.TestCase):
         state = architecture_domain_state_from_legacy_vde_row({}, {"electrification": "SOMETHING_NEW"})
         self.assertIsNone(state.configuration.architecture_class)
         self.assertIn("SOMETHING_NEW", state.configuration.topology_notes)
+
+
+class Sprint11BExpandedAdapterTests(unittest.TestCase):
+    """Sprint 11B: expanded Engine/Transmission fields plus the new Energy
+    Storage / Controls / Aux-Thermal / (sparse) Electric Drive adapters.
+    The base QA fixture seeds every one of these new columns as NULL (a
+    direct PRAGMA table_info + SELECT check confirmed this during
+    development), so this class augments the seeded fuelcons row with real,
+    non-null values via a direct SQL UPDATE in setUp -- the same
+    established pattern `test_comparison_report_page_smoke.py` already uses
+    for scenario-specific fixture data -- to prove genuine data flow-
+    through, not just correct null-handling (which the QA-database class
+    above already covers).
+    """
+
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._temp_dir.name) / "system_scenario_expanded_adapter_qa.db"
+        self._original_path = db_module.current_db_path()
+        seed_qa_database(self.db_path, overwrite=False)
+        seed_qa_fuelcons_mock_rows(self.db_path)
+        with sqlite3.connect(self.db_path) as con:
+            con.execute(
+                "UPDATE fuelcons_db SET engine_max_torque_nm = 350.0, "
+                "battery_capacity_kwh = 1.5, battery_usable_kwh = 1.2, "
+                "bms_discharge_limit_kw = 25.0, bms_regen_limit_kw = 15.0, "
+                "bms_note = 'QA test note', utility_factor_pct = 65.0, "
+                "ambient_temp_c = 23.0, ac_on = 1 "
+                "WHERE id = 900102"
+            )
+            con.execute("UPDATE vde_db SET engine_model = 'QA-ENGINE-01', engine_type = 'I4', "
+                        "engine_aspiration = 'Turbo', transmission_model = 'QA-TRANS-9AT' WHERE id = 900001")
+            con.commit()
+        db_module.configure_db_path(self.db_path)
+
+    def tearDown(self):
+        db_module.configure_db_path(self._original_path)
+        gc.collect()
+        self._temp_dir.cleanup()
+
+    def _rows(self):
+        return fetch_vde_by_id(900001), dict(get_record(EntityType.FUEL_CONSUMPTION, 900102))
+
+    def test_engine_adapter_populates_expanded_fields(self):
+        vde_row, fc_row = self._rows()
+        state = engine_domain_state_from_legacy_row(vde_row, fc_row)
+        self.assertEqual(state.configuration.engine_family_id, "QA-ENGINE-01")
+        self.assertEqual(state.configuration.rated_torque_nm, 350.0)
+        self.assertIn("I4", state.configuration.technology_descriptors)
+        self.assertIn("Turbo", state.configuration.technology_descriptors)
+
+    def test_transmission_adapter_populates_model_id(self):
+        vde_row, fc_row = self._rows()
+        state = transmission_domain_state_from_legacy_row(vde_row, fc_row)
+        self.assertEqual(state.configuration.transmission_model_id, "QA-TRANS-9AT")
+
+    def test_energy_storage_adapter_sparse_when_no_row_supplied(self):
+        state = energy_storage_domain_state_from_legacy_row(None)
+        self.assertIsNone(state.configuration.gross_capacity_kwh)
+        self.assertIsNone(state.configuration.usable_capacity_kwh)
+        self.assertIsNone(state.configuration.discharge_power_limit_kw)
+        self.assertIsNone(state.configuration.regen_power_limit_kw)
+
+    def test_energy_storage_adapter_populates_real_values(self):
+        _vde_row, fc_row = self._rows()
+        state = energy_storage_domain_state_from_legacy_row(fc_row)
+        self.assertEqual(state.configuration.gross_capacity_kwh, 1.5)
+        self.assertEqual(state.configuration.usable_capacity_kwh, 1.2)
+        self.assertEqual(state.configuration.discharge_power_limit_kw, 25.0)
+        self.assertEqual(state.configuration.regen_power_limit_kw, 15.0)
+        self.assertIsNone(state.configuration.charge_power_limit_kw)  # no confirmed column -- stays missing
+        self.assertEqual(state.notes, "QA test note")
+        self.assertEqual(state.provenance, ProvenanceKind.SOURCE_OBSERVED)
+
+    def test_controls_adapter_populates_utility_factor(self):
+        _vde_row, fc_row = self._rows()
+        state = controls_domain_state_from_legacy_row(fc_row)
+        self.assertEqual(state.configuration.utility_factor_pct, 65.0)
+        self.assertEqual(state.provenance, ProvenanceKind.SOURCE_OBSERVED)
+        self.assertIsNone(state.configuration.hybrid_operating_strategy)  # no confirmed column
+
+    def test_controls_adapter_without_utility_factor_is_not_available(self):
+        state = controls_domain_state_from_legacy_row({})
+        self.assertIsNone(state.configuration.utility_factor_pct)
+        self.assertEqual(state.provenance, ProvenanceKind.NOT_AVAILABLE)
+
+    def test_aux_thermal_adapter_populates_real_values(self):
+        _vde_row, fc_row = self._rows()
+        state = aux_thermal_domain_state_from_legacy_row(fc_row)
+        self.assertEqual(state.configuration.ambient_temp_c, 23.0)
+        self.assertTrue(state.configuration.ac_on)
+        self.assertEqual(state.provenance, ProvenanceKind.SOURCE_OBSERVED)
+
+    def test_aux_thermal_adapter_sparse_when_no_row_supplied(self):
+        state = aux_thermal_domain_state_from_legacy_row(None)
+        self.assertIsNone(state.configuration.ambient_temp_c)
+        self.assertIsNone(state.configuration.ac_on)
+
+    def test_electric_drive_sparse_adapter_is_valid_and_explicit(self):
+        state = electric_drive_domain_state_sparse()
+        self.assertEqual(state.domain, DomainKind.ELECTRIC_DRIVE)
+        self.assertIsNone(state.configuration.motor_role)
+        self.assertIsNone(state.configuration.rated_power_kw)
+        self.assertEqual(state.provenance, ProvenanceKind.NOT_AVAILABLE)
 
 
 if __name__ == "__main__":

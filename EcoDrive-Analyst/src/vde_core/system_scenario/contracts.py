@@ -31,8 +31,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Mapping, Union
+from typing import Any, Mapping, Union
 
+from src.vde_core.quick_scenario.contracts import TechDeltaAssumption
 from src.vde_core.vehicle_demand import VehicleDemandResult
 
 SYSTEM_SCENARIO_CONTRACT_VERSION = "0.1"
@@ -113,6 +114,23 @@ class FidelityLevel(_TextEnum):
     EFFECTIVE_ASSUMPTION = "EFFECTIVE_ASSUMPTION"
     CONFIGURATION_ONLY = "CONFIGURATION_ONLY"
     NOT_REPRESENTED = "NOT_REPRESENTED"
+
+
+class DomainApplicability(_TextEnum):
+    """Sprint 11B Sec 9: a coarse, engineering-judgment classification of
+    whether a domain is expected to matter for a given `ArchitectureClass`
+    -- REQUIRED/OPTIONAL/NOT_APPLICABLE. Deliberately not a rules engine:
+    a fixed lookup table (`_DOMAIN_APPLICABILITY_BY_ARCHITECTURE` below),
+    same spirit as `domain_typically_applicable` (kept, still valid) but
+    with the 3-state resolution the spec asks for. Purely advisory --
+    never a hard gate on constructing a Domain State/Proposal; missing data
+    for a REQUIRED domain does not raise here (Sec 24: readiness is a
+    future solver concern, not a contract concern).
+    """
+
+    REQUIRED = "REQUIRED"
+    OPTIONAL = "OPTIONAL"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
 
 
 class ProvenanceKind(_TextEnum):
@@ -244,8 +262,18 @@ class ControlsConfiguration:
 class AuxThermalConfiguration:
     """Sec 18: exists so the architecture does not require redesign later.
     Current data may be sparse -- typically CONFIGURATION_ONLY or
-    NOT_REPRESENTED fidelity. No new thermal physics."""
+    NOT_REPRESENTED fidelity. No new thermal physics.
 
+    `ambient_temp_c`/`ac_on` were added in Sprint 11B after the legacy
+    adapter audit confirmed `fuelcons_db.ambient_temp_c`/`fuelcons_db.ac_on`
+    are real, populated columns -- not invented to make this domain look
+    complete (Sec 15: "Do not invent HVAC/thermal fields... merely to make
+    the object look complete"); they are the one confirmed pair of
+    Aux/Thermal-relevant columns this codebase actually has today.
+    """
+
+    ambient_temp_c: float | None = None
+    ac_on: bool | None = None
     notes: str | None = None
 
 
@@ -310,6 +338,59 @@ def domain_typically_applicable(architecture: ArchitectureClass, domain: DomainK
     """
 
     return domain not in _TYPICALLY_INAPPLICABLE_DOMAINS_BY_ARCHITECTURE.get(architecture, frozenset())
+
+
+# Sprint 11B Sec 9: the 3-state REQUIRED/OPTIONAL/NOT_APPLICABLE
+# classification, matching the spec's stated broad semantics exactly.
+# VEHICLE_DEMAND and ARCHITECTURE are REQUIRED for every architecture
+# (every System Scenario needs a vehicle demand and an architecture
+# classification) and are intentionally omitted from each per-architecture
+# override map below -- `domain_applicability_for` falls back to REQUIRED
+# for both. A domain with no explicit entry for a given architecture
+# defaults to OPTIONAL, never NOT_APPLICABLE, so an unlisted combination
+# never silently hides a domain that simply wasn't called out by name in
+# the spec's broad semantics (Sec 9).
+_DOMAIN_APPLICABILITY_OVERRIDES_BY_ARCHITECTURE: Mapping[ArchitectureClass, Mapping[DomainKind, DomainApplicability]] = {
+    ArchitectureClass.ICE: {
+        DomainKind.ENGINE_FUEL_CONVERTER: DomainApplicability.REQUIRED,
+        DomainKind.ELECTRIC_DRIVE: DomainApplicability.NOT_APPLICABLE,
+        DomainKind.ENERGY_STORAGE: DomainApplicability.NOT_APPLICABLE,
+    },
+    ArchitectureClass.MHEV: {
+        DomainKind.ENGINE_FUEL_CONVERTER: DomainApplicability.REQUIRED,
+        DomainKind.ELECTRIC_DRIVE: DomainApplicability.REQUIRED,
+        DomainKind.ENERGY_STORAGE: DomainApplicability.REQUIRED,
+    },
+    ArchitectureClass.HEV: {
+        DomainKind.ENGINE_FUEL_CONVERTER: DomainApplicability.REQUIRED,
+        DomainKind.ELECTRIC_DRIVE: DomainApplicability.REQUIRED,
+        DomainKind.ENERGY_STORAGE: DomainApplicability.REQUIRED,
+    },
+    ArchitectureClass.PHEV: {
+        DomainKind.ENGINE_FUEL_CONVERTER: DomainApplicability.REQUIRED,
+        DomainKind.ELECTRIC_DRIVE: DomainApplicability.REQUIRED,
+        DomainKind.ENERGY_STORAGE: DomainApplicability.REQUIRED,
+    },
+    ArchitectureClass.BEV: {
+        DomainKind.ENGINE_FUEL_CONVERTER: DomainApplicability.NOT_APPLICABLE,
+        DomainKind.ELECTRIC_DRIVE: DomainApplicability.REQUIRED,
+        DomainKind.ENERGY_STORAGE: DomainApplicability.REQUIRED,
+    },
+}
+
+
+def domain_applicability_for(architecture: ArchitectureClass, domain: DomainKind) -> DomainApplicability:
+    """Sec 9: coarse REQUIRED/OPTIONAL/NOT_APPLICABLE classification for one
+    (architecture, domain) pair. VEHICLE_DEMAND/ARCHITECTURE are always
+    REQUIRED; every other domain defaults to OPTIONAL unless a specific
+    override says otherwise -- purely advisory, never a hard gate (missing
+    data for a REQUIRED domain does not raise anywhere in this module).
+    """
+
+    if domain in (DomainKind.VEHICLE_DEMAND, DomainKind.ARCHITECTURE):
+        return DomainApplicability.REQUIRED
+    overrides = _DOMAIN_APPLICABILITY_OVERRIDES_BY_ARCHITECTURE.get(architecture, {})
+    return overrides.get(domain, DomainApplicability.OPTIONAL)
 
 
 # -----------------------------------------------------------------------------
@@ -445,9 +526,28 @@ class DomainProposal:
     described in Sec 19 (e.g. `{"pse_percent_delta": 0.8}` for a "+0.8%"
     Transmission improvement) -- it must never be inferred from `configuration`
     (Sec 19: "It must not be inferred from gear count or final drive.").
-    `technology_delta_ids` associates this proposal with existing canonical
-    Technology Delta assumption(s) by id/name only (Sec 22) -- this contract
-    never embeds delta-stacking math itself.
+
+    `technology_deltas` (Sprint 11B Sec 20) associates this proposal with
+    existing canonical Technology Delta assumption(s), reusing the SAME
+    `TechDeltaAssumption` dataclass Quick Scenario already uses
+    (`src.vde_core.quick_scenario.contracts.TechDeltaAssumption`) rather
+    than a second schema -- preserving `affected_subsystem`/`effect_basis`/
+    `effect_value`/`source_type`/`maturity_level`/`confidence` verbatim.
+    This is association/storage only: this contract never stacks or
+    combines these deltas (that is Sprint 11C's job, once a deterministic
+    cross-domain order is defined -- see the Sprint 11A/11B CASE A finding).
+    Local order within one proposal's `technology_deltas` tuple is
+    preserved as given (Sec 21) since it is a plain tuple, not a set/dict.
+
+    `requested_changes` (Sprint 11B) is a small, explicit provenance record
+    of exactly which `configuration` fields this proposal overrode relative
+    to `based_on.configuration` -- populated by
+    `domain_resolution.resolve_domain_proposal()` (the intended
+    construction path), never inferred after the fact. A proposal built
+    directly (bypassing that helper) may leave it empty; `changed_fields()`
+    in `domain_resolution.py` computes the same information robustly by
+    diffing `configuration` against `based_on.configuration` directly, so
+    nothing downstream needs to trust `requested_changes` alone.
     """
 
     identity: DomainProposalIdentity
@@ -456,7 +556,8 @@ class DomainProposal:
     based_on: EffectiveDomainState
     label: str | None = None
     l0_effective_assumption: Mapping[str, float] = field(default_factory=dict)
-    technology_delta_ids: tuple[str, ...] = ()
+    technology_deltas: tuple[TechDeltaAssumption, ...] = ()
+    requested_changes: Mapping[str, Any] = field(default_factory=dict)
     notes: str = ""
 
     def __post_init__(self) -> None:
@@ -681,6 +782,8 @@ __all__ = [
     "DomainKind",
     "ALL_DOMAIN_KINDS",
     "ArchitectureClass",
+    "DomainApplicability",
+    "domain_applicability_for",
     "FidelityLevel",
     "ProvenanceKind",
     "VehicleDemandConfiguration",

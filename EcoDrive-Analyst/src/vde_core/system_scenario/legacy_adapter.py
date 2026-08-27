@@ -9,17 +9,24 @@
 #         -> this module
 #         -> canonical DomainSourceState (contracts.py)
 #
-# This is a PROOF of the seam, not a migration of the whole Powertrain page
-# (Sec 8: "Do not perform broad migration of all current page behavior in
-# 11A"). It covers a representative subset of domains for which the current
-# schema already has real columns (confirmed by the Sprint 11A audit):
-# Vehicle Demand, Architecture (from `electrification`), Engine, and
-# Transmission. Electric Drive / Energy Storage / Energy Management-Controls
-# / Aux-Thermal have no confirmed legacy columns today (motor/battery-
-# specific fields are not present in vde_db/fuelcons_db) -- their adapters
-# are deferred rather than populated from guessed field names ("missing
-# future fields remain missing", spec Sec 4). No DB fields are added and no
-# schema is migrated here.
+# Sprint 11A proved the seam for 4 domains (Vehicle Demand, Architecture,
+# Engine, Transmission). Sprint 11B expanded it after a direct PRAGMA
+# table_info() query against the live schema (not assumption/memory)
+# confirmed real columns exist for 3 more: Energy Storage
+# (`battery_capacity_kwh`/`battery_usable_kwh`/`bms_discharge_limit_kw`/
+# `bms_regen_limit_kw`), Energy Management/Controls (`utility_factor_pct`
+# -- confirmed persisted, correcting an 11A assumption that it was only a
+# runtime request parameter), and Aux/Thermal (`ambient_temp_c`/`ac_on` --
+# correcting 11A's claim that this domain had no confirmed columns; two
+# fields were added to `AuxThermalConfiguration` in 11B specifically
+# because this real data was found). Electric Drive remains the one domain
+# with genuinely NO configuration-level legacy column (only `bev_eff_drive`,
+# an L0 efficiency ASSUMPTION, not motor configuration) --
+# `electric_drive_domain_state_sparse()` represents it explicitly as valid,
+# all-missing state rather than leaving it unrepresented. This is still a
+# PROOF of the seam plus a fuller legacy-boundary pass, not a migration of
+# the whole Powertrain page. No DB fields are added and no schema is
+# migrated here.
 #
 # The Vehicle Demand adapter reuses the EXACT existing frozen Sprint 9 call
 # chain Quick Scenario's own resolver already uses
@@ -41,8 +48,12 @@ from src.vde_core.vehicle_demand.adapters import (
 from .contracts import (
     ArchitectureClass,
     ArchitectureConfiguration,
+    AuxThermalConfiguration,
+    ControlsConfiguration,
     DomainKind,
     DomainSourceState,
+    ElectricDriveConfiguration,
+    EnergyStorageConfiguration,
     EngineConfiguration,
     ProvenanceKind,
     TransmissionConfiguration,
@@ -145,20 +156,33 @@ def engine_domain_state_from_legacy_row(
     vde_row: Mapping[str, Any], fuelcons_row: Mapping[str, Any] | None = None
 ) -> DomainSourceState:
     """Populates `EngineConfiguration` from the legacy columns the Sprint
-    11A audit confirmed are actually read today: `engine_size_l`
-    (`vde_row`, consumed by `build_fuel_estimate_request_from_vde`) and
-    `fuel_type`/`engine_max_power_kw` (`fuelcons_row`, when available).
-    Fields with no confirmed legacy source (engine family id, rated torque,
-    technology descriptors) stay `None`/empty -- never guessed.
+    11A audit confirmed are actually read today: `engine_size_l`/
+    `engine_model`/`engine_type`/`engine_aspiration` (`vde_row`) and
+    `fuel_type`/`engine_max_power_kw`/`engine_max_torque_nm` (`fuelcons_row`,
+    when available). Expanded in Sprint 11B after a direct PRAGMA
+    table_info() query against the live schema confirmed
+    `fuelcons_db.engine_max_torque_nm` and `vde_db.engine_model`/
+    `engine_type`/`engine_aspiration` are real, populated columns --
+    `engine_family_id` maps to `engine_model` (the closest existing
+    identifier-like column; there is no separate "family" concept in the
+    schema), and `technology_descriptors` collects `engine_type`/
+    `engine_aspiration` as free-text labels, never a controlled vocabulary
+    invented for this sprint.
     """
 
     fuelcons_row = fuelcons_row or {}
+    descriptors = tuple(
+        str(value) for value in (vde_row.get("engine_type"), vde_row.get("engine_aspiration")) if value
+    )
     return DomainSourceState(
         domain=DomainKind.ENGINE_FUEL_CONVERTER,
         configuration=EngineConfiguration(
             fuel_type=fuelcons_row.get("fuel_type"),
+            engine_family_id=vde_row.get("engine_model"),
             displacement_l=vde_row.get("engine_size_l"),
             rated_power_kw=fuelcons_row.get("engine_max_power_kw"),
+            rated_torque_nm=fuelcons_row.get("engine_max_torque_nm"),
+            technology_descriptors=descriptors,
         ),
         provenance=ProvenanceKind.SOURCE_OBSERVED,
     )
@@ -172,13 +196,16 @@ def transmission_domain_state_from_legacy_row(
     `gear_count`/`final_drive_ratio` (present on both `vde_row` and
     `fuelcons_row` in the audited code -- `fuelcons_row` preferred when both
     are supplied, since it is the more recently-edited scenario-level
-    value; falls back to `vde_row`)."""
+    value; falls back to `vde_row`). `transmission_model_id` (added in
+    Sprint 11B) maps to `vde_db.transmission_model`, confirmed present by a
+    direct schema query -- missed in the 11A adapter, added here."""
 
     fuelcons_row = fuelcons_row or {}
     return DomainSourceState(
         domain=DomainKind.TRANSMISSION_DRIVELINE,
         configuration=TransmissionConfiguration(
             transmission_type=vde_row.get("transmission_type"),
+            transmission_model_id=vde_row.get("transmission_model"),
             gear_count=fuelcons_row.get("gear_count") if fuelcons_row.get("gear_count") is not None else vde_row.get("gear_count"),
             final_drive_ratio=(
                 fuelcons_row.get("final_drive_ratio")
@@ -190,10 +217,102 @@ def transmission_domain_state_from_legacy_row(
     )
 
 
+def electric_drive_domain_state_sparse() -> DomainSourceState:
+    """Sprint 11B Sec 12: a direct schema query (PRAGMA table_info against
+    the live QA-seeded database) confirmed neither `vde_db` nor
+    `fuelcons_db` has ANY motor-role/count/position/rated-power/rated-
+    torque/voltage/identifier column today -- `bev_eff_drive` is the only
+    EV-related column, and it is an L0 efficiency ASSUMPTION (Sec 12: "L0
+    model assumptions"), not motor CONFIGURATION, so it is deliberately not
+    placed into `ElectricDriveConfiguration` here (Sec 6: never put an
+    assumption into physical configuration merely because a legacy row
+    contains it). Electric Drive therefore has no real legacy adapter
+    today -- this function exists so the domain is still explicitly
+    representable as a valid, all-missing `DomainSourceState` (Sec 15/24:
+    sparse domain data is valid; missing stays missing) rather than simply
+    absent from a caller's domain map.
+    """
+
+    return DomainSourceState(
+        domain=DomainKind.ELECTRIC_DRIVE,
+        configuration=ElectricDriveConfiguration(),
+        provenance=ProvenanceKind.NOT_AVAILABLE,
+        notes="No motor/inverter configuration columns exist in the current schema.",
+    )
+
+
+def energy_storage_domain_state_from_legacy_row(fuelcons_row: Mapping[str, Any] | None) -> DomainSourceState:
+    """Sprint 11B: populates `EnergyStorageConfiguration` from
+    `fuelcons_db.battery_capacity_kwh`/`battery_usable_kwh`/
+    `bms_discharge_limit_kw`/`bms_regen_limit_kw` -- confirmed real,
+    populated columns by a direct schema query. There is no separate
+    `charge_power_limit_kw` or nominal-voltage/SOC-window column in the
+    current schema, so those fields stay `None` -- never guessed.
+    `bms_note`, when present, is carried as this DomainSourceState's own
+    top-level `notes` (no new configuration field needed for a single
+    free-text note)."""
+
+    fuelcons_row = fuelcons_row or {}
+    return DomainSourceState(
+        domain=DomainKind.ENERGY_STORAGE,
+        configuration=EnergyStorageConfiguration(
+            gross_capacity_kwh=fuelcons_row.get("battery_capacity_kwh"),
+            usable_capacity_kwh=fuelcons_row.get("battery_usable_kwh"),
+            discharge_power_limit_kw=fuelcons_row.get("bms_discharge_limit_kw"),
+            regen_power_limit_kw=fuelcons_row.get("bms_regen_limit_kw"),
+        ),
+        provenance=ProvenanceKind.SOURCE_OBSERVED,
+        notes=str(fuelcons_row.get("bms_note") or ""),
+    )
+
+
+def controls_domain_state_from_legacy_row(fuelcons_row: Mapping[str, Any] | None) -> DomainSourceState:
+    """Sprint 11B: populates `ControlsConfiguration.utility_factor_pct`
+    from `fuelcons_db.utility_factor_pct` -- confirmed a real, stored
+    column by a direct schema query (corrects an 11A assumption that
+    utility factor was only ever a runtime request parameter; it is also
+    persisted). `hybrid_operating_strategy`/`regen_metadata`/
+    `start_stop_enabled`/`calibration_notes` have no confirmed legacy
+    column and stay `None` -- never guessed."""
+
+    fuelcons_row = fuelcons_row or {}
+    return DomainSourceState(
+        domain=DomainKind.ENERGY_MANAGEMENT_CONTROLS,
+        configuration=ControlsConfiguration(utility_factor_pct=fuelcons_row.get("utility_factor_pct")),
+        provenance=ProvenanceKind.SOURCE_OBSERVED if fuelcons_row.get("utility_factor_pct") is not None else ProvenanceKind.NOT_AVAILABLE,
+    )
+
+
+def aux_thermal_domain_state_from_legacy_row(fuelcons_row: Mapping[str, Any] | None) -> DomainSourceState:
+    """Sprint 11B: populates `AuxThermalConfiguration.ambient_temp_c`/
+    `ac_on` from `fuelcons_db.ambient_temp_c`/`fuelcons_db.ac_on` --
+    confirmed real, populated columns by a direct schema query (this
+    corrects the 11A closure doc's claim that Aux/Thermal had no confirmed
+    legacy columns; it does, just none were checked for at the time). Both
+    fields were added to `AuxThermalConfiguration` in Sprint 11B
+    specifically because this real data was found -- not invented to make
+    the domain look complete."""
+
+    fuelcons_row = fuelcons_row or {}
+    ac_on_raw = fuelcons_row.get("ac_on")
+    return DomainSourceState(
+        domain=DomainKind.AUX_THERMAL,
+        configuration=AuxThermalConfiguration(
+            ambient_temp_c=fuelcons_row.get("ambient_temp_c"),
+            ac_on=bool(ac_on_raw) if ac_on_raw is not None else None,
+        ),
+        provenance=ProvenanceKind.SOURCE_OBSERVED,
+    )
+
+
 __all__ = [
     "vehicle_demand_domain_state_from_result",
     "vehicle_demand_domain_state_from_legacy_vde_row",
     "architecture_domain_state_from_legacy_vde_row",
     "engine_domain_state_from_legacy_row",
     "transmission_domain_state_from_legacy_row",
+    "electric_drive_domain_state_sparse",
+    "energy_storage_domain_state_from_legacy_row",
+    "controls_domain_state_from_legacy_row",
+    "aux_thermal_domain_state_from_legacy_row",
 ]

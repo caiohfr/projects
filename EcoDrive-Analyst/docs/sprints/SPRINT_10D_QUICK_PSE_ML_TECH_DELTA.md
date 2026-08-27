@@ -412,21 +412,61 @@ regressions**. New test files/counts:
 (13, new), `test_quick_scenario_efficiency_resolver.py` (42, new),
 `test_quick_tech_delta_catalog.py` (8, new).
 
+## Centralization follow-up (post-10D, same freeze)
+
+A follow-up inspection confirmed `pwt_fuel_energy.py` still carried its own
+independent copies of `_apply_delta_stack_to_baseline`,
+`_normalize_delta_effect_basis`, `_maturity_rank`, `_delta_status_counts`,
+`_proposal_confidence_label`, and the six `DELTA_*_OPTIONS` constant lists
+(Case B: duplicated implementations). `pwt_fuel_energy.py` was refactored
+to import all of these directly from `src.vde_core.technology_delta`
+(aliased to their original local names, so every existing call site in the
+file needed zero further changes) and to delegate `_apply_delta_stack_to_baseline`
+to the canonical `apply_delta_stack_to_baseline()` via a thin wrapper that
+re-applies only this page's own method-label decoration
+(`_pwt_method_label`) on top of the canonical result -- the one cosmetic
+field the extraction had simplified away, confirmed never read by the
+stacking math itself. No mathematical behavior changed; no Technology
+Delta contract was redesigned.
+
+**Proof of shared ownership**, `tests/test_powertrain_scenario_deltas.py`'s
+new `PowertrainAndQuickScenarioShareCanonicalCoreTests` (8 tests): a direct
+identity check (`pwt_fuel_energy._canonical_apply_delta_stack_to_baseline
+is technology_delta.apply_delta_stack_to_baseline`, and the same for the
+four smaller functions) plus numeric-agreement tests for single percent
+delta, two sequential percent deltas (compounding, not summing), absolute+
+percent, a multiplier delta, a zero/neutral delta, and reversed-order
+stacking -- every expected value in these tests comes from calling the
+shared canonical core directly, never a third hand-derived formula. All 5
+pre-existing single-delta tests in the same file continue to pass
+unchanged, plus a new test confirming the method-label decoration
+(`"Assume efficiency"`, not the raw `"physics_simple"` key) survives the
+refactor.
+
+Verification: focused suite (`test_powertrain_scenario_deltas`,
+`test_technology_delta`, `test_pwt_and_decomposition`,
+`test_pwt_fuel_energy_service_pse_reference`, `test_quick_scenario_*`,
+`test_quick_tech_delta_catalog`, `test_fuel_estimation`, `test_ml_prediction`,
+`test_fuel_energy`, `test_regression_pooling`): 269 tests, all passing.
+Full suite: **1605 tests, 1603 passing** (1597 + 8 new parity tests), the
+same 2 known pre-existing failures, zero new regressions.
+
 ## Backlog / deferred (not addressed in 10D)
 
 - Quick Scenario UI, Comparison insertion, session-state max-3 enforcement,
   Save/Promote -- all explicitly deferred to a later (10E+) package per
   Sec 29.
-- `pwt_fuel_energy.py`'s own Technology Delta/benchmark-PSE code was left
-  untouched and still duplicates (not reuses) the newly-extracted
-  `vde_core` versions; unifying them (having the Streamlit page import
-  from `vde_core` instead of keeping its own copies) is a reasonable
-  future cleanup but was out of scope and risk-inappropriate for this
-  sprint, which must not touch a live, working UI page.
 - The pre-existing CO2-delta-gets-overwritten-by-fuel-reconciliation quirk
   (Decision 1) is preserved, documented, and regression-tested, not fixed
   -- fixing it, if ever desired, is a Powertrain Scenario concern, not a
   Quick Scenario one.
+- `pwt_fuel_energy.py`'s benchmark-PSE flow (`_derive_reference_pse`,
+  `_reference_candidates_for_type`) still duplicates (not reuses) the
+  Decision-2 extractions in `pwt_fuel_energy_service.py`
+  (`derive_reference_pse`, `list_benchmark_fuelcons_candidates`) -- only
+  the Technology Delta duplication was in scope for this follow-up
+  inspection; the benchmark-PSE duplication remains a known, smaller,
+  not-yet-addressed instance of the same pattern.
 
 ## Freeze / handoff statement
 

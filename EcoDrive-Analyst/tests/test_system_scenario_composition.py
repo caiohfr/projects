@@ -14,6 +14,7 @@ from src.vde_core.system_scenario import (
     DomainKind,
     DomainProposalIdentity,
     DomainSourceState,
+    ElectricDriveConfiguration,
     EnergyStorageConfiguration,
     EngineConfiguration,
     FidelityLevel,
@@ -413,6 +414,38 @@ class FidelityAndReadinessTests(unittest.TestCase):
             FidelityLevel.QUANTITATIVE,
         )
 
+    def test_electric_motor_power_change_is_configuration_only_for_current_l0(self):
+        current = _effective(
+            DomainKind.ELECTRIC_DRIVE,
+            ElectricDriveConfiguration(rated_power_kw=100.0, peak_power_kw=120.0),
+        )
+        proposal = resolve_domain_proposal(
+            DomainProposalIdentity(DomainKind.ELECTRIC_DRIVE, "EM-CONFIG-P01"),
+            current,
+            requested_changes={"rated_power_kw": 150.0, "peak_power_kw": 180.0},
+        )
+        template = FuelEstimateRequest(
+            method="physics_simple",
+            powertrain_features={"bev_eff_drive": 0.9},
+        )
+        actual = run_system_scenario(
+            _definition(
+                architecture=_architecture_state(ArchitectureClass.BEV),
+                extras={DomainKind.ELECTRIC_DRIVE: proposal},
+                proposal=True,
+            ),
+            request_template=template,
+        )
+        neutral = run_system_scenario(
+            _definition(architecture=_architecture_state(ArchitectureClass.BEV)),
+            request_template=template,
+        )
+        self.assertEqual(actual.fuel_estimate_result.energy_Wh_km, neutral.fuel_estimate_result.energy_Wh_km)
+        self.assertEqual(
+            actual.fidelity_manifest.fidelity_for(DomainKind.ELECTRIC_DRIVE),
+            FidelityLevel.CONFIGURATION_ONLY,
+        )
+
     def test_explicit_zero_is_present_and_effectively_represented(self):
         transmission = _effective(DomainKind.TRANSMISSION_DRIVELINE, TransmissionConfiguration())
         proposal = resolve_domain_proposal(
@@ -628,6 +661,12 @@ class WorkingSetTests(unittest.TestCase):
         second = _definition(name="SYS-B", proposal=True)
         with self.assertRaisesRegex(ValueError, "roles/proposal indexes"):
             resolve_system_scenarios([first, second])
+
+    def test_duplicate_scenario_id_is_rejected_within_working_set(self):
+        current = _definition(name="SYS-DUP")
+        proposal = _definition(name="SYS-DUP", proposal=True)
+        with self.assertRaisesRegex(ValueError, "scenario_id values"):
+            resolve_system_scenarios([current, proposal])
 
     def test_resolution_snapshot_and_request_view_are_immutable_and_isolated(self):
         resolved = resolve_system_scenario(_definition(), request_template=_ice_template())

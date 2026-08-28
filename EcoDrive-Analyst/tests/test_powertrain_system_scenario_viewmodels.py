@@ -246,6 +246,48 @@ class PowertrainSystemScenarioViewmodelTests(unittest.TestCase):
         self.assertEqual(contribution["key"], "eta_pt_est")
         self.assertEqual(contribution["provenance"], ProvenanceKind.ML_DERIVED.value)
 
+    def test_manual_override_of_adopted_recommendation_uses_assumed_provenance(self):
+        base = effective_states_for_source(self.sources[1])[DomainKind.ENGINE_FUEL_CONVERTER]
+        ml_adoption = proposal_from_editor(
+            proposal_id="ENG-P01",
+            domain=base.domain,
+            based_on=base,
+            label="ML adopted",
+            recommendation_key="eta_pt_est",
+            recommendation_value=0.4,
+            recommendation_source="ML",
+            adopted=True,
+        )
+        manual_override = proposal_from_editor(
+            proposal_id="ENG-P01",
+            domain=base.domain,
+            based_on=base,
+            label="Engineer override",
+            recommendation_key="eta_pt_est",
+            recommendation_value=0.5,
+            recommendation_source="Engineering assumption",
+            adopted=True,
+        )
+        draft = update_selection(self.current, base.domain, "ENG-P01")
+        ml_result = calculate_drafts(
+            (draft,), sources=self.sources, proposals={"ENG-P01": ml_adoption}
+        )["SYS-CURRENT"].result
+        overridden_result = calculate_drafts(
+            (draft,), sources=self.sources, proposals={"ENG-P01": manual_override}
+        )["SYS-CURRENT"].result
+        self.assertEqual(
+            ml_result.provenance["l0_assumptions"][0]["provenance"],
+            ProvenanceKind.ML_DERIVED.value,
+        )
+        self.assertEqual(
+            overridden_result.provenance["l0_assumptions"][0]["provenance"],
+            ProvenanceKind.ASSUMED.value,
+        )
+        self.assertNotEqual(
+            ml_result.fuel_estimate_result.fuel_l_100km,
+            overridden_result.fuel_estimate_result.fuel_l_100km,
+        )
+
     def test_friendly_issue_hides_raw_resolver_code(self):
         message = friendly_issue("bev_eff_drive_missing")
         self.assertNotIn("bev_eff_drive_missing", message)

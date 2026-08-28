@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
+from src.vde_core.fuel_energy import compute_ice_fuel_from_vde
 from src.vde_core.fuel_estimation import FuelEstimateRequest, run_fuel_estimation
 from src.vde_core.system_scenario import (
     ArchitectureClass,
     ArchitectureConfiguration,
+    ControlsConfiguration,
     DomainKind,
     DomainProposalIdentity,
     DomainSourceState,
@@ -24,6 +27,8 @@ from src.vde_core.system_scenario import (
     resolve_system_scenario,
     resolve_system_scenarios,
     run_system_scenario,
+    run_system_scenarios,
+    to_serializable,
     vehicle_demand_domain_state_from_result,
 )
 from src.vde_core.technology_delta import (
@@ -46,10 +51,14 @@ def _vde_state(total=1.8, net=1.6, identity="vde:1"):
             vde_mj_per_km=total,
             cycle_name="WLTP",
         ),
-        net_summary=VehicleDemandSummary(
-            roadload_basis=RoadloadBasis.NET,
-            vde_mj_per_km=net,
-            cycle_name="WLTP",
+        net_summary=(
+            VehicleDemandSummary(
+                roadload_basis=RoadloadBasis.NET,
+                vde_mj_per_km=net,
+                cycle_name="WLTP",
+            )
+            if net is not None
+            else None
         ),
     )
     return resolve_effective_domain_state(
@@ -182,6 +191,62 @@ class L0CanonicalParityTests(unittest.TestCase):
         self.assertEqual(actual.energy_Wh_km, expected.energy_Wh_km)
         self.assertEqual(actual.gco2_km, expected.gco2_km)
 
+    def test_phev_co2_preflight_reproduces_legacy_helper_disagreement(self):
+        canonical_request = FuelEstimateRequest(
+            energy_basis="VDE_TOTAL",
+            method="physics_simple",
+            vehicle_features={"electrification": "PHEV", "vde_total_mj_per_km": 1.8},
+            powertrain_features={
+                "fuel_type": "Gasoline",
+                "eta_pt_est": 0.3,
+                "LHV_MJ_per_L": 32.0,
+                "bev_eff_drive": 0.9,
+                "utility_factor": 0.4,
+                "grid_gco2_per_kwh": 400.0,
+            },
+        )
+        canonical = run_fuel_estimation(canonical_request)
+        with patch(
+            "src.vde_core.fuel_energy._get_vde_row",
+            return_value={"vde_net_mj_per_km": 1.8, "legislation": "WLTP"},
+        ):
+            legacy = compute_ice_fuel_from_vde(
+                1,
+                "Gasoline",
+                0.3,
+                lhv_mj_per_l=32.0,
+                electrification="PHEV",
+                uf_phev=0.4,
+                driveline_eff=0.9,
+                grid_gco2_per_kwh=400.0,
+            )
+
+        self.assertAlmostEqual(canonical.gco2_km, 259.875, places=6)
+        self.assertAlmostEqual(legacy["gco2_per_km"], 348.7638888889, places=6)
+        self.assertAlmostEqual(legacy["gco2_per_km"] - canonical.gco2_km, 88.8888888889, places=6)
+
+    def test_neutral_bev_matches_independent_canonical_call(self):
+        template = FuelEstimateRequest(
+            powertrain_features={"bev_eff_drive": 0.9, "grid_gco2_per_kwh": 400.0}
+        )
+        outcome = run_system_scenario(
+            _definition(architecture=_architecture_state(ArchitectureClass.BEV)),
+            request_template=template,
+        )
+        expected = run_fuel_estimation(
+            FuelEstimateRequest(
+                vehicle_features={
+                    "electrification": "BEV",
+                    "vde_total_mj_per_km": 1.8,
+                    "vde_net_mj_per_km": 1.6,
+                },
+                powertrain_features={"bev_eff_drive": 0.9, "grid_gco2_per_kwh": 400.0},
+            )
+        )
+        self.assertEqual(outcome.fuel_estimate_result.energy_Wh_km, expected.energy_Wh_km)
+        self.assertEqual(outcome.fuel_estimate_result.gco2_km, expected.gco2_km)
+        self.assertIsNone(outcome.fuel_estimate_result.fuel_l_100km)
+
     def test_manual_imported_method_and_provenance_pass_through_canonical_owner(self):
         template = FuelEstimateRequest(
             method="manual_imported",
@@ -224,6 +289,28 @@ class FidelityAndReadinessTests(unittest.TestCase):
         result = run_system_scenario(_definition(), request_template=FuelEstimateRequest())
         self.assertIsNone(result.fuel_estimate_result)
 
+    def test_missing_vehicle_demand_never_falls_back_to_template_values(self):
+        definition = SystemScenarioDefinition(
+            identity=_identity(),
+            slots={
+                DomainKind.ARCHITECTURE: _architecture_state(),
+                DomainKind.ENGINE_FUEL_CONVERTER: _engine_state(),
+            },
+        )
+        resolved = resolve_system_scenario(definition, request_template=_ice_template())
+        self.assertEqual(resolved.solver_readiness, SolverReadiness.NOT_READY)
+        self.assertIn("vde_total_mj_per_km_missing", resolved.issues)
+        self.assertIsNone(resolved.fuel_estimate_request.vehicle_features["vde_total_mj_per_km"])
+
+    def test_net_basis_never_falls_back_to_total_or_stale_template_net(self):
+        resolved = resolve_system_scenario(
+            _definition(vde=_vde_state(net=None)),
+            request_template=_ice_template(energy_basis="VDE_NET"),
+        )
+        self.assertEqual(resolved.solver_readiness, SolverReadiness.NOT_READY)
+        self.assertIn("vde_net_mj_per_km_missing", resolved.issues)
+        self.assertIsNone(resolved.fuel_estimate_request.vehicle_features["vde_net_mj_per_km"])
+
     def test_bev_engine_is_not_represented_and_electric_efficiency_controls_readiness(self):
         definition = _definition(architecture=_architecture_state(ArchitectureClass.BEV))
         resolved = resolve_system_scenario(
@@ -234,6 +321,27 @@ class FidelityAndReadinessTests(unittest.TestCase):
         self.assertEqual(
             resolved.fidelity_manifest.fidelity_for(DomainKind.ENGINE_FUEL_CONVERTER),
             FidelityLevel.NOT_REPRESENTED,
+        )
+
+    def test_bev_explicit_engine_proposal_is_structured_architecture_incompatibility(self):
+        current = _engine_state()
+        engine_proposal = resolve_domain_proposal(
+            DomainProposalIdentity(DomainKind.ENGINE_FUEL_CONVERTER, "ENG-BEV-P01"),
+            current,
+            requested_changes={"fuel_type": "Diesel"},
+        )
+        resolved = resolve_system_scenario(
+            _definition(
+                architecture=_architecture_state(ArchitectureClass.BEV),
+                engine=engine_proposal,
+                proposal=True,
+            ),
+            request_template=FuelEstimateRequest(powertrain_features={"bev_eff_drive": 0.9}),
+        )
+        self.assertEqual(resolved.solver_readiness, SolverReadiness.NOT_READY)
+        self.assertIn(
+            "architecture_domain_incompatible:BEV:ENGINE_FUEL_CONVERTER:ENG-BEV-P01",
+            resolved.issues,
         )
 
     def test_transmission_configuration_only_does_not_change_baseline(self):
@@ -285,6 +393,26 @@ class FidelityAndReadinessTests(unittest.TestCase):
             FidelityLevel.CONFIGURATION_ONLY,
         )
 
+    def test_engine_size_and_power_changes_are_configuration_only_for_current_l0(self):
+        current = _effective(
+            DomainKind.ENGINE_FUEL_CONVERTER,
+            EngineConfiguration(fuel_type="Gasoline", displacement_l=1.5, rated_power_kw=100.0),
+        )
+        proposal = resolve_domain_proposal(
+            DomainProposalIdentity(DomainKind.ENGINE_FUEL_CONVERTER, "ENG-CONFIG-P01"),
+            current,
+            requested_changes={"displacement_l": 2.0, "rated_power_kw": 150.0},
+        )
+        actual = run_system_scenario(
+            _definition(engine=proposal, proposal=True), request_template=_ice_template()
+        )
+        neutral = run_system_scenario(_definition(), request_template=_ice_template())
+        self.assertEqual(actual.fuel_estimate_result.fuel_l_100km, neutral.fuel_estimate_result.fuel_l_100km)
+        self.assertEqual(
+            actual.fidelity_manifest.fidelity_for(DomainKind.ENGINE_FUEL_CONVERTER),
+            FidelityLevel.QUANTITATIVE,
+        )
+
     def test_explicit_zero_is_present_and_effectively_represented(self):
         transmission = _effective(DomainKind.TRANSMISSION_DRIVELINE, TransmissionConfiguration())
         proposal = resolve_domain_proposal(
@@ -331,7 +459,14 @@ class DeterministicTechnologyDeltaTests(unittest.TestCase):
             "TRANS-P01",
             transmission_deltas,
         )
+        controls = self._proposal(
+            DomainKind.ENERGY_MANAGEMENT_CONTROLS,
+            ControlsConfiguration(),
+            "CTRL-P01",
+            (TechDeltaAssumption("Controls CO2", "co2_percent_delta", -0.5),),
+        )
         reverse_slots = {
+            DomainKind.ENERGY_MANAGEMENT_CONTROLS: controls,
             DomainKind.TRANSMISSION_DRIVELINE: transmission,
             DomainKind.ENGINE_FUEL_CONVERTER: engine,
             DomainKind.ARCHITECTURE: _architecture_state(),
@@ -343,7 +478,19 @@ class DeterministicTechnologyDeltaTests(unittest.TestCase):
         )
         self.assertEqual(
             [delta.name for delta in resolved.ordered_technology_deltas],
-            ["Engine absolute", "Transmission percent", "Transmission fuel"],
+            ["Engine absolute", "Transmission percent", "Transmission fuel", "Controls CO2"],
+        )
+        self.assertEqual(
+            [
+                (item.evaluation_order, item.domain, item.proposal_id, item.assumption.name)
+                for item in resolved.technology_delta_contributions
+            ],
+            [
+                (1, DomainKind.ENGINE_FUEL_CONVERTER, "ENG-P01", "Engine absolute"),
+                (2, DomainKind.TRANSMISSION_DRIVELINE, "TRANS-P01", "Transmission percent"),
+                (3, DomainKind.TRANSMISSION_DRIVELINE, "TRANS-P01", "Transmission fuel"),
+                (4, DomainKind.ENERGY_MANAGEMENT_CONTROLS, "CTRL-P01", "Controls CO2"),
+            ],
         )
 
     def test_explicit_l0_effect_uses_canonical_delta_stack(self):
@@ -368,7 +515,48 @@ class DeterministicTechnologyDeltaTests(unittest.TestCase):
             deltas=normalized,
         )
         self.assertEqual(outcome.technology_delta_result["proposal"], expected["proposal"])
-        self.assertEqual(outcome.effective_outputs, expected["proposal"])
+        for key, value in expected["proposal"].items():
+            self.assertEqual(outcome.effective_outputs[key], value)
+
+    def test_only_active_supported_deltas_enter_stack(self):
+        proposal = self._proposal(
+            DomainKind.TRANSMISSION_DRIVELINE,
+            TransmissionConfiguration(),
+            "TRANS-PENDING",
+            (
+                TechDeltaAssumption("Disabled", "fuel_delta", -1.0, enabled=False),
+                TechDeltaAssumption("Needs map", "map-based effect", 1.0),
+            ),
+        )
+        resolved = resolve_system_scenario(
+            _definition(extras={DomainKind.TRANSMISSION_DRIVELINE: proposal}, proposal=True),
+            request_template=_ice_template(),
+        )
+        self.assertEqual(resolved.ordered_technology_deltas, ())
+        self.assertEqual(resolved.technology_delta_contributions, ())
+        self.assertEqual(resolved.solver_readiness, SolverReadiness.NOT_READY)
+        self.assertIn(
+            "unsupported_quantitative_representation:TRANSMISSION_DRIVELINE:TRANS-PENDING:map_based_effect",
+            resolved.issues,
+        )
+
+    def test_unknown_delta_basis_is_unresolved_without_invented_math(self):
+        proposal = self._proposal(
+            DomainKind.TRANSMISSION_DRIVELINE,
+            TransmissionConfiguration(),
+            "TRANS-UNKNOWN",
+            (TechDeltaAssumption("Unknown", "unapproved_basis", 1.0),),
+        )
+        resolved = resolve_system_scenario(
+            _definition(extras={DomainKind.TRANSMISSION_DRIVELINE: proposal}, proposal=True),
+            request_template=_ice_template(),
+        )
+        self.assertEqual(resolved.ordered_technology_deltas, ())
+        self.assertEqual(resolved.solver_readiness, SolverReadiness.NOT_READY)
+        self.assertIn(
+            "incompatible_technology_delta_basis:TRANSMISSION_DRIVELINE:TRANS-UNKNOWN:unapproved_basis",
+            resolved.issues,
+        )
 
     def test_direct_higher_efficiency_reduces_canonical_fuel_input(self):
         low = self._proposal(
@@ -440,6 +628,67 @@ class WorkingSetTests(unittest.TestCase):
         second = _definition(name="SYS-B", proposal=True)
         with self.assertRaisesRegex(ValueError, "roles/proposal indexes"):
             resolve_system_scenarios([first, second])
+
+    def test_resolution_snapshot_and_request_view_are_immutable_and_isolated(self):
+        resolved = resolve_system_scenario(_definition(), request_template=_ice_template())
+        with self.assertRaises(TypeError):
+            resolved.resolved_domains[DomainKind.ARCHITECTURE] = _architecture_state(ArchitectureClass.BEV)
+        first_request = resolved.fuel_estimate_request
+        first_request.vehicle_features["vde_total_mj_per_km"] = 99.0
+        self.assertEqual(resolved.fuel_estimate_request.vehicle_features["vde_total_mj_per_km"], 1.8)
+
+    def test_current_a_b_use_independent_vdes_and_reuse_shared_proposal(self):
+        shared_engine = resolve_domain_proposal(
+            DomainProposalIdentity(DomainKind.ENGINE_FUEL_CONVERTER, "ENG-SHARED"),
+            _engine_state(),
+            l0_effective_assumption={"eta_pt_est": 0.35},
+        )
+        current = _definition(vde=_vde_state(total=1.0, identity="vde:1"))
+        proposal_a = SystemScenarioDefinition(
+            identity=SystemScenarioIdentity("SYS-A", SystemScenarioRole.PROPOSAL, 1),
+            slots=_definition(vde=_vde_state(total=2.0, identity="vde:2"), engine=shared_engine).slots,
+        )
+        proposal_b = SystemScenarioDefinition(
+            identity=SystemScenarioIdentity("SYS-B", SystemScenarioRole.PROPOSAL, 2),
+            slots=_definition(vde=_vde_state(total=3.0, identity="vde:3"), engine=shared_engine).slots,
+        )
+        outcomes = run_system_scenarios(
+            (current, proposal_a, proposal_b),
+            request_templates={item.identity.scenario_id: _ice_template() for item in (current, proposal_a, proposal_b)},
+        )
+        self.assertEqual(
+            [item.selected_vehicle_demand_identity for item in outcomes],
+            ["vde:1", "vde:2", "vde:3"],
+        )
+        self.assertIs(proposal_a.slots[DomainKind.ENGINE_FUEL_CONVERTER], shared_engine)
+        self.assertIs(proposal_b.slots[DomainKind.ENGINE_FUEL_CONVERTER], shared_engine)
+        self.assertEqual(shared_engine.l0_effective_assumption["eta_pt_est"], 0.35)
+        with self.assertRaises(TypeError):
+            shared_engine.l0_effective_assumption["eta_pt_est"] = 0.9
+        self.assertEqual(outcomes[0].fuel_estimate_result.request.powertrain_features["eta_pt_est"], 0.3)
+        self.assertEqual(outcomes[1].fuel_estimate_result.request.powertrain_features["eta_pt_est"], 0.35)
+        self.assertEqual(outcomes[2].fuel_estimate_result.request.powertrain_features["eta_pt_est"], 0.35)
+
+    def test_result_is_deterministic_and_carries_solver_fidelity_and_provenance(self):
+        transmission = resolve_domain_proposal(
+            DomainProposalIdentity(DomainKind.TRANSMISSION_DRIVELINE, "TRANS-P01"),
+            _effective(DomainKind.TRANSMISSION_DRIVELINE, TransmissionConfiguration()),
+            l0_effective_assumption={"pse_percent_delta": 0.0},
+        )
+        definition = _definition(
+            extras={DomainKind.TRANSMISSION_DRIVELINE: transmission}, proposal=True
+        )
+        first = run_system_scenario(definition, request_template=_ice_template())
+        second = run_system_scenario(definition, request_template=_ice_template())
+        self.assertEqual(to_serializable(first), to_serializable(second))
+        self.assertEqual(first.selected_vehicle_demand_identity, "vde:1")
+        self.assertEqual(first.architecture_class, ArchitectureClass.ICE)
+        self.assertEqual(first.readiness, SolverReadiness.READY)
+        self.assertEqual(first.fidelity_manifest, first.resolved_scenario.fidelity_manifest)
+        self.assertIn("fuel_estimation.run_fuel_estimation", first.solver_identity)
+        self.assertEqual(first.model_identity, "physics_simple")
+        self.assertEqual(first.provenance["calculated_result"], "CALCULATED")
+        self.assertEqual(first.effective_outputs["pse"], first.technology_delta_result["proposal"]["pse"])
 
 
 if __name__ == "__main__":

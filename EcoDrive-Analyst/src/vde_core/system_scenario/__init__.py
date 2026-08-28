@@ -51,6 +51,7 @@ from .contracts import (
     EngineConfiguration,
     FidelityLevel,
     FidelityManifest,
+    L0AssumptionContribution,
     ProvenanceKind,
     ResolvedSystemScenario,
     SolverReadiness,
@@ -58,6 +59,7 @@ from .contracts import (
     SystemScenarioIdentity,
     SystemScenarioResult,
     SystemScenarioRole,
+    TechnologyDeltaContribution,
     TransmissionConfiguration,
     VehicleDemandConfiguration,
     configuration_type_for,
@@ -69,6 +71,7 @@ from .contracts import (
 from .domain_resolution import changed_fields, resolve_domain_proposal
 from .l0_adapter import (
     EnergyBalanceL0Adapter,
+    EnergyBalanceL0RequestSnapshot,
     build_energy_balance_l0_request,
     energy_balance_l0_readiness_issues,
 )
@@ -125,6 +128,8 @@ __all__ = [
     "SystemScenarioIdentity",
     "SystemScenarioDefinition",
     "FidelityManifest",
+    "L0AssumptionContribution",
+    "TechnologyDeltaContribution",
     "ResolvedSystemScenario",
     "SystemScenarioResult",
     "resolve_system_scenario_shell",
@@ -133,6 +138,7 @@ __all__ = [
     "run_system_scenario",
     "run_system_scenarios",
     "EnergyBalanceL0Adapter",
+    "EnergyBalanceL0RequestSnapshot",
     "build_energy_balance_l0_request",
     "energy_balance_l0_readiness_issues",
     "resolve_domain_proposal",

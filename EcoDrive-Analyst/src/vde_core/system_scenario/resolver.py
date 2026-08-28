@@ -21,15 +21,19 @@ from .contracts import (
     DomainProposal,
     FidelityLevel,
     FidelityManifest,
+    L0AssumptionContribution,
+    ProvenanceKind,
     ResolvedSystemScenario,
     SolverReadiness,
     SystemScenarioDefinition,
     SystemScenarioResult,
+    TechnologyDeltaContribution,
     VehicleDemandConfiguration,
     domain_applicability_for,
 )
 from .l0_adapter import (
     EnergyBalanceL0Adapter,
+    EnergyBalanceL0RequestSnapshot,
     build_energy_balance_l0_request,
     energy_balance_l0_readiness_issues,
     is_direct_powertrain_assumption,
@@ -58,11 +62,6 @@ def _architecture(definition: SystemScenarioDefinition) -> ArchitectureClass | N
     return selection.configuration.architecture_class
 
 
-def _is_quantitative_delta(delta: TechDeltaAssumption) -> bool:
-    normalized = normalize_technology_delta(tech_delta_assumption_to_dict(delta))
-    return bool(delta.enabled) and normalized["effect_basis"] in _SUPPORTED_DELTA_EFFECT_BASES
-
-
 def _synthetic_delta(domain: DomainKind, key: str, value: float) -> TechDeltaAssumption:
     return TechDeltaAssumption(
         name=f"{domain.value} explicit L0 assumption: {key}",
@@ -84,6 +83,8 @@ def _compose(
     ArchitectureClass | None,
     dict[str, float],
     tuple[TechDeltaAssumption, ...],
+    tuple[TechnologyDeltaContribution, ...],
+    tuple[L0AssumptionContribution, ...],
     tuple[str, ...],
 ]:
     architecture = _architecture(definition)
@@ -91,7 +92,35 @@ def _compose(
     fidelity: dict[DomainKind, FidelityLevel] = {}
     direct_assumptions: dict[str, float] = {}
     ordered_deltas: list[TechDeltaAssumption] = []
+    delta_contributions: list[TechnologyDeltaContribution] = []
+    assumption_contributions: list[L0AssumptionContribution] = []
     issues: list[str] = []
+
+    def collect_delta(domain: DomainKind, proposal_id: str, delta: TechDeltaAssumption) -> bool:
+        normalized = normalize_technology_delta(tech_delta_assumption_to_dict(delta))
+        status = str(normalized["quantitative_status"])
+        basis = str(normalized["effect_basis"])
+        if status == "applied" and basis in _SUPPORTED_DELTA_EFFECT_BASES:
+            ordered_deltas.append(delta)
+            delta_contributions.append(
+                TechnologyDeltaContribution(
+                    evaluation_order=len(delta_contributions) + 1,
+                    domain=domain,
+                    proposal_id=proposal_id,
+                    assumption=delta,
+                    quantitative_status=status,
+                )
+            )
+            return True
+        if status == "pending_model":
+            issues.append(
+                f"unsupported_quantitative_representation:{domain.value}:{proposal_id}:{basis}"
+            )
+        elif status == "applied":
+            issues.append(
+                f"incompatible_technology_delta_basis:{domain.value}:{proposal_id}:{basis}"
+            )
+        return False
 
     for domain in ALL_DOMAIN_KINDS:
         selection = ordered_domains.get(domain)
@@ -103,6 +132,11 @@ def _compose(
             and domain_applicability_for(architecture, domain) is DomainApplicability.NOT_APPLICABLE
         ):
             fidelity[domain] = FidelityLevel.NOT_REPRESENTED
+            if isinstance(selection, DomainProposal):
+                issues.append(
+                    f"architecture_domain_incompatible:{architecture.value}:{domain.value}:"
+                    f"{selection.identity.proposal_id}"
+                )
             continue
 
         if domain is DomainKind.VEHICLE_DEMAND:
@@ -118,6 +152,7 @@ def _compose(
 
         represented = False
         if isinstance(selection, DomainProposal):
+            proposal_id = selection.identity.proposal_id
             for key, raw_value in selection.l0_effective_assumption.items():
                 value = float(raw_value)
                 if is_direct_powertrain_assumption(key):
@@ -125,13 +160,21 @@ def _compose(
                         issues.append(f"conflicting_l0_assumption:{key}")
                     else:
                         direct_assumptions[key] = value
+                        assumption_contributions.append(
+                            L0AssumptionContribution(
+                                key=key,
+                                value=value,
+                                domain=domain,
+                                proposal_id=proposal_id,
+                                provenance=ProvenanceKind.ASSUMED,
+                            )
+                        )
                     represented = True
                 else:
                     delta = _synthetic_delta(domain, key, value)
-                    ordered_deltas.append(delta)
-                    represented = represented or _is_quantitative_delta(delta)
-            ordered_deltas.extend(selection.technology_deltas)
-            represented = represented or any(_is_quantitative_delta(delta) for delta in selection.technology_deltas)
+                    represented = collect_delta(domain, proposal_id, delta) or represented
+            for delta in selection.technology_deltas:
+                represented = collect_delta(domain, proposal_id, delta) or represented
 
         if domain is DomainKind.ENGINE_FUEL_CONVERTER and selection.configuration.fuel_type is not None:
             represented = True
@@ -145,6 +188,8 @@ def _compose(
         architecture,
         direct_assumptions,
         tuple(ordered_deltas),
+        tuple(delta_contributions),
+        tuple(assumption_contributions),
         tuple(dict.fromkeys(issues)),
     )
 
@@ -156,14 +201,25 @@ def resolve_system_scenario(
 ) -> ResolvedSystemScenario:
     """Resolve one definition independently of presentation/dict order."""
 
-    domains, manifest, architecture, assumptions, deltas, composition_issues = _compose(definition)
+    (
+        domains,
+        manifest,
+        architecture,
+        assumptions,
+        deltas,
+        delta_contributions,
+        assumption_contributions,
+        composition_issues,
+    ) = _compose(definition)
     provisional = ResolvedSystemScenario(
         identity=definition.identity,
         resolved_domains=domains,
         fidelity_manifest=manifest,
         architecture_class=architecture,
         ordered_technology_deltas=deltas,
+        technology_delta_contributions=delta_contributions,
         l0_effective_assumptions=assumptions,
+        l0_assumption_contributions=assumption_contributions,
         issues=composition_issues,
     )
     request = build_energy_balance_l0_request(provisional, request_template)
@@ -171,7 +227,7 @@ def resolve_system_scenario(
     return replace(
         provisional,
         solver_readiness=SolverReadiness.READY if not issues else SolverReadiness.NOT_READY,
-        fuel_estimate_request=request,
+        l0_request_snapshot=EnergyBalanceL0RequestSnapshot.from_request(request),
         issues=issues,
     )
 

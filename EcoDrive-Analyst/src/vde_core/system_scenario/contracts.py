@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from types import MappingProxyType
 from typing import Any, Mapping, Union
 
 from src.vde_core.technology_delta import TechDeltaAssumption
@@ -588,6 +589,12 @@ class DomainProposal:
                 f"DomainProposal.based_on.domain ({self.based_on.domain.value}) must match "
                 f"DomainProposal.domain ({self.domain.value})."
             )
+        object.__setattr__(
+            self,
+            "l0_effective_assumption",
+            MappingProxyType(dict(self.l0_effective_assumption)),
+        )
+        object.__setattr__(self, "requested_changes", MappingProxyType(dict(self.requested_changes)))
 
 
 # -----------------------------------------------------------------------------
@@ -663,6 +670,7 @@ class SystemScenarioDefinition:
                     f"SystemScenarioDefinition.slots[{domain.value}] holds a selection for "
                     f"domain {selection.domain.value} instead."
                 )
+        object.__setattr__(self, "slots", MappingProxyType(dict(self.slots)))
 
     @property
     def vehicle_demand_selection(self) -> DomainSelection | None:
@@ -686,6 +694,9 @@ class FidelityManifest:
 
     per_domain: Mapping[DomainKind, FidelityLevel] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "per_domain", MappingProxyType(dict(self.per_domain)))
+
     def fidelity_for(self, domain: DomainKind) -> FidelityLevel:
         return self.per_domain.get(domain, FidelityLevel.NOT_REPRESENTED)
 
@@ -700,6 +711,28 @@ class FidelityManifest:
             level in (FidelityLevel.QUANTITATIVE, FidelityLevel.EFFECTIVE_ASSUMPTION)
             for level in self.per_domain.values()
         )
+
+
+@dataclass(frozen=True)
+class L0AssumptionContribution:
+    """Audit record for one adopted direct ``FuelEstimateRequest`` input."""
+
+    key: str
+    value: float
+    domain: DomainKind
+    proposal_id: str
+    provenance: ProvenanceKind = ProvenanceKind.ASSUMED
+
+
+@dataclass(frozen=True)
+class TechnologyDeltaContribution:
+    """Domain/proposal provenance for one active canonical stack entry."""
+
+    evaluation_order: int
+    domain: DomainKind
+    proposal_id: str
+    assumption: TechDeltaAssumption
+    quantitative_status: str = "applied"
 
 
 @dataclass(frozen=True)
@@ -718,10 +751,31 @@ class ResolvedSystemScenario:
     fidelity_manifest: FidelityManifest
     architecture_class: ArchitectureClass | None = None
     solver_readiness: SolverReadiness = SolverReadiness.NOT_READY
-    fuel_estimate_request: object | None = None
+    l0_request_snapshot: object | None = None
     ordered_technology_deltas: tuple[TechDeltaAssumption, ...] = ()
+    technology_delta_contributions: tuple[TechnologyDeltaContribution, ...] = ()
     l0_effective_assumptions: Mapping[str, float] = field(default_factory=dict)
+    l0_assumption_contributions: tuple[L0AssumptionContribution, ...] = ()
     issues: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "resolved_domains", MappingProxyType(dict(self.resolved_domains)))
+        object.__setattr__(
+            self,
+            "l0_effective_assumptions",
+            MappingProxyType(dict(self.l0_effective_assumptions)),
+        )
+
+    @property
+    def fuel_estimate_request(self) -> object | None:
+        """Compatibility view returning a fresh mutable canonical request.
+
+        The resolved snapshot itself stores only the frozen adapter input, so
+        callers cannot mutate a request that a later calculation will reuse.
+        """
+
+        factory = getattr(self.l0_request_snapshot, "to_request", None)
+        return factory() if callable(factory) else None
 
 
 @dataclass(frozen=True)
@@ -736,8 +790,24 @@ class SystemScenarioResult:
     resolved_scenario: ResolvedSystemScenario
     fuel_estimate_result: object | None = None
     technology_delta_result: Mapping[str, Any] | None = None
+    selected_vehicle_demand_identity: str | None = None
+    architecture_class: ArchitectureClass | None = None
+    solver_identity: str | None = None
+    model_identity: str | None = None
+    readiness: SolverReadiness = SolverReadiness.NOT_READY
+    fidelity_manifest: FidelityManifest | None = None
+    effective_assumptions: Mapping[str, float] = field(default_factory=dict)
+    provenance: Mapping[str, Any] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
     contract_version: str = SYSTEM_SCENARIO_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "effective_assumptions",
+            MappingProxyType(dict(self.effective_assumptions)),
+        )
+        object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))
 
     @property
     def effective_outputs(self) -> Mapping[str, Any]:
@@ -748,20 +818,26 @@ class SystemScenarioResult:
         fields. No formula or recalculation occurs here.
         """
 
-        if self.technology_delta_result is not None:
-            proposal = self.technology_delta_result.get("proposal")
-            if proposal is not None:
-                return dict(proposal)
         result = self.fuel_estimate_result
         if result is None:
             return {}
-        return {
+        pse_summary = dict((getattr(result, "assumptions", {}) or {}).get("pse_summary") or {})
+        outputs = {
             "fuel_l_100km": getattr(result, "fuel_l_100km", None),
             "energy_Wh_km": getattr(result, "energy_Wh_km", None),
             "gco2_km": getattr(result, "gco2_km", None),
+            "pse": pse_summary.get("value"),
+            "fuel_consumed_mj_per_km": pse_summary.get("fuel_consumed_mj_per_km"),
+            "electric_consumed_mj_per_km": pse_summary.get("electric_consumed_mj_per_km"),
+            "total_consumed_mj_per_km": pse_summary.get("total_consumed_mj_per_km"),
             "method": getattr(result, "method", None),
             "confidence": getattr(result, "confidence", None),
         }
+        if self.technology_delta_result is not None:
+            proposal = self.technology_delta_result.get("proposal")
+            if proposal is not None:
+                outputs.update(dict(proposal))
+        return outputs
 
 
 def resolve_system_scenario_shell(definition: SystemScenarioDefinition) -> ResolvedSystemScenario:
@@ -841,6 +917,8 @@ __all__ = [
     "SystemScenarioIdentity",
     "SystemScenarioDefinition",
     "FidelityManifest",
+    "L0AssumptionContribution",
+    "TechnologyDeltaContribution",
     "ResolvedSystemScenario",
     "SystemScenarioResult",
     "resolve_system_scenario_shell",

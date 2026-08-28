@@ -13,6 +13,8 @@ import math
 from enum import Enum
 from typing import Any, Mapping
 
+from src.vde_core.technology_delta import tech_delta_assumption_from_dict
+
 from .contracts import (
     QUICK_SCENARIO_CONTRACT_VERSION,
     DomainReadiness,
@@ -24,7 +26,6 @@ from .contracts import (
     ReferencePressureProvenance,
     ScalarChange,
     ScalarChangeMode,
-    TechDeltaAssumption,
     TirePressureDelta,
     TireQuickChange,
     TireSource,
@@ -139,20 +140,6 @@ def quick_vehicle_readiness_from_dict(data: Mapping[str, Any] | None) -> QuickVe
         mass=DomainReadiness(_get(data, "mass") or DomainReadiness.NOT_REQUESTED.value),
         aero=DomainReadiness(_get(data, "aero") or DomainReadiness.NOT_REQUESTED.value),
         tire=DomainReadiness(_get(data, "tire") or DomainReadiness.NOT_REQUESTED.value),
-    )
-
-
-def tech_delta_assumption_from_dict(data: Mapping[str, Any]) -> TechDeltaAssumption:
-    return TechDeltaAssumption(
-        name=data["name"],
-        effect_basis=data["effect_basis"],
-        effect_value=float(data["effect_value"]),
-        affected_subsystem=_get(data, "affected_subsystem", "whole powertrain"),
-        source_type=_get(data, "source_type", "manual"),
-        maturity_level=_get(data, "maturity_level", "engineering_assumption"),
-        confidence=_get(data, "confidence", "unknown"),
-        notes=_get(data, "notes", ""),
-        enabled=bool(_get(data, "enabled", True)),
     )
 
 

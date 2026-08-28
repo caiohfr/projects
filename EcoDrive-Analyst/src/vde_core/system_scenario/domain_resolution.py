@@ -22,7 +22,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Any, Mapping, Sequence
 
-from src.vde_core.quick_scenario.contracts import TechDeltaAssumption
+from src.vde_core.technology_delta import TechDeltaAssumption
 
 from .contracts import DomainProposal, DomainProposalIdentity, EffectiveDomainState
 
@@ -54,7 +54,7 @@ def resolve_domain_proposal(
     through, unmodified and uncombined (Sec 19/20: this function never
     infers a quantitative effect from `requested_changes`, and never
     stacks the supplied Technology Deltas -- that composition step is
-    Sprint 11C's job once a deterministic cross-domain order exists).
+    Sprint 11C's L0 adapter's job after fixed cross-domain ordering).
     """
 
     requested_changes = dict(requested_changes or {})

@@ -22,9 +22,9 @@
 # reference to an already-resolved frozen Sprint 9 `VehicleDemandResult`
 # (`src/vde_core/vehicle_demand/contracts.py`), never a re-derivation of
 # roadload/VDE physics (INV-11-006). Nothing in this module imports
-# `fuel_estimation.py`/`powertrain_efficiency.py`/`technology_delta.py`
-# either -- Sprint 11A defines contracts only; wiring to the existing L0
-# solver is Sprint 11C's job (spec Sec 28).
+# `fuel_estimation.py`/`powertrain_efficiency.py`; it imports only the shared
+# typed Technology Delta contract from its neutral owner. Calculation wiring
+# lives in Sprint 11C's `resolver.py`/`l0_adapter.py` (spec Sec 28), not here.
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Mapping, Union
 
-from src.vde_core.quick_scenario.contracts import TechDeltaAssumption
+from src.vde_core.technology_delta import TechDeltaAssumption
 from src.vde_core.vehicle_demand import VehicleDemandResult
 
 SYSTEM_SCENARIO_CONTRACT_VERSION = "0.1"
@@ -107,13 +107,20 @@ class ArchitectureClass(_TextEnum):
 class FidelityLevel(_TextEnum):
     """Sec 23: minimum Fidelity Manifest semantics. Answers "did this domain
     actually influence this result at this fidelity?" -- populated by a
-    future resolver (11C), not by this contracts module.
+    the Sprint 11C resolver, not by this contracts module.
     """
 
     QUANTITATIVE = "QUANTITATIVE"
     EFFECTIVE_ASSUMPTION = "EFFECTIVE_ASSUMPTION"
     CONFIGURATION_ONLY = "CONFIGURATION_ONLY"
     NOT_REPRESENTED = "NOT_REPRESENTED"
+
+
+class SolverReadiness(_TextEnum):
+    """Energy Balance L0 readiness, kept separate from domain completeness."""
+
+    READY = "READY"
+    NOT_READY = "NOT_READY"
 
 
 class DomainApplicability(_TextEnum):
@@ -319,7 +326,7 @@ def _require_matching_configuration_type(domain: DomainKind, configuration: Doma
 
 
 # Sec 6/Case L: architecture applicability as a classification lookup only
-# -- no graph, no simulation. A future resolver (11C) may use this to help
+# -- no graph, no simulation. The Sprint 11C resolver uses this to help
 # decide FidelityLevel.NOT_REPRESENTED for a structurally inapplicable
 # domain; this module never blocks construction on it.
 _TYPICALLY_INAPPLICABLE_DOMAINS_BY_ARCHITECTURE: Mapping[ArchitectureClass, frozenset[DomainKind]] = {
@@ -530,12 +537,12 @@ class DomainProposal:
     `technology_deltas` (Sprint 11B Sec 20) associates this proposal with
     existing canonical Technology Delta assumption(s), reusing the SAME
     `TechDeltaAssumption` dataclass Quick Scenario already uses
-    (`src.vde_core.quick_scenario.contracts.TechDeltaAssumption`) rather
+    (`src.vde_core.technology_delta.TechDeltaAssumption`) rather
     than a second schema -- preserving `affected_subsystem`/`effect_basis`/
     `effect_value`/`source_type`/`maturity_level`/`confidence` verbatim.
     This is association/storage only: this contract never stacks or
-    combines these deltas (that is Sprint 11C's job, once a deterministic
-    cross-domain order is defined -- see the Sprint 11A/11B CASE A finding).
+    combines these deltas (Sprint 11C's L0 adapter does that once, after the
+    resolver establishes deterministic cross-domain order).
     Local order within one proposal's `technology_deltas` tuple is
     preserved as given (Sec 21) since it is a plain tuple, not a set/dict.
 
@@ -664,7 +671,7 @@ class SystemScenarioDefinition:
 
 # -----------------------------------------------------------------------------
 # Resolution/result shell (Sec 25/28): ResolvedSystemScenario is the
-# immutable/effective snapshot a future solver (11C) would consume; it must
+# immutable/effective snapshot the Sprint 11C solver consumes; it must
 # not query Streamlit/session state during calculation. SystemScenarioResult
 # is the result+audit shell -- Sprint 11A defines the shape only, no
 # resolver/solver wiring (that's 11B/11C).
@@ -698,40 +705,63 @@ class FidelityManifest:
 @dataclass(frozen=True)
 class ResolvedSystemScenario:
     """Sec 25: the immutable, effective snapshot a solver would consume.
-    `resolved_domains` mirrors `SystemScenarioDefinition.slots` but is the
-    frozen, audit-ready form after any future resolution step (11C) --
-    Sprint 11A's resolver is intentionally trivial (see
-    `resolve_system_scenario_shell` below): it copies the definition's own
-    slots verbatim and reports fidelity for each populated domain as
-    QUANTITATIVE for VEHICLE_DEMAND (already a real physics result) and
-    CONFIGURATION_ONLY for every other populated domain (no L0 wiring exists
-    yet in 11A to justify a stronger claim) -- 11C is expected to replace
-    this trivial mapping with real solver-readiness logic.
+    `resolved_domains` mirrors `SystemScenarioDefinition.slots` in fixed
+    canonical domain order. Sprint 11C additionally records the concrete L0
+    request, readiness, explicitly ordered Technology Deltas, and aggregate
+    assumptions that produced the Fidelity Manifest. The historical 11A
+    `resolve_system_scenario_shell` remains available only as a compatibility
+    helper; new calculation paths use `resolver.resolve_system_scenario`.
     """
 
     identity: SystemScenarioIdentity
     resolved_domains: Mapping[DomainKind, DomainSelection]
     fidelity_manifest: FidelityManifest
     architecture_class: ArchitectureClass | None = None
+    solver_readiness: SolverReadiness = SolverReadiness.NOT_READY
+    fuel_estimate_request: object | None = None
+    ordered_technology_deltas: tuple[TechDeltaAssumption, ...] = ()
+    l0_effective_assumptions: Mapping[str, float] = field(default_factory=dict)
     issues: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class SystemScenarioResult:
-    """Sec 25/28: result + audit shell. `fuel_estimate_result` stays `None`
-    in Sprint 11A -- no System Scenario calculation is implemented yet
-    (explicitly deferred to 11C's EnergyBalanceL0Adapter). The shape exists
-    now so `ResolvedSystemScenario` -> `SystemScenarioResult` is a stable
-    seam 11C fills in without redesigning this contract, and so this result
-    is already a clean future Comparison input (Sec 32) with zero
-    recalculation required later.
+    """Sec 25/28: result + audit boundary populated by Sprint 11C's
+    EnergyBalanceL0Adapter. The canonical FuelEstimateResult and optional
+    canonical Technology Delta audit result remain separately inspectable;
+    `effective_outputs` is the already-calculated future Comparison view.
     """
 
     identity: SystemScenarioIdentity
     resolved_scenario: ResolvedSystemScenario
     fuel_estimate_result: object | None = None
+    technology_delta_result: Mapping[str, Any] | None = None
     warnings: tuple[str, ...] = ()
     contract_version: str = SYSTEM_SCENARIO_CONTRACT_VERSION
+
+    @property
+    def effective_outputs(self) -> Mapping[str, Any]:
+        """Final L0 outputs, already calculated and Comparison-ready.
+
+        Technology Delta's canonical proposal snapshot takes precedence
+        when present; otherwise this exposes the canonical FuelEstimateResult
+        fields. No formula or recalculation occurs here.
+        """
+
+        if self.technology_delta_result is not None:
+            proposal = self.technology_delta_result.get("proposal")
+            if proposal is not None:
+                return dict(proposal)
+        result = self.fuel_estimate_result
+        if result is None:
+            return {}
+        return {
+            "fuel_l_100km": getattr(result, "fuel_l_100km", None),
+            "energy_Wh_km": getattr(result, "energy_Wh_km", None),
+            "gco2_km": getattr(result, "gco2_km", None),
+            "method": getattr(result, "method", None),
+            "confidence": getattr(result, "confidence", None),
+        }
 
 
 def resolve_system_scenario_shell(definition: SystemScenarioDefinition) -> ResolvedSystemScenario:
@@ -743,8 +773,10 @@ def resolve_system_scenario_shell(definition: SystemScenarioDefinition) -> Resol
     domain is CONFIGURATION_ONLY (Sprint 11A wires no L0 wiring for them
     yet); unpopulated domains are NOT_REPRESENTED. `architecture_class` is
     read straight off the ARCHITECTURE slot's configuration when present.
-    11C is expected to replace this function's fidelity logic with real
-    solver-readiness semantics -- it is not the final resolver.
+    Kept for backward compatibility with 11A/11B callers and tests. Sprint
+    11C calculation paths use `resolver.resolve_system_scenario`, which adds
+    real solver-readiness, request construction, and deterministic delta
+    composition; this shell is not the final resolver.
     """
 
     fidelity: dict[DomainKind, FidelityLevel] = {}
@@ -785,6 +817,7 @@ __all__ = [
     "DomainApplicability",
     "domain_applicability_for",
     "FidelityLevel",
+    "SolverReadiness",
     "ProvenanceKind",
     "VehicleDemandConfiguration",
     "ArchitectureConfiguration",

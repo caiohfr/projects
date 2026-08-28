@@ -43,10 +43,14 @@ from src.vde_core.database_management_service import get_record
 from src.vde_core.fuel_energy import GCO2_PER_L, LHV_MJ_PER_L
 from src.vde_core.fuel_estimation import FuelEstimateRequest, FuelEstimateResult, run_fuel_estimation
 from src.vde_core.pwt_fuel_energy_service import derive_reference_pse, resolve_reference_fuel_type
-from src.vde_core.technology_delta import apply_delta_stack_to_baseline, normalize_technology_delta
+from src.vde_core.technology_delta import (
+    apply_delta_stack_to_baseline,
+    normalize_technology_delta,
+    tech_delta_assumption_to_dict,
+)
 from src.vde_core.vehicle_demand import RoadloadBasis
 
-from .contracts import DomainReadiness, QuickScenario, TechDeltaAssumption
+from .contracts import DomainReadiness, QuickScenario
 from .efficiency_resolution import (
     MlPseRecommendation,
     PseReference,
@@ -257,20 +261,6 @@ def _resolve_ml_recommendation(
     return recommendation
 
 
-def _tech_delta_assumption_to_dict(assumption: TechDeltaAssumption) -> dict[str, Any]:
-    return {
-        "name": assumption.name,
-        "affected_subsystem": assumption.affected_subsystem,
-        "source_type": assumption.source_type,
-        "maturity_level": assumption.maturity_level,
-        "effect_basis": assumption.effect_basis,
-        "effect_value": assumption.effect_value,
-        "confidence": assumption.confidence,
-        "notes": assumption.notes,
-        "enabled": assumption.enabled,
-    }
-
-
 def _resolve_tech_delta_suggestion(
     quick_scenario: QuickScenario,
     vehicle_resolution: QuickVehicleResolution,
@@ -304,7 +294,7 @@ def _resolve_tech_delta_suggestion(
     baseline_result = run_fuel_estimation(baseline_request)
 
     normalized = [
-        normalize_technology_delta(_tech_delta_assumption_to_dict(delta), index=index + 1)
+        normalize_technology_delta(tech_delta_assumption_to_dict(delta), index=index + 1)
         for index, delta in enumerate(deltas)
     ]
     demand = _demand_mj_per_km(vehicle_resolution, basis)

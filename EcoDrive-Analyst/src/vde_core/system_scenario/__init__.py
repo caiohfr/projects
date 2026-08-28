@@ -1,8 +1,7 @@
 # src/vde_core/system_scenario/__init__.py
 # -----------------------------------------------------------------------------
-# Sprint 11A/11B - canonical, Streamlit-free contracts + legacy adapters +
-# domain resolution service for the multi-domain System Scenario
-# architecture.
+# Sprint 11A-11C - canonical, Streamlit-free multi-domain System Scenario
+# contracts, composition, and Energy Balance L0 adapter.
 #
 #     legacy vde_db/fuelcons_db row
 #         -> adapter (legacy_adapter.py)
@@ -14,15 +13,16 @@
 #         -> [11C] SystemScenarioResult
 #
 # `contracts.py` defines data shape only and stays Streamlit- and DB-free
-# (it does import the existing canonical `TechDeltaAssumption` from
-# `quick_scenario.contracts` -- reuse, not a second Technology Delta
-# schema). `legacy_adapter.py` is the one place this package touches a raw
+# (it imports the canonical `TechDeltaAssumption` from the neutral
+# `technology_delta` owner -- reuse, not a second schema).
+# `legacy_adapter.py` is the one place this package touches a raw
 # row shape, and it never exposes that shape through the canonical
 # contracts themselves (INV-11-012). `domain_resolution.py` is the
 # Streamlit-independent service layer that turns Effective Current +
-# requested changes into a Domain Proposal. No file in this package
-# imports Streamlit, calls `fuel_estimation.run_fuel_estimation`, or
-# stacks/combines Technology Deltas -- see
+# requested changes into a Domain Proposal. `resolver.py` composes those
+# selections in fixed domain order; `l0_adapter.py` delegates once to the
+# existing fuel-estimation and Technology Delta owners. No file imports
+# Streamlit or implements physical equations -- see
 # docs/sprints/SPRINT_11A_SYSTEM_SCENARIO_CONTRACTS.md and
 # docs/sprints/SPRINT_11B_DOMAIN_STATES_AND_PROPOSALS.md for the full
 # audit and design record this package was built against.
@@ -53,6 +53,7 @@ from .contracts import (
     FidelityManifest,
     ProvenanceKind,
     ResolvedSystemScenario,
+    SolverReadiness,
     SystemScenarioDefinition,
     SystemScenarioIdentity,
     SystemScenarioResult,
@@ -66,6 +67,11 @@ from .contracts import (
     resolve_system_scenario_shell,
 )
 from .domain_resolution import changed_fields, resolve_domain_proposal
+from .l0_adapter import (
+    EnergyBalanceL0Adapter,
+    build_energy_balance_l0_request,
+    energy_balance_l0_readiness_issues,
+)
 from .legacy_adapter import (
     architecture_domain_state_from_legacy_vde_row,
     aux_thermal_domain_state_from_legacy_row,
@@ -78,6 +84,12 @@ from .legacy_adapter import (
     vehicle_demand_domain_state_from_result,
 )
 from .serialization import to_serializable
+from .resolver import (
+    resolve_system_scenario,
+    resolve_system_scenarios,
+    run_system_scenario,
+    run_system_scenarios,
+)
 
 __all__ = [
     "SYSTEM_SCENARIO_CONTRACT_VERSION",
@@ -89,6 +101,7 @@ __all__ = [
     "DomainApplicability",
     "domain_applicability_for",
     "FidelityLevel",
+    "SolverReadiness",
     "ProvenanceKind",
     "VehicleDemandConfiguration",
     "ArchitectureConfiguration",
@@ -115,6 +128,13 @@ __all__ = [
     "ResolvedSystemScenario",
     "SystemScenarioResult",
     "resolve_system_scenario_shell",
+    "resolve_system_scenario",
+    "resolve_system_scenarios",
+    "run_system_scenario",
+    "run_system_scenarios",
+    "EnergyBalanceL0Adapter",
+    "build_energy_balance_l0_request",
+    "energy_balance_l0_readiness_issues",
     "resolve_domain_proposal",
     "changed_fields",
     "vehicle_demand_domain_state_from_result",

@@ -162,15 +162,19 @@ class ResolveDomainProposalTests(unittest.TestCase):
         # in l0_effective_assumption, verbatim.
         self.assertEqual(proposal.l0_effective_assumption, {})
 
-    def test_system_scenario_package_never_imports_the_delta_stacking_function(self):
-        # Architectural confirmation (Sec 25/38): no file in this package
-        # imports or calls technology_delta.apply_delta_stack_to_baseline.
+    def test_only_11c_l0_adapter_imports_the_canonical_delta_stack(self):
+        # The 11A/11B contract/domain services still do not stack. Sprint
+        # 11C's dedicated adapter imports the exact canonical owner rather
+        # than a local copy.
         import src.vde_core.system_scenario.contracts as contracts_module
         import src.vde_core.system_scenario.domain_resolution as domain_resolution_module
         import src.vde_core.system_scenario.legacy_adapter as legacy_adapter_module
+        import src.vde_core.system_scenario.l0_adapter as l0_adapter_module
+        from src.vde_core.technology_delta import apply_delta_stack_to_baseline
 
         for module in (contracts_module, domain_resolution_module, legacy_adapter_module):
             self.assertFalse(hasattr(module, "apply_delta_stack_to_baseline"))
+        self.assertIs(l0_adapter_module.apply_delta_stack_to_baseline, apply_delta_stack_to_baseline)
 
 
 class ChangedFieldsTests(unittest.TestCase):

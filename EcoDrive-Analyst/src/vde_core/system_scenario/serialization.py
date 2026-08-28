@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from src.vde_core.quick_scenario.serialization import tech_delta_assumption_from_dict
+from src.vde_core.technology_delta import tech_delta_assumption_from_dict
 from src.vde_core.vehicle_demand.serialization import to_serializable
 
 from .contracts import (

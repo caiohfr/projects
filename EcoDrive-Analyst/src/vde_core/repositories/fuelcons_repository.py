@@ -29,8 +29,12 @@ def fetch_fuelcons_distinct_electrifications() -> list[str]:
 def fetch_fuelcons_by_vde_id(vde_id: int) -> list[dict]:
     return fetchall(
         (
-            "SELECT id, created_at, method_note, electrification, energy_basis, engine_method, engine_version, "
+            "SELECT id, vde_id, created_at, method_note, electrification, energy_basis, engine_method, engine_version, "
             "source_vde_revision, assumptions_json, provenance_json, "
+            "fuel_type, eta_pt_est, bev_eff_drive, utility_factor_pct, "
+            "engine_max_power_kw, engine_max_torque_nm, "
+            "battery_capacity_kwh, battery_usable_kwh, bms_discharge_limit_kw, bms_regen_limit_kw, bms_note, "
+            "ambient_temp_c, ac_on, "
             "fuel_l_per_100km, fuel_km_per_l, energy_Wh_per_km, gco2_per_km, "
             "fuel_ftp75_l_per_100km, fuel_hwfet_l_per_100km, "
             "energy_ftp75_Wh_per_km, energy_hwfet_Wh_per_km, "

@@ -24,7 +24,7 @@ from typing import Any, Mapping, Sequence
 
 from src.vde_core.technology_delta import TechDeltaAssumption
 
-from .contracts import DomainProposal, DomainProposalIdentity, EffectiveDomainState
+from .contracts import DomainProposal, DomainProposalIdentity, EffectiveDomainState, ProvenanceKind
 
 
 def resolve_domain_proposal(
@@ -34,6 +34,7 @@ def resolve_domain_proposal(
     *,
     label: str | None = None,
     l0_effective_assumption: Mapping[str, float] | None = None,
+    l0_assumption_provenance: Mapping[str, ProvenanceKind] | None = None,
     technology_deltas: Sequence[TechDeltaAssumption] = (),
     notes: str = "",
 ) -> DomainProposal:
@@ -66,6 +67,7 @@ def resolve_domain_proposal(
         based_on=based_on,
         label=label,
         l0_effective_assumption=dict(l0_effective_assumption or {}),
+        l0_assumption_provenance=dict(l0_assumption_provenance or {}),
         technology_deltas=tuple(technology_deltas),
         requested_changes=requested_changes,
         notes=notes,

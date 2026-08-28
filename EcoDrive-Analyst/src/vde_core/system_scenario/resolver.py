@@ -166,7 +166,9 @@ def _compose(
                                 value=value,
                                 domain=domain,
                                 proposal_id=proposal_id,
-                                provenance=ProvenanceKind.ASSUMED,
+                                provenance=selection.l0_assumption_provenance.get(
+                                    key, ProvenanceKind.ASSUMED
+                                ),
                             )
                         )
                     represented = True

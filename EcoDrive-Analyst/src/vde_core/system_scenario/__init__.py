@@ -85,6 +85,7 @@ from .legacy_adapter import (
     transmission_domain_state_from_legacy_row,
     vehicle_demand_domain_state_from_legacy_vde_row,
     vehicle_demand_domain_state_from_result,
+    vehicle_demand_domain_state_from_snapshot_row,
 )
 from .serialization import to_serializable
 from .resolver import (
@@ -144,6 +145,7 @@ __all__ = [
     "resolve_domain_proposal",
     "changed_fields",
     "vehicle_demand_domain_state_from_result",
+    "vehicle_demand_domain_state_from_snapshot_row",
     "vehicle_demand_domain_state_from_legacy_vde_row",
     "engine_domain_state_from_legacy_row",
     "transmission_domain_state_from_legacy_row",

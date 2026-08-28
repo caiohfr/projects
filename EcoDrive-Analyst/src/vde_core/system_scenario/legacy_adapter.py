@@ -39,7 +39,12 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from src.vde_core.vehicle_demand import VehicleDemandResult, calculate_vehicle_demand
+from src.vde_core.vehicle_demand import (
+    RoadloadBasis,
+    VehicleDemandResult,
+    VehicleDemandSummary,
+    calculate_vehicle_demand,
+)
 from src.vde_core.vehicle_demand.adapters import (
     build_vehicle_demand_request,
     resolve_vehicle_demand_cycle,
@@ -93,6 +98,46 @@ def vehicle_demand_domain_state_from_result(
         ),
         provenance=ProvenanceKind.CALCULATED,
     )
+
+
+def vehicle_demand_domain_state_from_snapshot_row(
+    vde_row: Mapping[str, Any], *, source_identity: str | None = None
+) -> DomainSourceState:
+    """Adapt an already-calculated legacy VDE snapshot without recalculation.
+
+    The Powertrain System Scenario UX selects persisted Vehicle Demand
+    snapshots.  It must not rerun roadload physics merely because a scenario
+    column selected a different snapshot.  This boundary therefore wraps the
+    stored, explicit TOTAL/NET values in the frozen Sprint 9 result contract.
+    Missing remains ``None`` and TOTAL never falls back to NET (or vice versa).
+    """
+
+    total = vde_row.get("vde_total_mj_per_km")
+    net = vde_row.get("vde_net_mj_per_km")
+    cycle_name = vde_row.get("cycle_name")
+    cycle_source = vde_row.get("legislation")
+    result = VehicleDemandResult(
+        total_summary=VehicleDemandSummary(
+            roadload_basis=RoadloadBasis.TOTAL,
+            vde_mj_per_km=float(total) if total is not None else None,
+            cycle_name=str(cycle_name) if cycle_name not in (None, "") else None,
+            cycle_source=str(cycle_source) if cycle_source not in (None, "") else None,
+            provenance={"vde_mj_per_km": "persisted_vde_snapshot"},
+        ),
+        net_summary=(
+            VehicleDemandSummary(
+                roadload_basis=RoadloadBasis.NET,
+                vde_mj_per_km=float(net),
+                cycle_name=str(cycle_name) if cycle_name not in (None, "") else None,
+                cycle_source=str(cycle_source) if cycle_source not in (None, "") else None,
+                provenance={"vde_mj_per_km": "persisted_vde_snapshot"},
+            )
+            if net is not None
+            else None
+        ),
+        metadata={"snapshot_id": vde_row.get("id")},
+    )
+    return vehicle_demand_domain_state_from_result(result, source_identity=source_identity)
 
 
 def vehicle_demand_domain_state_from_legacy_vde_row(
@@ -307,6 +352,7 @@ def aux_thermal_domain_state_from_legacy_row(fuelcons_row: Mapping[str, Any] | N
 
 __all__ = [
     "vehicle_demand_domain_state_from_result",
+    "vehicle_demand_domain_state_from_snapshot_row",
     "vehicle_demand_domain_state_from_legacy_vde_row",
     "architecture_domain_state_from_legacy_vde_row",
     "engine_domain_state_from_legacy_row",

@@ -564,6 +564,7 @@ class DomainProposal:
     based_on: EffectiveDomainState
     label: str | None = None
     l0_effective_assumption: Mapping[str, float] = field(default_factory=dict)
+    l0_assumption_provenance: Mapping[str, ProvenanceKind] = field(default_factory=dict)
     technology_deltas: tuple[TechDeltaAssumption, ...] = ()
     requested_changes: Mapping[str, Any] = field(default_factory=dict)
     notes: str = ""
@@ -593,6 +594,17 @@ class DomainProposal:
             self,
             "l0_effective_assumption",
             MappingProxyType(dict(self.l0_effective_assumption)),
+        )
+        unknown_provenance = set(self.l0_assumption_provenance) - set(self.l0_effective_assumption)
+        if unknown_provenance:
+            raise ValueError(
+                "DomainProposal.l0_assumption_provenance contains keys without an L0 assumption: "
+                + ", ".join(sorted(unknown_provenance))
+            )
+        object.__setattr__(
+            self,
+            "l0_assumption_provenance",
+            MappingProxyType(dict(self.l0_assumption_provenance)),
         )
         object.__setattr__(self, "requested_changes", MappingProxyType(dict(self.requested_changes)))
 

@@ -38,6 +38,18 @@ class PowertrainSystemScenarioSourceLoadingTests(unittest.TestCase):
 
         self.assertEqual(pwt_system_scenario._working_set_vde_ids(1, drafts), (1, 2))
 
+    def test_working_set_uses_current_draft_not_an_obsolete_anchor(self):
+        current = replace(current_draft(1, ArchitectureClass.ICE), vde_id=2)
+        drafts = add_proposal_draft((current,), vde_id=3, architecture=ArchitectureClass.ICE)
+
+        self.assertEqual(pwt_system_scenario._working_set_vde_ids(1, drafts), (2, 3))
+
+    def test_canonical_delta_options_exclude_unsupported_energy_percent_delta(self):
+        self.assertNotIn(
+            "energy_percent_delta",
+            pwt_system_scenario._CANONICAL_TECH_DELTA_EFFECT_BASES,
+        )
+
     @patch("src.vde_app.components.pwt_system_scenario.fetch_fuelcons_by_vde")
     @patch("src.vde_app.components.pwt_system_scenario.fetch_vde_rows_by_ids")
     @patch("src.vde_app.components.pwt_system_scenario.load_baselines_df")
@@ -68,7 +80,6 @@ class PowertrainSystemScenarioSourceLoadingTests(unittest.TestCase):
         with patch.object(pwt_system_scenario, "ScenarioSource", wraps=ScenarioSource) as source_constructor:
             sources, labels = pwt_system_scenario._load_sources(
                 1,
-                {"id": 1, "make": "Synthetic", "model": "1", "vde_total_mj_per_km": 1.8},
                 drafts=drafts,
             )
 

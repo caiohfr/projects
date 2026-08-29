@@ -7,7 +7,6 @@ from src.vde_app.state import ensure_pwt_sidebar_defaults
 from src.vde_app.components.pwt_fuel_energy import (
     inject_powertrain_scenario_style,
     render_powertrain_sidebar_controls,
-    resolve_active_vde_source,
 )
 from src.vde_app.components.pwt_system_scenario import render_system_scenario_workspace
 
@@ -25,15 +24,7 @@ def main():
         "Compose Current and up to three independent multi-domain Proposals, then calculate all ready scenarios through Energy Balance L0."
     )
 
-    # Resolve the Current anchor without rendering the legacy source-pairing
-    # workflow above the System Scenario composition matrix.
-    vde_id, vde_row = resolve_active_vde_source()
-    if not vde_id:
-        st.info("No VDE_DB snapshots are available. Create one on VDE Setup to compose a System Scenario.")
-        return
-
-    st.session_state["current_vde_id"] = int(vde_id)
-    render_system_scenario_workspace(vde_id, vde_row)
+    render_system_scenario_workspace()
 
 
 if __name__ == "__main__":

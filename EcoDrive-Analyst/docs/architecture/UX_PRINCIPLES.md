@@ -36,6 +36,12 @@ Selectors use lightweight IDs, labels, and searchable metadata; detailed state
 is loaded only for the active working set. This boundary applies to canonical
 and legacy surfaces alike.
 
+## Baselines and alternatives
+
+Scenario editors establish an explicit baseline first. Alternative scenarios
+inherit from the effective baseline by default, and the UI emphasizes
+deviations rather than repeated unchanged state.
+
 ## Validation
 
 AppTest supplies automated UI evidence, but it does not replace a real browser

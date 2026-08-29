@@ -44,6 +44,7 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
 
     def test_primary_workspace_is_canonical_without_legacy_renderers(self):
         app = self._app()
+        self.assertTrue(any(item.label == "Current baseline" for item in app.selectbox))
         self.assertTrue(any("Multi-domain System Scenarios" in item.value for item in app.subheader))
         self.assertTrue(any("Vehicle Demand" in str(frame.value) for frame in app.dataframe))
         self.assertFalse(any("legacy" in item.label.lower() for item in app.expander))
@@ -54,6 +55,7 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
     def test_incomplete_current_keeps_matrix_visible_and_reports_not_ready(self):
         app = self._app(vde_prefix="#900007 ")
         self.assertTrue(any("Vehicle Demand" in str(frame.value) for frame in app.dataframe))
+        self.assertTrue(any("Assumed ICE" in item.value for item in app.warning))
         app.button(key="pwt_ss:calculate").click().run(timeout=90)
         calculation = app.session_state["pwt_ss_calculations"]["SYS-CURRENT"]
         self.assertIs(calculation.readiness, SolverReadiness.NOT_READY)
@@ -87,7 +89,9 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
 
     def test_current_plus_three_proposals_and_fourth_is_prevented(self):
         app = self._app()
-        for _ in range(3):
+        app.button(key="pwt_ss:add_proposal").click().run(timeout=90)
+        self.assertTrue(any("INHERIT" in str(frame.value) for frame in app.dataframe))
+        for _ in range(2):
             app.button(key="pwt_ss:add_proposal").click().run(timeout=90)
             self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.session_state["pwt_ss_drafts"]), 4)
@@ -142,6 +146,44 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         self.assertTrue(any("Needs recalculation" in item.value for item in app.warning))
         app.button(key="pwt_ss:calculate").click().run(timeout=90)
         self.assertEqual(app.session_state["pwt_ss_calculations"]["SYS-CURRENT"].scenario_id, "SYS-CURRENT")
+
+    def test_current_baseline_change_materializes_current_source_before_engine_edit(self):
+        app = self._app()
+        app.selectbox(key="pwt_ss:current_baseline").set_value(900001).run(timeout=90)
+        self.assertTrue(any("resets domain proposals" in item.value for item in app.warning))
+        app.button(key="pwt_ss:confirm_baseline_change").click().run(timeout=90)
+        self.assertEqual(app.session_state["pwt_ss_drafts"][0].vde_id, 900001)
+
+        app.selectbox(key="pwt_ss:editor:domain").set_value(
+            DomainKind.ENGINE_FUEL_CONVERTER
+        ).run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+
+        app.button(key="pwt_ss:calculate").click().run(timeout=90)
+        calculation = app.session_state["pwt_ss_calculations"]["SYS-CURRENT"]
+        self.assertEqual(calculation.result.selected_vehicle_demand_identity, "vde:900001")
+        self.assertIs(calculation.readiness, SolverReadiness.READY)
+
+    def test_baseline_change_resets_proposals_and_results_but_keeps_identities(self):
+        app = self._app()
+        app.button(key="pwt_ss:add_proposal").click().run(timeout=90)
+        app.button(key="pwt_ss:calculate").click().run(timeout=90)
+        identities_before = [draft.identity for draft in app.session_state["pwt_ss_drafts"]]
+
+        app.selectbox(key="pwt_ss:current_baseline").set_value(900001).run(timeout=90)
+        app.button(key="pwt_ss:confirm_baseline_change").click().run(timeout=90)
+
+        drafts = app.session_state["pwt_ss_drafts"]
+        self.assertEqual([draft.identity for draft in drafts], identities_before)
+        self.assertTrue(all(draft.vde_id == 900001 for draft in drafts))
+        self.assertTrue(
+            all(
+                selection == "CURRENT"
+                for draft in drafts
+                for selection in draft.selections.values()
+            )
+        )
+        self.assertEqual(app.session_state["pwt_ss_calculations"], {})
 
     def test_canonical_page_has_no_legacy_baseline_action(self):
         app = self._app()

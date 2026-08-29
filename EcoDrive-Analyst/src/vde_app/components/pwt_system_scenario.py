@@ -42,6 +42,7 @@ from src.vde_core.system_scenario import (
     FidelityLevel,
     SolverReadiness,
     domain_applicability_for,
+    resolve_system_scenario,
 )
 from src.vde_core.technology_delta import TechDeltaAssumption
 from src.vde_core.vde_setup_service import load_baselines_df
@@ -50,7 +51,7 @@ from src.vde_core.vde_setup_service import load_baselines_df
 _DRAFTS_KEY = "pwt_ss_drafts"
 _PROPOSALS_KEY = "pwt_ss_domain_proposals"
 _RESULTS_KEY = "pwt_ss_calculations"
-_ANCHOR_KEY = "pwt_ss_anchor_vde_id"
+_BASELINE_SELECTOR_KEY = "pwt_ss:current_baseline"
 
 _DOMAIN_LABELS: Mapping[DomainKind, str] = {
     DomainKind.VEHICLE_DEMAND: "Vehicle Demand",
@@ -128,6 +129,11 @@ _ASSUMPTION_OPTIONS: Mapping[DomainKind, tuple[tuple[str, str], ...]] = {
     ),
 }
 
+_CANONICAL_TECH_DELTA_EFFECT_BASES = (
+    "pse_percent_delta",
+    "fuel_percent_delta",
+)
+
 _FIDELITY_LABELS = {
     FidelityLevel.QUANTITATIVE: "Quantitative",
     FidelityLevel.EFFECTIVE_ASSUMPTION: "Effective assumption",
@@ -153,26 +159,41 @@ def _latest_fuel_row(vde_id: int) -> dict[str, Any]:
 
 
 def _working_set_vde_ids(
-    active_vde_id: int,
+    current_vde_id: int,
     drafts: tuple[ScenarioDraft, ...],
 ) -> tuple[int, ...]:
-    """Return the Current anchor and the selected Proposal source ids only.
+    """Return detailed source ids for the active System Scenario working set.
 
     Discovery remains intentionally separate: the VDE selector needs every
     lightweight label, while resolver sources are materialized only for the
     four scenarios that can be active in this workspace.
     """
 
-    working_ids = {int(active_vde_id)}
-    for draft in drafts:
-        if draft.identity.proposal_index is not None:
-            working_ids.add(int(draft.vde_id))
+    working_ids = {int(draft.vde_id) for draft in drafts}
+    if not working_ids:
+        working_ids.add(int(current_vde_id))
     return tuple(sorted(working_ids))
 
 
+def _discover_source_labels() -> dict[int, str]:
+    frame = load_baselines_df()
+    if frame is None or frame.empty:
+        return {}
+
+    labels: dict[int, str] = {}
+    for row in frame.to_dict("records"):
+        if row.get("id") is None:
+            continue
+        vde_id = int(row["id"])
+        vehicle = f"{row.get('make') or ''} {row.get('model') or ''}".strip()
+        year = row.get("year")
+        year_text = str(int(year)) if pd.notna(year) else ""
+        labels[vde_id] = f"VDE-{vde_id} - {vehicle or 'Snapshot'} {year_text}".strip()
+    return labels
+
+
 def _load_sources(
-    active_vde_id: int,
-    active_vde_row: Mapping[str, Any],
+    current_vde_id: int,
     *,
     drafts: tuple[ScenarioDraft, ...] = (),
 ) -> tuple[dict[int, ScenarioSource], dict[int, str]]:
@@ -182,12 +203,6 @@ def _load_sources(
     rows: list[dict[str, Any]] = []
     if frame is not None and not frame.empty:
         rows.extend(frame.to_dict("records"))
-    if not any(
-        row.get("id") is not None and int(row["id"]) == int(active_vde_id)
-        for row in rows
-    ):
-        rows.append(dict(active_vde_row))
-
     labels: dict[int, str] = {}
     for row in rows:
         if row.get("id") is None:
@@ -196,7 +211,15 @@ def _load_sources(
         vehicle = f"{row.get('make') or ''} {row.get('model') or ''}".strip()
         labels[vde_id] = f"VDE-{vde_id} · {vehicle or 'Snapshot'}"
 
-    working_ids = _working_set_vde_ids(active_vde_id, drafts)
+    for row in rows:
+        if row.get("id") is None:
+            continue
+        year = row.get("year")
+        if pd.notna(year):
+            vde_id = int(row["id"])
+            labels[vde_id] = f"{labels[vde_id]} · {int(year)}"
+
+    working_ids = _working_set_vde_ids(current_vde_id, drafts)
     detail_frame = fetch_vde_rows_by_ids(working_ids)
     detail_rows = (
         detail_frame.to_dict("records")
@@ -208,9 +231,6 @@ def _load_sources(
         for row in detail_rows
         if row.get("id") is not None
     }
-    # The active source was resolved by the page, so preserve that canonical
-    # row even if a concurrent edit happened between the selector and bulk read.
-    details_by_id[int(active_vde_id)] = dict(active_vde_row)
     sources = {
         vde_id: ScenarioSource(
             vde_id,
@@ -227,25 +247,12 @@ def _architecture_for(source: ScenarioSource) -> ArchitectureClass:
     return ArchitectureClass(raw) if raw in {item.value for item in ArchitectureClass} else ArchitectureClass.ICE
 
 
-def _ensure_state(active_vde_id: int, sources: Mapping[int, ScenarioSource]) -> None:
+def _ensure_state(current_vde_id: int, sources: Mapping[int, ScenarioSource]) -> None:
     if _DRAFTS_KEY not in st.session_state:
-        source = sources[active_vde_id]
-        st.session_state[_DRAFTS_KEY] = (current_draft(active_vde_id, _architecture_for(source)),)
+        source = sources.get(current_vde_id, ScenarioSource(current_vde_id, {"id": current_vde_id}))
+        st.session_state[_DRAFTS_KEY] = (current_draft(current_vde_id, _architecture_for(source)),)
         st.session_state[_PROPOSALS_KEY] = {}
         st.session_state[_RESULTS_KEY] = {}
-        st.session_state[_ANCHOR_KEY] = active_vde_id
-        return
-    previous_anchor = st.session_state.get(_ANCHOR_KEY)
-    if previous_anchor != active_vde_id:
-        drafts = tuple(st.session_state[_DRAFTS_KEY])
-        current = next(draft for draft in drafts if draft.identity.proposal_index is None)
-        updated = replace(
-            current,
-            vde_id=active_vde_id,
-            architecture=_architecture_for(sources[active_vde_id]),
-        )
-        st.session_state[_DRAFTS_KEY] = replace_draft(drafts, updated)
-        st.session_state[_ANCHOR_KEY] = active_vde_id
 
 
 def _drafts() -> tuple[ScenarioDraft, ...]:
@@ -258,6 +265,147 @@ def _proposals() -> dict[str, DomainProposal]:
 
 def _calculations() -> dict[str, ScenarioCalculation]:
     return dict(st.session_state.get(_RESULTS_KEY) or {})
+
+
+def _current_draft(drafts: tuple[ScenarioDraft, ...]) -> ScenarioDraft | None:
+    return next(
+        (
+            draft
+            for draft in drafts
+            if draft.identity.role.value == "CURRENT"
+        ),
+        None,
+    )
+
+
+def _legacy_current_vde_id(source_labels: Mapping[int, str]) -> int | None:
+    """Read an older page's selected VDE only as an initial visible default."""
+
+    legacy_label = str(st.session_state.get("pwt_active_vde_source") or "")
+    if not legacy_label.startswith("#"):
+        return None
+    raw_id = legacy_label.split(" ", 1)[0].removeprefix("#")
+    try:
+        vde_id = int(raw_id)
+    except ValueError:
+        return None
+    return vde_id if vde_id in source_labels else None
+
+
+def _baseline_label(vde_id: int, source_labels: Mapping[int, str]) -> str:
+    return source_labels.get(vde_id, f"VDE-{vde_id} · Snapshot")
+
+
+def _render_current_baseline_selector(
+    drafts: tuple[ScenarioDraft, ...],
+    source_labels: Mapping[int, str],
+) -> tuple[int | None, bool]:
+    """Choose the Current source before any scenario composition is rendered."""
+
+    st.subheader("Current Baseline")
+    st.caption("Search VDE ID, make, model, or year. Detailed data loads only for active scenarios.")
+
+    available_ids = list(source_labels)
+    if not available_ids:
+        st.info("No VDE_DB snapshots are available. Create one on VDE Setup to compose a System Scenario.")
+        return None, False
+
+    current = _current_draft(drafts)
+    current_vde_id = current.vde_id if current is not None else _legacy_current_vde_id(source_labels)
+    index = available_ids.index(current_vde_id) if current_vde_id in available_ids else None
+    selected_vde_id = st.selectbox(
+        "Current baseline",
+        available_ids,
+        index=index,
+        format_func=lambda item: _baseline_label(item, source_labels),
+        placeholder="Search a VDE baseline",
+        key=_BASELINE_SELECTOR_KEY,
+    )
+
+    if selected_vde_id is None:
+        st.info("Select a Current baseline to begin a System Scenario.")
+        return None, False
+
+    if current is None:
+        st.caption(f"Selected: {_baseline_label(selected_vde_id, source_labels)}")
+        return int(selected_vde_id), False
+
+    if int(selected_vde_id) == current.vde_id:
+        st.caption(f"Selected: {_baseline_label(current.vde_id, source_labels)}")
+        return current.vde_id, False
+
+    st.warning(
+        "Changing the Current baseline resets domain proposals and calculated "
+        "results. Scenario identities remain stable, but every proposal returns "
+        "to Inherit from the new Effective Current."
+    )
+    confirmed = st.button(
+        "Apply baseline change and reset scenarios",
+        key="pwt_ss:confirm_baseline_change",
+        type="primary",
+    )
+    return (int(selected_vde_id), bool(confirmed))
+
+
+def _reset_drafts_for_baseline(
+    drafts: tuple[ScenarioDraft, ...],
+    *,
+    vde_id: int,
+    architecture: ArchitectureClass,
+) -> tuple[ScenarioDraft, ...]:
+    inherited_selections = {domain: CURRENT_SELECTION for domain in EDITABLE_DOMAINS}
+    return tuple(
+        replace(
+            draft,
+            vde_id=vde_id,
+            architecture=architecture,
+            selections=inherited_selections,
+        )
+        for draft in drafts
+    )
+
+
+def _current_readiness(
+    draft: ScenarioDraft,
+    sources: Mapping[int, ScenarioSource],
+    proposals: Mapping[str, DomainProposal],
+):
+    definition, request = build_definition(draft, sources=sources, proposals=proposals)
+    return resolve_system_scenario(definition, request_template=request)
+
+
+def _render_current_readiness(
+    draft: ScenarioDraft,
+    sources: Mapping[int, ScenarioSource],
+    proposals: Mapping[str, DomainProposal],
+) -> None:
+    st.markdown("### L0 Input Readiness")
+    resolved = _current_readiness(draft, sources, proposals)
+    source = sources.get(draft.vde_id)
+    if source is None or len(source.vde_row) <= 1:
+        st.error("Selected Current baseline could not be materialized. Choose another VDE snapshot.")
+        return
+
+    observed_architecture = str(source.fuelcons_row.get("electrification") or "").upper()
+    if observed_architecture not in {item.value for item in ArchitectureClass}:
+        st.warning("Architecture: Assumed ICE — confirm or change it in the Architecture domain editor.")
+    else:
+        st.caption(f"Architecture: {draft.architecture.value}")
+
+    vehicle_demand = effective_states_for_source(source)[DomainKind.VEHICLE_DEMAND]
+    result = vehicle_demand.configuration.vehicle_demand_result
+    total = result.total_summary.vde_mj_per_km if result is not None else None
+    if total is None:
+        st.caption("Vehicle Demand: Not defined")
+    else:
+        st.caption(f"Vehicle Demand: {total:.4f} MJ/km TOTAL")
+
+    if resolved.solver_readiness is SolverReadiness.READY:
+        st.success("L0 readiness: READY")
+    else:
+        st.warning("L0 readiness: NOT READY")
+        for issue in resolved.issues:
+            st.caption(f"• {friendly_issue(issue)}")
 
 
 def _scenario_status(
@@ -275,14 +423,60 @@ def _scenario_status(
     return "READY" if calculation.readiness is SolverReadiness.READY else "NOT READY"
 
 
-def _selection_text(draft: ScenarioDraft, domain: DomainKind) -> str:
+def _configuration_summary(domain: DomainKind, source: ScenarioSource | None) -> str:
+    if source is None or len(source.vde_row) <= 1:
+        return "Unavailable"
+
+    state = effective_states_for_source(source)[domain]
+    config = state.configuration
+    if domain is DomainKind.VEHICLE_DEMAND:
+        result = config.vehicle_demand_result
+        total = result.total_summary.vde_mj_per_km if result is not None else None
+        return f"VDE-{source.vde_id} · {total:.4f} MJ/km" if total is not None else f"VDE-{source.vde_id} · Incomplete"
+    if domain is DomainKind.ARCHITECTURE:
+        return config.architecture_class.value if config.architecture_class is not None else "Not defined"
+    if domain is DomainKind.ENGINE_FUEL_CONVERTER:
+        values = []
+        if config.displacement_l is not None:
+            values.append(f"{config.displacement_l:g} L")
+        if config.rated_power_kw is not None:
+            values.append(f"{config.rated_power_kw:g} kW")
+        return " · ".join(values) if values else "Incomplete"
+    if domain is DomainKind.TRANSMISSION_DRIVELINE:
+        values = [config.transmission_type] if config.transmission_type else []
+        if config.gear_count is not None:
+            values.append(f"{config.gear_count} spd")
+        if config.final_drive_ratio is not None:
+            values.append(f"FDR {config.final_drive_ratio:g}")
+        return " · ".join(values) if values else "Incomplete"
+    if domain is DomainKind.ELECTRIC_DRIVE:
+        return "N/A" if state.provenance.value == "NOT_AVAILABLE" else "Incomplete"
+    if domain is DomainKind.ENERGY_STORAGE:
+        value = config.usable_capacity_kwh
+        if value is None:
+            value = config.gross_capacity_kwh
+        return f"{value:g} kWh" if value is not None else "N/A"
+    if domain is DomainKind.ENERGY_MANAGEMENT_CONTROLS:
+        return "Incomplete" if config.utility_factor_pct is None else f"UF {config.utility_factor_pct:g}%"
+    if domain is DomainKind.AUX_THERMAL:
+        return "Incomplete" if config.ambient_temp_c is None else f"{config.ambient_temp_c:g} °C"
+    return "Incomplete"
+
+
+def _selection_text(
+    draft: ScenarioDraft,
+    domain: DomainKind,
+    sources: Mapping[int, ScenarioSource],
+) -> str:
+    if draft.identity.role.value == "CURRENT":
+        return _configuration_summary(domain, sources.get(draft.vde_id))
     if domain is DomainKind.VEHICLE_DEMAND:
         return f"VDE-{draft.vde_id}"
     if domain is DomainKind.ARCHITECTURE:
         return draft.architecture.value
     selection = draft.selection_for(domain)
     if selection == CURRENT_SELECTION:
-        return "Effective Current"
+        return "INHERIT"
     if selection == NOT_APPLICABLE_SELECTION:
         return "N/A"
     return selection
@@ -297,7 +491,7 @@ def _render_matrix(
     matrix: dict[str, list[str]] = {"Domain": [_DOMAIN_LABELS[domain] for domain in DomainKind] + ["Status"]}
     for draft in drafts:
         matrix[draft.label] = [
-            _selection_text(draft, domain) for domain in DomainKind
+            _selection_text(draft, domain, sources) for domain in DomainKind
         ] + [
             _scenario_status(
                 draft,
@@ -457,7 +651,14 @@ def _render_domain_editor(
         st.info(f"{_DOMAIN_LABELS[domain]} is not applicable to {draft.architecture.value}.")
         return drafts, proposals
 
-    source = sources[draft.vde_id]
+    source = sources.get(draft.vde_id)
+    if source is None or len(source.vde_row) <= 1:
+        st.error(
+            "The selected Vehicle Demand source is unavailable for this "
+            "scenario. Select a materialized VDE baseline before editing "
+            "internal domains."
+        )
+        return drafts, proposals
     based_on = effective_states_for_source(source)[domain]
     if st.button("Create Domain Proposal", key=f"{key_base}:create"):
         proposal_id = _next_proposal_id(domain, proposals)
@@ -551,10 +752,10 @@ def _render_domain_editor(
     if use_delta:
         delta_basis = st.selectbox(
             "Effect basis",
-            ["pse_percent_delta", "fuel_percent_delta", "energy_percent_delta"],
+            _CANONICAL_TECH_DELTA_EFFECT_BASES,
             index=(
-                ["pse_percent_delta", "fuel_percent_delta", "energy_percent_delta"].index(prior_delta.effect_basis)
-                if prior_delta and prior_delta.effect_basis in ["pse_percent_delta", "fuel_percent_delta", "energy_percent_delta"]
+                _CANONICAL_TECH_DELTA_EFFECT_BASES.index(prior_delta.effect_basis)
+                if prior_delta and prior_delta.effect_basis in _CANONICAL_TECH_DELTA_EFFECT_BASES
                 else 0
             ),
             key=f"pwt_ss:proposal:{selection}:delta_basis",
@@ -674,18 +875,45 @@ def _render_result(
             )
 
 
-def render_system_scenario_workspace(active_vde_id: int, active_vde_row: Mapping[str, Any]) -> None:
+def render_system_scenario_workspace() -> None:
     """Render one Current + max-three Proposal workspace."""
 
-    sources, source_labels = _load_sources(
-        active_vde_id,
-        active_vde_row,
-        drafts=_drafts(),
+    drafts = _drafts()
+    discovery_labels = _discover_source_labels()
+    current_vde_id, baseline_changed = _render_current_baseline_selector(
+        drafts,
+        discovery_labels,
     )
-    _ensure_state(active_vde_id, sources)
+    if current_vde_id is None:
+        return
+
+    sources, source_labels = _load_sources(current_vde_id, drafts=drafts)
+    if baseline_changed:
+        source = sources.get(
+            current_vde_id,
+            ScenarioSource(current_vde_id, {"id": current_vde_id}),
+        )
+        reset_drafts = _reset_drafts_for_baseline(
+            drafts,
+            vde_id=current_vde_id,
+            architecture=_architecture_for(source),
+        )
+        st.session_state[_DRAFTS_KEY] = reset_drafts
+        st.session_state[_PROPOSALS_KEY] = {}
+        st.session_state[_RESULTS_KEY] = {}
+        st.rerun()
+
+    _ensure_state(current_vde_id, sources)
     drafts = _drafts()
     proposals = _proposals()
     calculations = _calculations()
+    current = _current_draft(drafts)
+    if current is None:
+        st.error("Current scenario state is unavailable. Refresh the workspace.")
+        return
+
+    st.session_state["current_vde_id"] = current.vde_id
+    _render_current_readiness(current, sources, proposals)
 
     st.subheader("Multi-domain System Scenarios")
     st.caption(
@@ -701,8 +929,8 @@ def render_system_scenario_workspace(active_vde_id: int, active_vde_row: Mapping
     ):
         drafts = add_proposal_draft(
             drafts,
-            vde_id=active_vde_id,
-            architecture=_architecture_for(sources[active_vde_id]),
+            vde_id=current.vde_id,
+            architecture=current.architecture,
         )
         st.session_state[_DRAFTS_KEY] = drafts
         st.rerun()

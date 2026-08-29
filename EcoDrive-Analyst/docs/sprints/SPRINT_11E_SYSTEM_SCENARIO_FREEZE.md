@@ -11,8 +11,13 @@ explicit readiness/fidelity/provenance.
 11E is a QA and traceability closure. It introduces no product capability,
 physical formula, PHEV or Technology Delta semantic, schema, persistence,
 Comparison integration, topology graph, or Sprint 12 data work. Subject to
-the manual-smoke limitation recorded below, Sprint 11 is **CODE-CLOSED / NOT
-MANUAL-SMOKE-CLOSED**.
+the post-freeze Sprint 11D UX alignment and the manual recheck recorded below,
+Sprint 11 is **UX HOTFIX APPLIED / MANUAL RECHECK REQUIRED**.
+
+The Sprint 11D hotfix is limited to hierarchy/orchestration: it puts the
+System Scenario matrix before the retained legacy source-pairing workbench.
+See `SPRINT_11D_HOTFIX_UX_ALIGNMENT.md` for the confirmed UX acceptance
+failure, direct AppTest evidence and manual-recheck scope.
 
 ## 2. Baseline and current-branch classification
 
@@ -188,7 +193,10 @@ workbench code is opt-in, avoiding unnecessary ML/Regression reruns.
 
 ## 11. Bugs and hypotheses investigated in 11E
 
-No Sprint 11 bug was confirmed.
+No Sprint 11 core or physics bug was confirmed. A later real manual browser
+observation did confirm the separate UX acceptance failure documented in
+`SPRINT_11D_HOTFIX_UX_ALIGNMENT.md`; its UI hierarchy hotfix is applied and
+awaits manual recheck.
 
 | Item | Classification | Evidence / disposition |
 |---|---|---|
@@ -210,6 +218,8 @@ Delta, Current-plus-three, or stale flow as manual-browser validated.
 This is deliberately separate from the passing 7-test Streamlit AppTest suite:
 Current calculation, bounded scenarios, stable labels, independent VDE, BEV
 N/A/partial result, stale/recalculation, and opt-in legacy evidence behavior.
+The post-freeze UX hotfix adds hierarchy-specific AppTests but does not convert
+AppTest evidence into a manual smoke claim.
 
 ## 13. Regression evidence
 

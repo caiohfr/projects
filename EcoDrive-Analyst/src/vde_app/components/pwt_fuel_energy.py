@@ -317,6 +317,28 @@ def _vde_snapshot_options() -> tuple[list[str], dict[str, int]]:
     return labels, label_to_id
 
 
+def resolve_active_vde_source() -> tuple[Optional[int], Optional[dict[str, Any]]]:
+    """Return the selected VDE snapshot without rendering the legacy workbench.
+
+    The System Scenario workspace needs an anchor source on first render, but its
+    primary composition flow must not be preceded by baseline pairing, metadata,
+    or ML controls.  Those controls remain in :func:`render_active_vde_source_bar`
+    and are deliberately opt-in from the page's advanced workbench.
+    """
+
+    labels, label_to_id = _vde_snapshot_options()
+    if not labels:
+        return None, None
+
+    current_label = st.session_state.get("pwt_active_vde_source")
+    if current_label not in label_to_id:
+        current_label = labels[0]
+        st.session_state["pwt_active_vde_source"] = current_label
+
+    vde_id = label_to_id[current_label]
+    return int(vde_id), fetch_vde_row(vde_id)
+
+
 def render_active_vde_source_bar() -> tuple[Optional[int], Optional[dict[str, Any]]]:
     labels, label_to_id = _vde_snapshot_options()
     if not labels:

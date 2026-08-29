@@ -638,7 +638,7 @@ def render_system_scenario_workspace(active_vde_id: int, active_vde_row: Mapping
         "Each column is an independent complete scenario. The matrix shows composition; edit one domain at a time below."
     )
 
-    action1, action2, action3 = st.columns([1, 1, 2])
+    action1, action2 = st.columns(2)
     if action1.button(
         "Add Proposal",
         disabled=len(drafts) >= 4,
@@ -667,7 +667,11 @@ def render_system_scenario_workspace(active_vde_id: int, active_vde_row: Mapping
         st.session_state[_DRAFTS_KEY] = drafts
         st.session_state[_RESULTS_KEY] = calculations
         st.rerun()
-    if action3.button(
+    drafts = _render_scenario_identity_editor(drafts)
+    st.session_state[_DRAFTS_KEY] = drafts
+    _render_matrix(drafts, calculations, sources, proposals)
+
+    if st.button(
         "Calculate System Scenarios",
         key="pwt_ss:calculate",
         type="primary",
@@ -675,10 +679,7 @@ def render_system_scenario_workspace(active_vde_id: int, active_vde_row: Mapping
     ):
         calculations = dict(calculate_drafts(drafts, sources=sources, proposals=proposals))
         st.session_state[_RESULTS_KEY] = calculations
-
-    drafts = _render_scenario_identity_editor(drafts)
-    st.session_state[_DRAFTS_KEY] = drafts
-    _render_matrix(drafts, calculations, sources, proposals)
+        st.rerun()
 
     st.markdown("### Domain editor")
     drafts, proposals = _render_domain_editor(drafts, sources, source_labels, proposals)

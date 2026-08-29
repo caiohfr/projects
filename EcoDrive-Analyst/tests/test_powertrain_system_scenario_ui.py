@@ -32,15 +32,44 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         gc.collect()
         self._temp_dir.cleanup()
 
-    def _app(self) -> AppTest:
+    def _app(self, *, vde_prefix: str = "#900008 ") -> AppTest:
         app = AppTest.from_file(str(PAGE_PATH))
         labels, _ = _vde_snapshot_options()
         app.session_state["pwt_active_vde_source"] = next(
-            label for label in labels if label.startswith("#900008 ")
+            label for label in labels if label.startswith(vde_prefix)
         )
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
         return app
+
+    def test_primary_workspace_is_visible_before_legacy_source_setup(self):
+        app = self._app()
+        self.assertTrue(any("Multi-domain System Scenarios" in item.value for item in app.subheader))
+        self.assertTrue(any("Vehicle Demand" in str(frame.value) for frame in app.dataframe))
+        self.assertTrue(
+            any(item.label == "Advanced source / legacy workbench" for item in app.expander)
+        )
+        self.assertFalse(any(item.label == "Active VDE snapshot" for item in app.selectbox))
+        self.assertFalse(any(item.label == "Baseline powertrain source" for item in app.selectbox))
+
+    def test_incomplete_current_keeps_matrix_visible_and_reports_not_ready(self):
+        app = self._app(vde_prefix="#900007 ")
+        self.assertTrue(any("Vehicle Demand" in str(frame.value) for frame in app.dataframe))
+        app.button(key="pwt_ss:calculate").click().run(timeout=90)
+        calculation = app.session_state["pwt_ss_calculations"]["SYS-CURRENT"]
+        self.assertIs(calculation.readiness, SolverReadiness.NOT_READY)
+        self.assertTrue(any("NOT READY" in str(frame.value) for frame in app.dataframe))
+
+    def test_legacy_source_and_metadata_are_reachable_only_by_opt_in(self):
+        app = self._app()
+        self.assertTrue(
+            any(item.label == "Technical audit and diagnostics" for item in app.expander)
+        )
+        self.assertTrue(any(item.label == "Metadata audit" for item in app.expander))
+        app.checkbox(key="pwt_ss_load_legacy_source_workbench").set_value(True).run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(any(item.label == "Active VDE snapshot" for item in app.selectbox))
+        self.assertTrue(any(item.label == "Baseline powertrain source" for item in app.selectbox))
 
     def test_current_only_renders_compact_matrix_and_calculates(self):
         app = self._app()

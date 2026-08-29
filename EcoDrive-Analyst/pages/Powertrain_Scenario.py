@@ -12,6 +12,7 @@ from src.vde_app.components.pwt_fuel_energy import (
     render_powertrain_technical_footer,
     render_saved_scenarios_panel,
     render_technology_proposal_workspace,
+    resolve_active_vde_source,
 )
 from src.vde_app.components.pwt_system_scenario import render_system_scenario_workspace
 
@@ -29,15 +30,30 @@ def main():
         "Compose Current and up to three independent multi-domain Proposals, then calculate all ready scenarios through Energy Balance L0."
     )
 
-    vde_id, vde_row = render_active_vde_source_bar()
+    # Resolve the Current anchor without rendering the legacy source-pairing
+    # workflow above the System Scenario composition matrix.
+    vde_id, vde_row = resolve_active_vde_source()
     if not vde_id:
-        st.stop()
+        st.info("No VDE_DB snapshots are available. Create one on VDE Setup to compose a System Scenario.")
+        return
 
     st.session_state["current_vde_id"] = int(vde_id)
     render_system_scenario_workspace(vde_id, vde_row)
 
     st.divider()
-    with st.expander("Evidence and recommendation workbench", expanded=False):
+    with st.expander("Advanced source / legacy workbench", expanded=False):
+        st.caption(
+            "Source pairing, baseline selection and editable metadata are retained for legacy estimates. "
+            "They are optional and do not define a System Scenario until a domain is explicitly composed above."
+        )
+        if st.checkbox("Load source pairing and metadata workbench", key="pwt_ss_load_legacy_source_workbench"):
+            legacy_vde_id, _ = render_active_vde_source_bar()
+            if legacy_vde_id and legacy_vde_id != vde_id:
+                # The legacy selector is intentionally secondary.  Re-run once
+                # so the primary matrix adopts its selected anchor cleanly.
+                st.rerun()
+
+    with st.expander("Advanced evidence and recommendation workbench", expanded=False):
         st.caption(
             "Observed, benchmark, ML, regression, manual and Technology Delta tools remain available as engineering evidence. "
             "They do not change a System Scenario until a value or delta is explicitly adopted in its Domain editor."
@@ -54,8 +70,8 @@ def main():
         if st.checkbox("Load legacy saved estimates", key="pwt_ss_load_saved_estimates"):
             render_saved_scenarios_panel(vde_id)
 
-    st.divider()
-    render_powertrain_technical_footer(vde_id, vde_row)
+    with st.expander("Technical audit and diagnostics", expanded=False):
+        render_powertrain_technical_footer(vde_id, vde_row)
 
 
 if __name__ == "__main__":

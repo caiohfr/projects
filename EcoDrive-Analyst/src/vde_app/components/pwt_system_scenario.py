@@ -32,7 +32,7 @@ from src.vde_app.powertrain_system_scenario_viewmodels import (
 from src.vde_core.pwt_fuel_energy_service import (
     derive_reference_pse,
     fetch_fuelcons_by_vde,
-    fetch_vde_row,
+    fetch_vde_rows_by_ids,
 )
 from src.vde_core.system_scenario import (
     ArchitectureClass,
@@ -152,23 +152,73 @@ def _latest_fuel_row(vde_id: int) -> dict[str, Any]:
     return row
 
 
-def _load_sources(active_vde_id: int, active_vde_row: Mapping[str, Any]) -> tuple[dict[int, ScenarioSource], dict[int, str]]:
+def _working_set_vde_ids(
+    active_vde_id: int,
+    drafts: tuple[ScenarioDraft, ...],
+) -> tuple[int, ...]:
+    """Return the Current anchor and the selected Proposal source ids only.
+
+    Discovery remains intentionally separate: the VDE selector needs every
+    lightweight label, while resolver sources are materialized only for the
+    four scenarios that can be active in this workspace.
+    """
+
+    working_ids = {int(active_vde_id)}
+    for draft in drafts:
+        if draft.identity.proposal_index is not None:
+            working_ids.add(int(draft.vde_id))
+    return tuple(sorted(working_ids))
+
+
+def _load_sources(
+    active_vde_id: int,
+    active_vde_row: Mapping[str, Any],
+    *,
+    drafts: tuple[ScenarioDraft, ...] = (),
+) -> tuple[dict[int, ScenarioSource], dict[int, str]]:
+    """Load selector labels broadly and resolver sources for the working set."""
+
     frame = load_baselines_df()
     rows: list[dict[str, Any]] = []
     if frame is not None and not frame.empty:
         rows.extend(frame.to_dict("records"))
-    if not any(int(row.get("id")) == int(active_vde_id) for row in rows if row.get("id") is not None):
+    if not any(
+        row.get("id") is not None and int(row["id"]) == int(active_vde_id)
+        for row in rows
+    ):
         rows.append(dict(active_vde_row))
-    sources: dict[int, ScenarioSource] = {}
+
     labels: dict[int, str] = {}
     for row in rows:
         if row.get("id") is None:
             continue
         vde_id = int(row["id"])
-        full_row = dict(active_vde_row) if vde_id == int(active_vde_id) else fetch_vde_row(vde_id)
-        sources[vde_id] = ScenarioSource(vde_id, full_row, _latest_fuel_row(vde_id))
         vehicle = f"{row.get('make') or ''} {row.get('model') or ''}".strip()
         labels[vde_id] = f"VDE-{vde_id} · {vehicle or 'Snapshot'}"
+
+    working_ids = _working_set_vde_ids(active_vde_id, drafts)
+    detail_frame = fetch_vde_rows_by_ids(working_ids)
+    detail_rows = (
+        detail_frame.to_dict("records")
+        if detail_frame is not None and not detail_frame.empty
+        else []
+    )
+    details_by_id = {
+        int(row["id"]): dict(row)
+        for row in detail_rows
+        if row.get("id") is not None
+    }
+    # The active source was resolved by the page, so preserve that canonical
+    # row even if a concurrent edit happened between the selector and bulk read.
+    details_by_id[int(active_vde_id)] = dict(active_vde_row)
+    sources = {
+        vde_id: ScenarioSource(
+            vde_id,
+            details_by_id.get(vde_id, {"id": vde_id}),
+            _latest_fuel_row(vde_id),
+        )
+        for vde_id in working_ids
+    }
     return sources, labels
 
 
@@ -627,7 +677,11 @@ def _render_result(
 def render_system_scenario_workspace(active_vde_id: int, active_vde_row: Mapping[str, Any]) -> None:
     """Render one Current + max-three Proposal workspace."""
 
-    sources, source_labels = _load_sources(active_vde_id, active_vde_row)
+    sources, source_labels = _load_sources(
+        active_vde_id,
+        active_vde_row,
+        drafts=_drafts(),
+    )
     _ensure_state(active_vde_id, sources)
     drafts = _drafts()
     proposals = _proposals()

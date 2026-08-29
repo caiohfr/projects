@@ -60,11 +60,15 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         self.assertIs(calculation.readiness, SolverReadiness.NOT_READY)
         self.assertTrue(any("NOT READY" in str(frame.value) for frame in app.dataframe))
 
-    def test_legacy_source_and_metadata_are_reachable_only_by_opt_in(self):
+    def test_legacy_source_and_technical_diagnostics_are_reachable_only_by_opt_in(self):
         app = self._app()
         self.assertTrue(
             any(item.label == "Technical audit and diagnostics" for item in app.expander)
         )
+        self.assertFalse(any(item.label == "Metadata audit" for item in app.expander))
+        self.assertTrue(any(item.label == "Load technical diagnostics" for item in app.checkbox))
+        app.checkbox(key="pwt_ss_load_technical_diagnostics").set_value(True).run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
         self.assertTrue(any(item.label == "Metadata audit" for item in app.expander))
         app.checkbox(key="pwt_ss_load_legacy_source_workbench").set_value(True).run(timeout=90)
         self.assertEqual(len(app.exception), 0)

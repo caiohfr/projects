@@ -71,7 +71,9 @@ def main():
             render_saved_scenarios_panel(vde_id)
 
     with st.expander("Technical audit and diagnostics", expanded=False):
-        render_powertrain_technical_footer(vde_id, vde_row)
+        st.caption("Load only when investigating detailed method, regression or readiness diagnostics.")
+        if st.checkbox("Load technical diagnostics", key="pwt_ss_load_technical_diagnostics"):
+            render_powertrain_technical_footer(vde_id, vde_row)
 
 
 if __name__ == "__main__":

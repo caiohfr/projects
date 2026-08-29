@@ -111,3 +111,13 @@ described as "manual smoke," "manual testing," or "verified in the
 browser." When a real interactive manual smoke pass is required and the
 environment cannot perform one (no browser/display available), that
 limitation is stated plainly rather than implied to have been done.
+
+## Canonical UI surfaces
+
+Canonical pages expose one primary workflow and mental model; retained legacy
+workflows belong on dedicated legacy surfaces. Dense engineering work should
+use either a guided flow or an overview/cockpit with focused drill-down, not an
+accidental hybrid. Canonical audit information may remain inline, but heavy
+diagnostics require explicit opt-in. Large candidate discovery remains separate
+from detailed working-set materialization. AppTest is automated evidence; UX
+acceptance still requires a real browser smoke when available.

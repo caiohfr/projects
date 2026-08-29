@@ -42,15 +42,14 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         return app
 
-    def test_primary_workspace_is_visible_before_legacy_source_setup(self):
+    def test_primary_workspace_is_canonical_without_legacy_renderers(self):
         app = self._app()
         self.assertTrue(any("Multi-domain System Scenarios" in item.value for item in app.subheader))
         self.assertTrue(any("Vehicle Demand" in str(frame.value) for frame in app.dataframe))
-        self.assertTrue(
-            any(item.label == "Advanced source / legacy workbench" for item in app.expander)
-        )
+        self.assertFalse(any("legacy" in item.label.lower() for item in app.expander))
         self.assertFalse(any(item.label == "Active VDE snapshot" for item in app.selectbox))
         self.assertFalse(any(item.label == "Baseline powertrain source" for item in app.selectbox))
+        self.assertFalse(any("Load source pairing" in item.label for item in app.checkbox))
 
     def test_incomplete_current_keeps_matrix_visible_and_reports_not_ready(self):
         app = self._app(vde_prefix="#900007 ")
@@ -60,20 +59,12 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         self.assertIs(calculation.readiness, SolverReadiness.NOT_READY)
         self.assertTrue(any("NOT READY" in str(frame.value) for frame in app.dataframe))
 
-    def test_legacy_source_and_technical_diagnostics_are_reachable_only_by_opt_in(self):
+    def test_canonical_result_keeps_technical_trace_without_legacy_footer(self):
         app = self._app()
-        self.assertTrue(
-            any(item.label == "Technical audit and diagnostics" for item in app.expander)
-        )
-        self.assertFalse(any(item.label == "Metadata audit" for item in app.expander))
-        self.assertTrue(any(item.label == "Load technical diagnostics" for item in app.checkbox))
-        app.checkbox(key="pwt_ss_load_technical_diagnostics").set_value(True).run(timeout=90)
+        self.assertFalse(any(item.label == "Technical audit and diagnostics" for item in app.expander))
+        app.button(key="pwt_ss:calculate").click().run(timeout=90)
         self.assertEqual(len(app.exception), 0)
-        self.assertTrue(any(item.label == "Metadata audit" for item in app.expander))
-        app.checkbox(key="pwt_ss_load_legacy_source_workbench").set_value(True).run(timeout=90)
-        self.assertEqual(len(app.exception), 0)
-        self.assertTrue(any(item.label == "Active VDE snapshot" for item in app.selectbox))
-        self.assertTrue(any(item.label == "Baseline powertrain source" for item in app.selectbox))
+        self.assertTrue(any(item.label == "Technical trace" for item in app.expander))
 
     def test_current_only_renders_compact_matrix_and_calculates(self):
         app = self._app()
@@ -152,12 +143,10 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         app.button(key="pwt_ss:calculate").click().run(timeout=90)
         self.assertEqual(app.session_state["pwt_ss_calculations"]["SYS-CURRENT"].scenario_id, "SYS-CURRENT")
 
-    def test_legacy_evidence_capability_is_opt_in_not_second_default_workflow(self):
+    def test_canonical_page_has_no_legacy_baseline_action(self):
         app = self._app()
         self.assertEqual(len([button for button in app.button if button.label == "Confirm baseline"]), 0)
-        app.checkbox(key="pwt_ss_load_evidence_tools").set_value(True).run(timeout=90)
-        self.assertEqual(len(app.exception), 0)
-        self.assertGreaterEqual(len([button for button in app.button if button.label == "Confirm baseline"]), 1)
+        self.assertFalse(any(item.key == "pwt_ss_load_evidence_tools" for item in app.checkbox))
 
 
 if __name__ == "__main__":

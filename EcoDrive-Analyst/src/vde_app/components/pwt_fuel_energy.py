@@ -5660,26 +5660,37 @@ def render_fuel_review_save_panel(vde_id: int, vde_row: dict, ctx: Dict[str, Any
         st.write(staged.payload)
 
 
-def render_comparison_report_page(vde_id: int, vde_row: dict) -> None:
-    _render_comparison_report_overview(vde_id, vde_row)
-    st.markdown("---")
+def render_legacy_comparison_workspace(vde_id: int, vde_row: dict) -> None:
+    """Render one retained Comparison workflow after explicit selection.
 
-    report_tab, analysis_tab, benchmark_tab, saved_tab = st.tabs(
-        ["Scenario Compare", "Method Analysis", "Peers & Outlook", "Saved Estimates"]
+    Streamlit tabs execute all their bodies, so this legacy surface uses a
+    radio selector to avoid loading historical ML, benchmark, and saved-row
+    work when an engineer needs only one of them.
+    """
+
+    area = st.radio(
+        "Legacy comparison workflow",
+        ["Scenario Compare", "Method Analysis", "Peers & Outlook", "Saved Estimates"],
+        key="legacy_comparison_workflow",
+        horizontal=True,
     )
-
-    with report_tab:
+    if area == "Scenario Compare":
+        _render_comparison_report_overview(vde_id, vde_row)
+        st.markdown("---")
         render_scorecard_panel(vde_id, vde_row)
-
-    with analysis_tab:
+    elif area == "Method Analysis":
         analysis_ctx = get_build_scenario_context(vde_id, vde_row)
         render_analysis_lab_panel(vde_id, vde_row, analysis_ctx, analysis_ctx.get("energy_value_mj_per_km"))
-
-    with benchmark_tab:
+    elif area == "Peers & Outlook":
         render_benchmark_regulatory_panel(vde_id, vde_row, get_build_scenario_context(vde_id, vde_row))
-
-    with saved_tab:
+    else:
         render_saved_scenarios_panel(vde_id)
+
+
+def render_comparison_report_page(vde_id: int, vde_row: dict) -> None:
+    """Compatibility alias for callers that still use the former entry point."""
+
+    render_legacy_comparison_workspace(vde_id, vde_row)
 
 
 def render_benchmark_regulatory_panel(vde_id: int, vde_row: dict, ctx: dict) -> None:

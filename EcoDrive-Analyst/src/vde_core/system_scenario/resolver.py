@@ -19,6 +19,7 @@ from .contracts import (
     DomainApplicability,
     DomainKind,
     DomainProposal,
+    EffectiveDomainState,
     FidelityLevel,
     FidelityManifest,
     L0AssumptionContribution,
@@ -96,6 +97,35 @@ def _compose(
     assumption_contributions: list[L0AssumptionContribution] = []
     issues: list[str] = []
 
+    def collect_direct_assumptions(
+        domain: DomainKind,
+        source_id: str,
+        assumptions: Mapping[str, float],
+        provenance: Mapping[str, ProvenanceKind],
+        default_provenance: ProvenanceKind,
+    ) -> bool:
+        represented = False
+        for key, raw_value in assumptions.items():
+            value = float(raw_value)
+            if not is_direct_powertrain_assumption(key):
+                issues.append(f"unsupported_current_l0_correction:{domain.value}:{key}")
+                continue
+            if key in direct_assumptions and direct_assumptions[key] != value:
+                issues.append(f"conflicting_l0_assumption:{key}")
+                continue
+            direct_assumptions[key] = value
+            assumption_contributions.append(
+                L0AssumptionContribution(
+                    key=key,
+                    value=value,
+                    domain=domain,
+                    proposal_id=source_id,
+                    provenance=provenance.get(key, default_provenance),
+                )
+            )
+            represented = True
+        return represented
+
     def collect_delta(domain: DomainKind, proposal_id: str, delta: TechDeltaAssumption) -> bool:
         normalized = normalize_technology_delta(tech_delta_assumption_to_dict(delta))
         status = str(normalized["quantitative_status"])
@@ -151,30 +181,41 @@ def _compose(
             continue
 
         represented = False
+        effective_current = (
+            selection.based_on if isinstance(selection, DomainProposal) else selection
+        )
+        if isinstance(effective_current, EffectiveDomainState):
+            inherited_assumptions = dict(effective_current.l0_effective_assumption)
+            if isinstance(selection, DomainProposal):
+                for key in selection.l0_effective_assumption:
+                    inherited_assumptions.pop(key, None)
+            if inherited_assumptions:
+                represented = collect_direct_assumptions(
+                    domain,
+                    "CURRENT_CORRECTION",
+                    inherited_assumptions,
+                    {},
+                    effective_current.provenance,
+                ) or represented
         if isinstance(selection, DomainProposal):
             proposal_id = selection.identity.proposal_id
+            direct_proposal_assumptions = {
+                key: value
+                for key, value in selection.l0_effective_assumption.items()
+                if is_direct_powertrain_assumption(key)
+            }
+            represented = collect_direct_assumptions(
+                domain,
+                proposal_id,
+                direct_proposal_assumptions,
+                selection.l0_assumption_provenance,
+                ProvenanceKind.ASSUMED,
+            ) or represented
             for key, raw_value in selection.l0_effective_assumption.items():
-                value = float(raw_value)
                 if is_direct_powertrain_assumption(key):
-                    if key in direct_assumptions and direct_assumptions[key] != value:
-                        issues.append(f"conflicting_l0_assumption:{key}")
-                    else:
-                        direct_assumptions[key] = value
-                        assumption_contributions.append(
-                            L0AssumptionContribution(
-                                key=key,
-                                value=value,
-                                domain=domain,
-                                proposal_id=proposal_id,
-                                provenance=selection.l0_assumption_provenance.get(
-                                    key, ProvenanceKind.ASSUMED
-                                ),
-                            )
-                        )
-                    represented = True
-                else:
-                    delta = _synthetic_delta(domain, key, value)
-                    represented = collect_delta(domain, proposal_id, delta) or represented
+                    continue
+                delta = _synthetic_delta(domain, key, float(raw_value))
+                represented = collect_delta(domain, proposal_id, delta) or represented
             for delta in selection.technology_deltas:
                 represented = collect_delta(domain, proposal_id, delta) or represented
 

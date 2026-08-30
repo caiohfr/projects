@@ -14,6 +14,8 @@ from src.vde_app.powertrain_system_scenario_viewmodels import (
     build_definition,
     calculate_drafts,
     calculation_fingerprint,
+    correction_key,
+    current_correction_from_editor,
     current_draft,
     effective_states_for_source,
     friendly_issue,
@@ -235,58 +237,99 @@ class PowertrainSystemScenarioViewmodelTests(unittest.TestCase):
         fp2 = calculation_fingerprint(draft, sources=self.sources, proposals={"ENG-P01": second})
         self.assertEqual(fp1, fp2)
 
-    def test_adopted_ml_recommendation_flows_with_provenance(self):
+    def test_manual_value_cannot_claim_ml_benchmark_or_regression_provenance(self):
+        base = effective_states_for_source(self.sources[1])[DomainKind.ENGINE_FUEL_CONVERTER]
+        for source in ("ML", "Benchmark", "Regression"):
+            with self.assertRaisesRegex(ValueError, "canonical evidence result"):
+                proposal_from_editor(
+                    proposal_id="ENG-P01",
+                    domain=base.domain,
+                    based_on=base,
+                    label=f"{source} claim",
+                    recommendation_key="eta_pt_est",
+                    recommendation_value=0.4,
+                    recommendation_source=source,
+                    adopted=True,
+                )
+
+    def test_manual_adoption_uses_assumed_provenance(self):
         base = effective_states_for_source(self.sources[1])[DomainKind.ENGINE_FUEL_CONVERTER]
         proposal = proposal_from_editor(
-            proposal_id="ENG-P01", domain=base.domain, based_on=base, label="ML adopted", recommendation_key="eta_pt_est", recommendation_value=0.4, recommendation_source="ML", adopted=True
-        )
-        draft = update_selection(self.current, base.domain, "ENG-P01")
-        result = calculate_drafts((draft,), sources=self.sources, proposals={"ENG-P01": proposal})["SYS-CURRENT"].result
-        contribution = result.provenance["l0_assumptions"][0]
-        self.assertEqual(contribution["key"], "eta_pt_est")
-        self.assertEqual(contribution["provenance"], ProvenanceKind.ML_DERIVED.value)
-
-    def test_manual_override_of_adopted_recommendation_uses_assumed_provenance(self):
-        base = effective_states_for_source(self.sources[1])[DomainKind.ENGINE_FUEL_CONVERTER]
-        ml_adoption = proposal_from_editor(
             proposal_id="ENG-P01",
             domain=base.domain,
             based_on=base,
-            label="ML adopted",
-            recommendation_key="eta_pt_est",
-            recommendation_value=0.4,
-            recommendation_source="ML",
-            adopted=True,
-        )
-        manual_override = proposal_from_editor(
-            proposal_id="ENG-P01",
-            domain=base.domain,
-            based_on=base,
-            label="Engineer override",
+            label="Engineer assumption",
             recommendation_key="eta_pt_est",
             recommendation_value=0.5,
             recommendation_source="Engineering assumption",
             adopted=True,
         )
         draft = update_selection(self.current, base.domain, "ENG-P01")
-        ml_result = calculate_drafts(
-            (draft,), sources=self.sources, proposals={"ENG-P01": ml_adoption}
-        )["SYS-CURRENT"].result
-        overridden_result = calculate_drafts(
-            (draft,), sources=self.sources, proposals={"ENG-P01": manual_override}
+        result = calculate_drafts(
+            (draft,), sources=self.sources, proposals={"ENG-P01": proposal}
         )["SYS-CURRENT"].result
         self.assertEqual(
-            ml_result.provenance["l0_assumptions"][0]["provenance"],
-            ProvenanceKind.ML_DERIVED.value,
-        )
-        self.assertEqual(
-            overridden_result.provenance["l0_assumptions"][0]["provenance"],
+            result.provenance["l0_assumptions"][0]["provenance"],
             ProvenanceKind.ASSUMED.value,
         )
-        self.assertNotEqual(
-            ml_result.fuel_estimate_result.fuel_l_100km,
-            overridden_result.fuel_estimate_result.fuel_l_100km,
+
+    def test_current_correction_is_distinct_from_proposal_and_propagates_to_inheritance(self):
+        incomplete = _source(4, eta_pt_est=None)
+        source = {4: incomplete}
+        current = current_draft(4, ArchitectureClass.ICE)
+        engine = effective_states_for_source(incomplete)[DomainKind.ENGINE_FUEL_CONVERTER]
+        correction = current_correction_from_editor(
+            based_on=engine,
+            l0_assumption_key="eta_pt_est",
+            l0_assumption_value=0.248,
+            reason="Engineering correction",
         )
+        corrections = {correction_key(4, engine.domain): correction}
+        corrected = effective_states_for_source(incomplete, corrections=corrections)[engine.domain]
+        proposal = proposal_from_editor(
+            proposal_id="ENG-P01",
+            domain=engine.domain,
+            based_on=corrected,
+            label="Configuration only",
+            requested_changes={"displacement_l": 1.6},
+        )
+        changed = update_selection(current, engine.domain, proposal.identity.proposal_id)
+
+        self.assertEqual(engine.l0_effective_assumption, {})
+        self.assertEqual(corrected.l0_effective_assumption["eta_pt_est"], 0.248)
+        self.assertIs(proposal.based_on, corrected)
+        result = calculate_drafts(
+            (changed,),
+            sources=source,
+            proposals={proposal.identity.proposal_id: proposal},
+            corrections=corrections,
+        )["SYS-CURRENT"].result
+        self.assertIs(result.readiness, SolverReadiness.READY)
+        self.assertEqual(result.effective_assumptions["eta_pt_est"], 0.248)
+        self.assertEqual(result.provenance["l0_assumptions"][0]["proposal_id"], "CURRENT_CORRECTION")
+
+    def test_utility_factor_correction_is_a_canonical_fraction(self):
+        source = _source(
+            4,
+            electrification="PHEV",
+            eta_pt_est=0.3,
+            bev_eff_drive=0.85,
+            utility_factor=None,
+        )
+        current = current_draft(4, ArchitectureClass.PHEV)
+        controls = effective_states_for_source(source)[DomainKind.ENERGY_MANAGEMENT_CONTROLS]
+        correction = current_correction_from_editor(
+            based_on=controls,
+            l0_assumption_key="utility_factor",
+            l0_assumption_value=0.5,
+        )
+        result = calculate_drafts(
+            (current,),
+            sources={4: source},
+            proposals={},
+            corrections={correction_key(4, controls.domain): correction},
+        )["SYS-CURRENT"].result
+        self.assertEqual(result.effective_assumptions["utility_factor"], 0.5)
 
     def test_friendly_issue_hides_raw_resolver_code(self):
         message = friendly_issue("bev_eff_drive_missing")

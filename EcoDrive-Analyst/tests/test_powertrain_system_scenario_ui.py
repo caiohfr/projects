@@ -164,6 +164,18 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         self.assertEqual(calculation.result.selected_vehicle_demand_identity, "vde:900001")
         self.assertIs(calculation.readiness, SolverReadiness.READY)
 
+    def test_current_correction_is_reachable_and_separate_from_proposals(self):
+        app = self._app()
+        app.selectbox(key="pwt_ss:editor:domain").set_value(
+            DomainKind.ENGINE_FUEL_CONVERTER
+        ).run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(any(item.label == "Current correction" for item in app.expander))
+        self.assertFalse(
+            any(item.label == "Evidence source" for item in app.selectbox),
+            "manual entry must not offer decorative ML/Benchmark/Regression provenance",
+        )
+
     def test_baseline_change_resets_proposals_and_results_but_keeps_identities(self):
         app = self._app()
         app.button(key="pwt_ss:add_proposal").click().run(timeout=90)

@@ -19,6 +19,8 @@ from src.vde_app.powertrain_system_scenario_viewmodels import (
     add_proposal_draft,
     build_definition,
     calculate_drafts,
+    correction_key,
+    current_correction_from_editor,
     current_draft,
     effective_states_for_source,
     friendly_issue,
@@ -37,6 +39,7 @@ from src.vde_core.pwt_fuel_energy_service import (
 from src.vde_core.system_scenario import (
     ArchitectureClass,
     DomainApplicability,
+    DomainCorrection,
     DomainKind,
     DomainProposal,
     FidelityLevel,
@@ -51,6 +54,7 @@ from src.vde_core.vde_setup_service import load_baselines_df
 _DRAFTS_KEY = "pwt_ss_drafts"
 _PROPOSALS_KEY = "pwt_ss_domain_proposals"
 _RESULTS_KEY = "pwt_ss_calculations"
+_CORRECTIONS_KEY = "pwt_ss_current_corrections"
 _BASELINE_SELECTOR_KEY = "pwt_ss:current_baseline"
 
 _DOMAIN_LABELS: Mapping[DomainKind, str] = {
@@ -124,8 +128,6 @@ _ASSUMPTION_OPTIONS: Mapping[DomainKind, tuple[tuple[str, str], ...]] = {
     ),
     DomainKind.ENERGY_MANAGEMENT_CONTROLS: (
         ("utility_factor", "PHEV utility factor"),
-        ("eta_pt_est", "Aggregate fuel-path efficiency"),
-        ("bev_eff_drive", "Effective electric-path assumption"),
     ),
 }
 
@@ -140,6 +142,22 @@ _FIDELITY_LABELS = {
     FidelityLevel.CONFIGURATION_ONLY: "Configuration only",
     FidelityLevel.NOT_REPRESENTED: "Not represented",
 }
+
+
+def _assumption_options_for(
+    domain: DomainKind,
+    architecture: ArchitectureClass,
+) -> tuple[tuple[str, str], ...]:
+    """Return only direct assumptions with an unambiguous L0 path."""
+
+    if architecture is ArchitectureClass.PHEV:
+        allowed = {
+            DomainKind.ENGINE_FUEL_CONVERTER: {"eta_pt_est"},
+            DomainKind.ELECTRIC_DRIVE: {"bev_eff_drive"},
+            DomainKind.ENERGY_MANAGEMENT_CONTROLS: {"utility_factor"},
+        }.get(domain, set())
+        return tuple(item for item in _ASSUMPTION_OPTIONS.get(domain, ()) if item[0] in allowed)
+    return _ASSUMPTION_OPTIONS.get(domain, ())
 
 
 def _latest_fuel_row(vde_id: int) -> dict[str, Any]:
@@ -253,6 +271,9 @@ def _ensure_state(current_vde_id: int, sources: Mapping[int, ScenarioSource]) ->
         st.session_state[_DRAFTS_KEY] = (current_draft(current_vde_id, _architecture_for(source)),)
         st.session_state[_PROPOSALS_KEY] = {}
         st.session_state[_RESULTS_KEY] = {}
+        st.session_state[_CORRECTIONS_KEY] = {}
+        st.session_state[_CORRECTIONS_KEY] = {}
+    st.session_state.setdefault(_CORRECTIONS_KEY, {})
 
 
 def _drafts() -> tuple[ScenarioDraft, ...]:
@@ -265,6 +286,10 @@ def _proposals() -> dict[str, DomainProposal]:
 
 def _calculations() -> dict[str, ScenarioCalculation]:
     return dict(st.session_state.get(_RESULTS_KEY) or {})
+
+
+def _corrections() -> dict[tuple[int, DomainKind], DomainCorrection]:
+    return dict(st.session_state.get(_CORRECTIONS_KEY) or {})
 
 
 def _current_draft(drafts: tuple[ScenarioDraft, ...]) -> ScenarioDraft | None:
@@ -369,8 +394,14 @@ def _current_readiness(
     draft: ScenarioDraft,
     sources: Mapping[int, ScenarioSource],
     proposals: Mapping[str, DomainProposal],
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
 ):
-    definition, request = build_definition(draft, sources=sources, proposals=proposals)
+    definition, request = build_definition(
+        draft,
+        sources=sources,
+        proposals=proposals,
+        corrections=corrections,
+    )
     return resolve_system_scenario(definition, request_template=request)
 
 
@@ -378,9 +409,10 @@ def _render_current_readiness(
     draft: ScenarioDraft,
     sources: Mapping[int, ScenarioSource],
     proposals: Mapping[str, DomainProposal],
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
 ) -> None:
     st.markdown("### L0 Input Readiness")
-    resolved = _current_readiness(draft, sources, proposals)
+    resolved = _current_readiness(draft, sources, proposals, corrections)
     source = sources.get(draft.vde_id)
     if source is None or len(source.vde_row) <= 1:
         st.error("Selected Current baseline could not be materialized. Choose another VDE snapshot.")
@@ -392,13 +424,29 @@ def _render_current_readiness(
     else:
         st.caption(f"Architecture: {draft.architecture.value}")
 
-    vehicle_demand = effective_states_for_source(source)[DomainKind.VEHICLE_DEMAND]
+    vehicle_demand = effective_states_for_source(
+        source,
+        corrections=corrections,
+    )[DomainKind.VEHICLE_DEMAND]
     result = vehicle_demand.configuration.vehicle_demand_result
     total = result.total_summary.vde_mj_per_km if result is not None else None
     if total is None:
         st.caption("Vehicle Demand: Not defined")
     else:
         st.caption(f"Vehicle Demand: {total:.4f} MJ/km TOTAL")
+
+    powertrain = resolved.l0_request_snapshot.powertrain_features
+    l0_summary = {
+        "fuel_type": powertrain.get("fuel_type") or "Not provided",
+        "eta_pt_est": powertrain.get("eta_pt_est", "Not provided"),
+        "bev_eff_drive": powertrain.get("bev_eff_drive", "Not provided"),
+        "utility_factor": powertrain.get("utility_factor", "Not provided"),
+        "grid_gco2_per_kwh": powertrain.get("grid_gco2_per_kwh", "Not provided"),
+    }
+    st.caption("Canonical L0 assumptions consumed by the current request")
+    st.json(l0_summary, expanded=False)
+    if l0_summary["grid_gco2_per_kwh"] == "Not provided":
+        st.caption("Grid carbon factor: Not provided. A zero grid CO2 result is not displayed as a known zero here.")
 
     if resolved.solver_readiness is SolverReadiness.READY:
         st.success("L0 readiness: READY")
@@ -413,21 +461,32 @@ def _scenario_status(
     calculation: ScenarioCalculation | None,
     sources: Mapping[int, ScenarioSource],
     proposals: Mapping[str, DomainProposal],
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
 ) -> str:
     if calculation is None:
         return "Not calculated"
-    if is_stale(draft, calculation, sources=sources, proposals=proposals):
+    if is_stale(
+        draft,
+        calculation,
+        sources=sources,
+        proposals=proposals,
+        corrections=corrections,
+    ):
         return "Needs recalculation"
     if calculation.programming_error:
         return "Cannot calculate L0"
     return "READY" if calculation.readiness is SolverReadiness.READY else "NOT READY"
 
 
-def _configuration_summary(domain: DomainKind, source: ScenarioSource | None) -> str:
+def _configuration_summary(
+    domain: DomainKind,
+    source: ScenarioSource | None,
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
+) -> str:
     if source is None or len(source.vde_row) <= 1:
         return "Unavailable"
 
-    state = effective_states_for_source(source)[domain]
+    state = effective_states_for_source(source, corrections=corrections)[domain]
     config = state.configuration
     if domain is DomainKind.VEHICLE_DEMAND:
         result = config.vehicle_demand_result
@@ -467,9 +526,10 @@ def _selection_text(
     draft: ScenarioDraft,
     domain: DomainKind,
     sources: Mapping[int, ScenarioSource],
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
 ) -> str:
     if draft.identity.role.value == "CURRENT":
-        return _configuration_summary(domain, sources.get(draft.vde_id))
+        return _configuration_summary(domain, sources.get(draft.vde_id), corrections)
     if domain is DomainKind.VEHICLE_DEMAND:
         return f"VDE-{draft.vde_id}"
     if domain is DomainKind.ARCHITECTURE:
@@ -487,17 +547,19 @@ def _render_matrix(
     calculations: Mapping[str, ScenarioCalculation],
     sources: Mapping[int, ScenarioSource],
     proposals: Mapping[str, DomainProposal],
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
 ) -> None:
     matrix: dict[str, list[str]] = {"Domain": [_DOMAIN_LABELS[domain] for domain in DomainKind] + ["Status"]}
     for draft in drafts:
         matrix[draft.label] = [
-            _selection_text(draft, domain, sources) for domain in DomainKind
+            _selection_text(draft, domain, sources, corrections) for domain in DomainKind
         ] + [
             _scenario_status(
                 draft,
                 calculations.get(draft.identity.scenario_id),
                 sources,
                 proposals,
+                corrections,
             )
         ]
     st.dataframe(pd.DataFrame(matrix), hide_index=True, width="stretch")
@@ -576,7 +638,12 @@ def _render_domain_editor(
     sources: Mapping[int, ScenarioSource],
     source_labels: Mapping[int, str],
     proposals: dict[str, DomainProposal],
-) -> tuple[tuple[ScenarioDraft, ...], dict[str, DomainProposal]]:
+    corrections: dict[tuple[int, DomainKind], DomainCorrection],
+) -> tuple[
+    tuple[ScenarioDraft, ...],
+    dict[str, DomainProposal],
+    dict[tuple[int, DomainKind], DomainCorrection],
+]:
     scenario_ids = [draft.identity.scenario_id for draft in drafts]
     scenario_id = st.selectbox(
         "Scenario",
@@ -605,7 +672,7 @@ def _render_domain_editor(
         if selected_id != draft.vde_id:
             drafts = replace_draft(drafts, replace(draft, vde_id=int(selected_id)))
         st.caption("Uses the persisted canonical VDE snapshot. No Mass, Tire, Aero or roadload calculation occurs here.")
-        return drafts, proposals
+        return drafts, proposals, corrections
 
     if domain is DomainKind.ARCHITECTURE:
         architecture = st.selectbox(
@@ -619,7 +686,7 @@ def _render_domain_editor(
             updated = _sanitize_architecture_selections(replace(draft, architecture=architecture))
             drafts = replace_draft(drafts, updated)
         st.caption("Classification only: ICE, MHEV, HEV, PHEV or BEV. No topology graph is inferred.")
-        return drafts, proposals
+        return drafts, proposals, corrections
 
     applicability = domain_applicability_for(draft.architecture, domain)
     st.caption(f"Architecture applicability: {applicability.value.replace('_', ' ').title()}")
@@ -649,7 +716,7 @@ def _render_domain_editor(
 
     if applicability is DomainApplicability.NOT_APPLICABLE:
         st.info(f"{_DOMAIN_LABELS[domain]} is not applicable to {draft.architecture.value}.")
-        return drafts, proposals
+        return drafts, proposals, corrections
 
     source = sources.get(draft.vde_id)
     if source is None or len(source.vde_row) <= 1:
@@ -658,8 +725,8 @@ def _render_domain_editor(
             "scenario. Select a materialized VDE baseline before editing "
             "internal domains."
         )
-        return drafts, proposals
-    based_on = effective_states_for_source(source)[domain]
+        return drafts, proposals, corrections
+    based_on = effective_states_for_source(source, corrections=corrections)[domain]
     if st.button("Create Domain Proposal", key=f"{key_base}:create"):
         proposal_id = _next_proposal_id(domain, proposals)
         proposal = proposal_from_editor(
@@ -678,13 +745,103 @@ def _render_domain_editor(
             name: getattr(config, name)
             for name in _CONFIG_FIELDS.get(domain, ())
         }
-        st.write({"Effective Current": values})
+        st.markdown("#### Effective Current")
+        st.write(values)
         if all(value is None for value in values.values()) and values:
             st.info("Configuration unavailable / sparse. Existing L0 assumptions are displayed separately from physical configuration.")
+        correction = corrections.get(correction_key(source.vde_id, domain))
+        with st.expander("Current correction", expanded=correction is not None):
+            st.caption(
+                "Correct source/current information without creating a Domain Proposal. "
+                "The correction becomes this source's Effective Current."
+            )
+            correction_changes: dict[str, Any] = {}
+            config_type = type(config)
+            annotations = {field.name: field.type for field in dataclasses.fields(config_type)}
+            for field_name in _CONFIG_FIELDS.get(domain, ()):
+                source_value = getattr(based_on.source.configuration, field_name)
+                current_value = getattr(config, field_name)
+                raw = _optional_value_widget(
+                    key=f"{key_base}:correction:{field_name}",
+                    label=f"Corrected {field_name}",
+                    value=current_value,
+                )
+                value = _coerce_config_value(current_value, raw, annotations[field_name])
+                if value != source_value:
+                    correction_changes[field_name] = value
+
+            correction_options = _assumption_options_for(domain, draft.architecture)
+            correction_assumption_key: str | None = None
+            correction_assumption_value: float | None = None
+            if correction_options:
+                correction_keys = ["(none)", *[item[0] for item in correction_options]]
+                existing_key = next(
+                    (
+                        key
+                        for key in (correction.l0_effective_assumption if correction else {})
+                        if key in correction_keys
+                    ),
+                    "(none)",
+                )
+                correction_assumption_key = st.selectbox(
+                    "Correct canonical L0 assumption",
+                    correction_keys,
+                    index=correction_keys.index(existing_key),
+                    format_func=lambda item: (
+                        "No L0 correction"
+                        if item == "(none)"
+                        else dict(correction_options)[item]
+                    ),
+                    key=f"{key_base}:correction:assumption_key",
+                )
+                if correction_assumption_key == "(none)":
+                    correction_assumption_key = None
+                else:
+                    prior = (
+                        correction.l0_effective_assumption.get(correction_assumption_key)
+                        if correction is not None
+                        else None
+                    )
+                    if correction_assumption_key == "utility_factor":
+                        correction_assumption_value = st.number_input(
+                            "Utility factor (%)",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=float((prior if prior is not None else 0.0) * 100.0),
+                            key=f"{key_base}:correction:assumption_value",
+                        ) / 100.0
+                    else:
+                        correction_assumption_value = st.number_input(
+                            "Corrected canonical value",
+                            value=float(prior if prior is not None else 0.0),
+                            format="%.6f",
+                            key=f"{key_base}:correction:assumption_value",
+                        )
+            correction_reason = st.text_input(
+                "Correction evidence/reference note",
+                value=correction.reason if correction is not None else "",
+                key=f"{key_base}:correction:reason",
+            )
+            if st.button("Apply Current correction", key=f"{key_base}:correction:apply"):
+                key = correction_key(source.vde_id, domain)
+                if correction_changes or correction_assumption_key:
+                    corrections[key] = current_correction_from_editor(
+                        based_on=based_on,
+                        requested_changes=correction_changes,
+                        l0_assumption_key=correction_assumption_key,
+                        l0_assumption_value=correction_assumption_value,
+                        reason=correction_reason,
+                    )
+                else:
+                    corrections.pop(key, None)
+                st.session_state[_CORRECTIONS_KEY] = corrections
+                st.session_state[_RESULTS_KEY] = {}
+                st.rerun()
         st.caption("No Domain Proposal selected; calculation uses Effective Current.")
-        return drafts, proposals
+        return drafts, proposals, corrections
 
     proposal = proposals[selection]
+    st.markdown("##### Configuration")
     st.markdown(f"#### {_DOMAIN_LABELS[domain]} proposal · `{selection}`")
     label = st.text_input(
         "Proposal label",
@@ -699,6 +856,7 @@ def _render_domain_editor(
         current_value = getattr(based_on.configuration, field_name)
         proposed_value = getattr(proposal.configuration, field_name)
         with columns[index % 2]:
+            st.caption(f"Current: {current_value if current_value is not None else 'Not provided'}")
             raw = _optional_value_widget(
                 key=f"pwt_ss:proposal:{selection}:{field_name}",
                 label=field_name,
@@ -708,30 +866,48 @@ def _render_domain_editor(
         if value != current_value:
             requested_changes[field_name] = value
 
-    assumption_options = _ASSUMPTION_OPTIONS.get(domain, ())
+    assumption_options = _assumption_options_for(domain, draft.architecture)
     adopted = False
     assumption_key: str | None = None
     recommendation_value: float | None = None
-    recommendation_source = "Engineering assumption"
+    evidence_reference = ""
     if assumption_options:
-        st.markdown("#### L0 evidence and explicit adoption")
+        st.markdown("##### L0 representation")
+        st.caption(
+            "A manual value is an Engineering assumption. Benchmark, ML and Regression "
+            "recommendations are unavailable here until a canonical evidence owner supplies one."
+        )
+        assumption_keys = [item[0] for item in assumption_options]
+        existing_assumption_key = next(
+            (key for key in proposal.l0_effective_assumption if key in assumption_keys),
+            assumption_keys[0],
+        )
         assumption_key = st.selectbox(
             "Canonical L0 assumption",
-            [item[0] for item in assumption_options],
+            assumption_keys,
+            index=assumption_keys.index(existing_assumption_key),
             format_func=lambda item: dict(assumption_options)[item],
             key=f"pwt_ss:proposal:{selection}:assumption_key",
         )
-        recommendation_source = st.selectbox(
-            "Evidence source",
-            ["Current observed", "Benchmark", "ML", "Regression", "Engineering assumption"],
-            key=f"pwt_ss:proposal:{selection}:evidence_source",
-        )
         prior = proposal.l0_effective_assumption.get(assumption_key)
-        recommendation_value = st.number_input(
-            "Recommended/adopted value",
-            value=float(prior if prior is not None else 0.0),
-            format="%.6f",
-            key=f"pwt_ss:proposal:{selection}:assumption_value",
+        if assumption_key == "utility_factor":
+            recommendation_value = st.number_input(
+                "Utility factor (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=float((prior if prior is not None else 0.0) * 100.0),
+                key=f"pwt_ss:proposal:{selection}:assumption_value",
+            ) / 100.0
+        else:
+            recommendation_value = st.number_input(
+                "Manual engineering-assumption value",
+                value=float(prior if prior is not None else 0.0),
+                format="%.6f",
+                key=f"pwt_ss:proposal:{selection}:assumption_value",
+            )
+        evidence_reference = st.text_input(
+            "Engineering evidence/reference note",
+            key=f"pwt_ss:proposal:{selection}:evidence_reference",
         )
         adopted = st.checkbox(
             "Adopt this value into the deterministic L0 scenario",
@@ -743,11 +919,18 @@ def _render_domain_editor(
 
     st.markdown("#### Technology Delta representation")
     prior_delta = proposal.technology_deltas[0] if proposal.technology_deltas else None
-    use_delta = st.checkbox(
-        "Associate an active canonical Technology Delta",
-        value=prior_delta is not None,
-        key=f"pwt_ss:proposal:{selection}:delta_enabled",
-    )
+    use_delta = False
+    if draft.architecture is ArchitectureClass.PHEV:
+        st.info(
+            "Generic Technology Delta is unavailable for PHEV because the current contract "
+            "does not assign it to one thermal or electric path."
+        )
+    else:
+        use_delta = st.checkbox(
+            "Associate an active canonical Technology Delta",
+            value=prior_delta is not None,
+            key=f"pwt_ss:proposal:{selection}:delta_enabled",
+        )
     deltas: tuple[TechDeltaAssumption, ...] = ()
     if use_delta:
         delta_basis = st.selectbox(
@@ -767,7 +950,13 @@ def _render_domain_editor(
         )
         delta_source = st.selectbox(
             "Delta source",
-            ["manual", "benchmark", "ml", "regression", "supplier"],
+            [
+                "engineering_assumption",
+                "supplier_data",
+                "imported_map",
+                "simulation_result",
+                "test_data",
+            ],
             key=f"pwt_ss:proposal:{selection}:delta_source",
         )
         deltas = (
@@ -790,7 +979,7 @@ def _render_domain_editor(
         requested_changes=requested_changes,
         recommendation_key=assumption_key,
         recommendation_value=recommendation_value,
-        recommendation_source=recommendation_source,
+        evidence_reference=evidence_reference,
         adopted=adopted,
         technology_deltas=deltas,
     )
@@ -803,7 +992,7 @@ def _render_domain_editor(
         st.info("Configuration changed · L0 quantitative impact: Not represented.")
     else:
         st.caption("No configuration or quantitative change from Effective Current.")
-    return drafts, proposals
+    return drafts, proposals, corrections
 
 
 def _render_result(
@@ -811,8 +1000,9 @@ def _render_result(
     calculation: ScenarioCalculation | None,
     sources: Mapping[int, ScenarioSource],
     proposals: Mapping[str, DomainProposal],
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
 ) -> None:
-    status = _scenario_status(draft, calculation, sources, proposals)
+    status = _scenario_status(draft, calculation, sources, proposals, corrections)
     with st.container(border=True):
         st.markdown(f"#### {draft.label}")
         st.caption(f"`{draft.identity.scenario_id}` · {status} · Energy Balance L0")
@@ -836,10 +1026,20 @@ def _render_result(
         cols[1].metric("Architecture", draft.architecture.value)
         cols[2].metric("Fuel [L/100km]", "-" if metrics.get("fuel_l_100km") is None else f"{metrics['fuel_l_100km']:.3f}")
         cols[3].metric("Electric [Wh/km]", "-" if metrics.get("energy_Wh_km") is None else f"{metrics['energy_Wh_km']:.2f}")
+        grid_missing = (
+            result.resolved_scenario.l0_request_snapshot.powertrain_features.get("grid_gco2_per_kwh")
+            is None
+        )
+        co2_value = metrics.get("gco2_km")
+        co2_display = "-" if co2_value is None else f"{co2_value:.2f}"
+        if grid_missing and draft.architecture is ArchitectureClass.BEV:
+            co2_display = "Not evaluated"
         cols2 = st.columns(3)
-        cols2[0].metric("CO₂ [g/km]", "-" if metrics.get("gco2_km") is None else f"{metrics['gco2_km']:.2f}")
+        cols2[0].metric("CO₂ [g/km]", co2_display)
         cols2[1].metric("PSE", "-" if metrics.get("pse_value") is None else f"{metrics['pse_value']:.4f}")
         cols2[2].metric("Solver", result.solver_identity or "-")
+        if grid_missing and draft.architecture is ArchitectureClass.PHEV:
+            st.caption("Grid carbon factor is not provided; displayed CO₂ is the canonical fuel-path result only.")
 
         fidelity_rows = [
             {
@@ -851,7 +1051,12 @@ def _render_result(
         st.dataframe(pd.DataFrame(fidelity_rows), hide_index=True, width="stretch")
         definition = result.resolved_scenario
         metadata_missing = metadata_incomplete_fields(
-            build_definition(draft, sources=sources, proposals=proposals)[0]
+            build_definition(
+                draft,
+                sources=sources,
+                proposals=proposals,
+                corrections=corrections,
+            )[0]
         )
         if metadata_missing:
             st.caption(
@@ -906,6 +1111,7 @@ def render_system_scenario_workspace() -> None:
     _ensure_state(current_vde_id, sources)
     drafts = _drafts()
     proposals = _proposals()
+    corrections = _corrections()
     calculations = _calculations()
     current = _current_draft(drafts)
     if current is None:
@@ -913,7 +1119,7 @@ def render_system_scenario_workspace() -> None:
         return
 
     st.session_state["current_vde_id"] = current.vde_id
-    _render_current_readiness(current, sources, proposals)
+    _render_current_readiness(current, sources, proposals, corrections)
 
     st.subheader("Multi-domain System Scenarios")
     st.caption(
@@ -951,7 +1157,7 @@ def render_system_scenario_workspace() -> None:
         st.rerun()
     drafts = _render_scenario_identity_editor(drafts)
     st.session_state[_DRAFTS_KEY] = drafts
-    _render_matrix(drafts, calculations, sources, proposals)
+    _render_matrix(drafts, calculations, sources, proposals, corrections)
 
     if st.button(
         "Calculate System Scenarios",
@@ -959,18 +1165,38 @@ def render_system_scenario_workspace() -> None:
         type="primary",
         width="stretch",
     ):
-        calculations = dict(calculate_drafts(drafts, sources=sources, proposals=proposals))
+        calculations = dict(
+            calculate_drafts(
+                drafts,
+                sources=sources,
+                proposals=proposals,
+                corrections=corrections,
+            )
+        )
         st.session_state[_RESULTS_KEY] = calculations
         st.rerun()
 
     st.markdown("### Domain editor")
-    drafts, proposals = _render_domain_editor(drafts, sources, source_labels, proposals)
+    drafts, proposals, corrections = _render_domain_editor(
+        drafts,
+        sources,
+        source_labels,
+        proposals,
+        corrections,
+    )
     st.session_state[_DRAFTS_KEY] = drafts
     st.session_state[_PROPOSALS_KEY] = proposals
+    st.session_state[_CORRECTIONS_KEY] = corrections
 
     st.markdown("### Scenario results")
     for draft in drafts:
-        _render_result(draft, calculations.get(draft.identity.scenario_id), sources, proposals)
+        _render_result(
+            draft,
+            calculations.get(draft.identity.scenario_id),
+            sources,
+            proposals,
+            corrections,
+        )
 
 
 __all__ = ["render_system_scenario_workspace"]

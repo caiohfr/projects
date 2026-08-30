@@ -445,9 +445,15 @@ class DomainCorrection:
     configuration: DomainConfiguration
     reason: str = ""
     provenance: ProvenanceKind = ProvenanceKind.CORRECTED
+    l0_effective_assumption: Mapping[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _require_matching_configuration_type(self.domain, self.configuration)
+        object.__setattr__(
+            self,
+            "l0_effective_assumption",
+            MappingProxyType(dict(self.l0_effective_assumption)),
+        )
 
 
 @dataclass(frozen=True)
@@ -465,6 +471,7 @@ class EffectiveDomainState:
     source: DomainSourceState
     correction: DomainCorrection | None = None
     provenance: ProvenanceKind = ProvenanceKind.SOURCE_OBSERVED
+    l0_effective_assumption: Mapping[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _require_matching_configuration_type(self.domain, self.configuration)
@@ -478,6 +485,11 @@ class EffectiveDomainState:
                 f"EffectiveDomainState.source.domain ({self.source.domain.value}) must match "
                 f"EffectiveDomainState.domain ({self.domain.value})."
             )
+        object.__setattr__(
+            self,
+            "l0_effective_assumption",
+            MappingProxyType(dict(self.l0_effective_assumption)),
+        )
 
 
 def resolve_effective_domain_state(
@@ -496,6 +508,7 @@ def resolve_effective_domain_state(
             source=source,
             correction=None,
             provenance=source.provenance,
+            l0_effective_assumption={},
         )
     return EffectiveDomainState(
         domain=source.domain,
@@ -503,6 +516,7 @@ def resolve_effective_domain_state(
         source=source,
         correction=correction,
         provenance=correction.provenance,
+        l0_effective_assumption=correction.l0_effective_assumption,
     )
 
 

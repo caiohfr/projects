@@ -20,6 +20,7 @@ from src.vde_core.system_scenario import (
     ALL_DOMAIN_KINDS,
     ArchitectureClass,
     ArchitectureConfiguration,
+    DomainCorrection,
     DomainApplicability,
     DomainKind,
     DomainProposal,
@@ -59,15 +60,7 @@ EDITABLE_DOMAINS: tuple[DomainKind, ...] = tuple(
     if domain not in (DomainKind.VEHICLE_DEMAND, DomainKind.ARCHITECTURE)
 )
 
-PROVENANCE_BY_EVIDENCE_SOURCE: Mapping[str, ProvenanceKind] = MappingProxyType(
-    {
-        "Current observed": ProvenanceKind.SOURCE_OBSERVED,
-        "Benchmark": ProvenanceKind.ESTIMATED,
-        "ML": ProvenanceKind.ML_DERIVED,
-        "Regression": ProvenanceKind.ESTIMATED,
-        "Engineering assumption": ProvenanceKind.ASSUMED,
-    }
-)
+MANUAL_EVIDENCE_SOURCE = "Engineering assumption"
 
 
 @dataclass(frozen=True)
@@ -179,38 +172,67 @@ def update_selection(draft: ScenarioDraft, domain: DomainKind, selection: str) -
     return replace(draft, selections=selections)
 
 
-def _effective(source: DomainSourceState) -> EffectiveDomainState:
-    return resolve_effective_domain_state(source)
+def _effective(
+    source: DomainSourceState,
+    correction: DomainCorrection | None = None,
+) -> EffectiveDomainState:
+    return resolve_effective_domain_state(source, correction)
 
 
-def effective_states_for_source(source: ScenarioSource) -> Mapping[DomainKind, EffectiveDomainState]:
+def correction_key(vde_id: int, domain: DomainKind) -> tuple[int, DomainKind]:
+    return (int(vde_id), domain)
+
+
+def effective_states_for_source(
+    source: ScenarioSource,
+    *,
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection] | None = None,
+) -> Mapping[DomainKind, EffectiveDomainState]:
+    corrections = corrections or {}
     vde_row = source.vde_row
     fuel_row = source.fuelcons_row
+    sources = {
+        DomainKind.VEHICLE_DEMAND: vehicle_demand_domain_state_from_snapshot_row(
+            vde_row, source_identity=f"vde:{source.vde_id}"
+        ),
+        DomainKind.ARCHITECTURE: architecture_domain_state_from_legacy_vde_row(vde_row, fuel_row),
+        DomainKind.ENGINE_FUEL_CONVERTER: engine_domain_state_from_legacy_row(vde_row, fuel_row),
+        DomainKind.TRANSMISSION_DRIVELINE: transmission_domain_state_from_legacy_row(vde_row, fuel_row),
+        DomainKind.ELECTRIC_DRIVE: electric_drive_domain_state_sparse(),
+        DomainKind.ENERGY_STORAGE: energy_storage_domain_state_from_legacy_row(fuel_row),
+        DomainKind.ENERGY_MANAGEMENT_CONTROLS: controls_domain_state_from_legacy_row(fuel_row),
+        DomainKind.AUX_THERMAL: aux_thermal_domain_state_from_legacy_row(fuel_row),
+    }
     states = {
-        DomainKind.VEHICLE_DEMAND: _effective(
-            vehicle_demand_domain_state_from_snapshot_row(
-                vde_row, source_identity=f"vde:{source.vde_id}"
-            )
-        ),
-        DomainKind.ARCHITECTURE: _effective(
-            architecture_domain_state_from_legacy_vde_row(vde_row, fuel_row)
-        ),
-        DomainKind.ENGINE_FUEL_CONVERTER: _effective(
-            engine_domain_state_from_legacy_row(vde_row, fuel_row)
-        ),
-        DomainKind.TRANSMISSION_DRIVELINE: _effective(
-            transmission_domain_state_from_legacy_row(vde_row, fuel_row)
-        ),
-        DomainKind.ELECTRIC_DRIVE: _effective(electric_drive_domain_state_sparse()),
-        DomainKind.ENERGY_STORAGE: _effective(
-            energy_storage_domain_state_from_legacy_row(fuel_row)
-        ),
-        DomainKind.ENERGY_MANAGEMENT_CONTROLS: _effective(
-            controls_domain_state_from_legacy_row(fuel_row)
-        ),
-        DomainKind.AUX_THERMAL: _effective(aux_thermal_domain_state_from_legacy_row(fuel_row)),
+        domain: _effective(
+            domain_source,
+            corrections.get(correction_key(source.vde_id, domain)),
+        )
+        for domain, domain_source in sources.items()
     }
     return MappingProxyType(states)
+
+
+def current_correction_from_editor(
+    *,
+    based_on: EffectiveDomainState,
+    requested_changes: Mapping[str, Any] | None = None,
+    l0_assumption_key: str | None = None,
+    l0_assumption_value: float | None = None,
+    reason: str = "",
+) -> DomainCorrection:
+    """Create an explicit Current correction without creating a Proposal."""
+
+    configuration = dataclasses.replace(based_on.configuration, **dict(requested_changes or {}))
+    l0_assumptions: dict[str, float] = {}
+    if l0_assumption_key and l0_assumption_value is not None:
+        l0_assumptions[l0_assumption_key] = float(l0_assumption_value)
+    return DomainCorrection(
+        domain=based_on.domain,
+        configuration=configuration,
+        reason=reason,
+        l0_effective_assumption=l0_assumptions,
+    )
 
 
 def proposal_from_editor(
@@ -222,7 +244,8 @@ def proposal_from_editor(
     requested_changes: Mapping[str, Any] | None = None,
     recommendation_key: str | None = None,
     recommendation_value: float | None = None,
-    recommendation_source: str = "Engineering assumption",
+    recommendation_source: str = MANUAL_EVIDENCE_SOURCE,
+    evidence_reference: str = "",
     adopted: bool = False,
     technology_deltas: Sequence[TechDeltaAssumption] = (),
 ) -> DomainProposal:
@@ -230,11 +253,14 @@ def proposal_from_editor(
 
     l0_assumptions: dict[str, float] = {}
     l0_provenance: dict[str, ProvenanceKind] = {}
+    if adopted and recommendation_source != MANUAL_EVIDENCE_SOURCE:
+        raise ValueError(
+            "ML, Benchmark and Regression provenance require a canonical evidence result; "
+            "a manually entered value is an engineering assumption."
+        )
     if adopted and recommendation_key and recommendation_value is not None:
         l0_assumptions[recommendation_key] = float(recommendation_value)
-        l0_provenance[recommendation_key] = PROVENANCE_BY_EVIDENCE_SOURCE.get(
-            recommendation_source, ProvenanceKind.ASSUMED
-        )
+        l0_provenance[recommendation_key] = ProvenanceKind.ASSUMED
     return resolve_domain_proposal(
         DomainProposalIdentity(domain=domain, proposal_id=proposal_id),
         based_on,
@@ -244,7 +270,8 @@ def proposal_from_editor(
         l0_assumption_provenance=l0_provenance,
         technology_deltas=technology_deltas,
         notes=(
-            f"Adopted L0 evidence source: {recommendation_source}"
+            "Adopted L0 evidence source: "
+            f"{MANUAL_EVIDENCE_SOURCE}; reference: {evidence_reference or 'not provided'}"
             if adopted and recommendation_key and recommendation_value is not None
             else "No adopted L0 recommendation."
         ),
@@ -284,13 +311,14 @@ def build_definition(
     *,
     sources: Mapping[int, ScenarioSource],
     proposals: Mapping[str, DomainProposal],
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection] | None = None,
 ) -> tuple[SystemScenarioDefinition, FuelEstimateRequest]:
     source = sources.get(draft.vde_id)
     if source is None:
         # A partially specified Vehicle Demand remains an ordinary unresolved
         # scenario, not a DB query or UI exception during solving.
         source = ScenarioSource(vde_id=draft.vde_id, vde_row={"id": draft.vde_id})
-    effective = effective_states_for_source(source)
+    effective = effective_states_for_source(source, corrections=corrections)
     architecture = _effective(
         DomainSourceState(
             domain=DomainKind.ARCHITECTURE,
@@ -334,8 +362,14 @@ def calculation_fingerprint(
     *,
     sources: Mapping[int, ScenarioSource],
     proposals: Mapping[str, DomainProposal],
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection] | None = None,
 ) -> str:
-    definition, request = build_definition(draft, sources=sources, proposals=proposals)
+    definition, request = build_definition(
+        draft,
+        sources=sources,
+        proposals=proposals,
+        corrections=corrections,
+    )
     # Visible labels are intentionally excluded: identity and physical input
     # determine staleness, not presentation text.
     payload = {
@@ -352,14 +386,25 @@ def calculate_drafts(
     *,
     sources: Mapping[int, ScenarioSource],
     proposals: Mapping[str, DomainProposal],
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection] | None = None,
 ) -> Mapping[str, ScenarioCalculation]:
     """Calculate independently so one programming failure cannot poison siblings."""
 
     calculations: dict[str, ScenarioCalculation] = {}
     for draft in drafts:
-        fingerprint = calculation_fingerprint(draft, sources=sources, proposals=proposals)
+        fingerprint = calculation_fingerprint(
+            draft,
+            sources=sources,
+            proposals=proposals,
+            corrections=corrections,
+        )
         try:
-            definition, request = build_definition(draft, sources=sources, proposals=proposals)
+            definition, request = build_definition(
+                draft,
+                sources=sources,
+                proposals=proposals,
+                corrections=corrections,
+            )
             result = run_system_scenario(definition, request_template=request)
             calculations[draft.identity.scenario_id] = ScenarioCalculation(
                 scenario_id=draft.identity.scenario_id,
@@ -381,11 +426,12 @@ def is_stale(
     *,
     sources: Mapping[int, ScenarioSource],
     proposals: Mapping[str, DomainProposal],
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection] | None = None,
 ) -> bool:
     if calculation is None:
         return False
     return calculation.fingerprint != calculation_fingerprint(
-        draft, sources=sources, proposals=proposals
+        draft, sources=sources, proposals=proposals, corrections=corrections
     )
 
 
@@ -432,7 +478,7 @@ __all__ = [
     "CURRENT_SELECTION",
     "NOT_APPLICABLE_SELECTION",
     "EDITABLE_DOMAINS",
-    "PROVENANCE_BY_EVIDENCE_SOURCE",
+    "MANUAL_EVIDENCE_SOURCE",
     "ScenarioSource",
     "ScenarioDraft",
     "ScenarioCalculation",
@@ -441,7 +487,9 @@ __all__ = [
     "replace_draft",
     "remove_proposal_draft",
     "update_selection",
+    "correction_key",
     "effective_states_for_source",
+    "current_correction_from_editor",
     "proposal_from_editor",
     "request_template_for_source",
     "build_definition",

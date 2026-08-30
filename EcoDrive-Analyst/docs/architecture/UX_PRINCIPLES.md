@@ -42,6 +42,13 @@ Scenario editors establish an explicit baseline first. Alternative scenarios
 inherit from the effective baseline by default, and the UI emphasizes
 deviations rather than repeated unchanged state.
 
+Scenario editors must distinguish what changes physically from what effect is
+represented quantitatively at the current fidelity. Configuration changes must
+never imply hidden model effects.
+
+Recommendations are evidence, not state. They affect calculation only after
+explicit adoption.
+
 ## Validation
 
 AppTest supplies automated UI evidence, but it does not replace a real browser

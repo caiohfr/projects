@@ -512,6 +512,7 @@ class SerializationRoundtripTests(unittest.TestCase):
             domain=DomainKind.TRANSMISSION_DRIVELINE,
             configuration=replace(source.configuration, final_drive_ratio=3.70),
             reason="corrected",
+            l0_effective_assumption={"eta_pt_est": 0.248},
         )
         effective = resolve_effective_domain_state(source, correction)
         data = to_serializable(effective)

@@ -186,6 +186,7 @@ def domain_correction_from_dict(data: Mapping[str, Any]) -> DomainCorrection:
         configuration=domain_configuration_from_dict(domain, _get(data, "configuration")),
         reason=_get(data, "reason", ""),
         provenance=ProvenanceKind(_get(data, "provenance") or ProvenanceKind.CORRECTED.value),
+        l0_effective_assumption=dict(_get(data, "l0_effective_assumption") or {}),
     )
 
 
@@ -198,6 +199,7 @@ def effective_domain_state_from_dict(data: Mapping[str, Any]) -> EffectiveDomain
         source=domain_source_state_from_dict(data["source"]),
         correction=domain_correction_from_dict(correction_data) if correction_data else None,
         provenance=ProvenanceKind(_get(data, "provenance") or ProvenanceKind.SOURCE_OBSERVED.value),
+        l0_effective_assumption=dict(_get(data, "l0_effective_assumption") or {}),
     )
 
 

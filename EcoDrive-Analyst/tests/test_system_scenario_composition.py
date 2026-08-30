@@ -708,6 +708,57 @@ class WorkingSetTests(unittest.TestCase):
         self.assertEqual(outcomes[1].fuel_estimate_result.request.powertrain_features["eta_pt_est"], 0.35)
         self.assertEqual(outcomes[2].fuel_estimate_result.request.powertrain_features["eta_pt_est"], 0.35)
 
+    def test_shared_proposal_remains_bound_to_its_original_effective_current(self):
+        current_a = _effective(
+            DomainKind.ENGINE_FUEL_CONVERTER,
+            EngineConfiguration(fuel_type="Gasoline", rated_torque_nm=140.0),
+        )
+        current_b = _effective(
+            DomainKind.ENGINE_FUEL_CONVERTER,
+            EngineConfiguration(fuel_type="Diesel", rated_torque_nm=260.0),
+        )
+        shared_engine = resolve_domain_proposal(
+            DomainProposalIdentity(DomainKind.ENGINE_FUEL_CONVERTER, "ENG-SHARED"),
+            current_a,
+            requested_changes={"rated_torque_nm": 160.0},
+        )
+        proposal_a = SystemScenarioDefinition(
+            identity=SystemScenarioIdentity("SYS-A", SystemScenarioRole.PROPOSAL, 1),
+            slots=_definition(engine=shared_engine).slots,
+        )
+        proposal_b = SystemScenarioDefinition(
+            identity=SystemScenarioIdentity("SYS-B", SystemScenarioRole.PROPOSAL, 2),
+            slots=_definition(engine=shared_engine).slots,
+        )
+
+        resolved = resolve_system_scenarios(
+            (proposal_a, proposal_b),
+            request_templates={
+                proposal_a.identity.scenario_id: _ice_template(),
+                proposal_b.identity.scenario_id: _ice_template(),
+            },
+        )
+
+        self.assertNotEqual(current_a.configuration, current_b.configuration)
+        self.assertIs(shared_engine.based_on, current_a)
+        self.assertIs(proposal_a.slots[DomainKind.ENGINE_FUEL_CONVERTER], shared_engine)
+        self.assertIs(proposal_b.slots[DomainKind.ENGINE_FUEL_CONVERTER], shared_engine)
+        self.assertIs(
+            resolved[1].resolved_domains[DomainKind.ENGINE_FUEL_CONVERTER].based_on,
+            current_a,
+        )
+        self.assertIsNot(
+            resolved[1].resolved_domains[DomainKind.ENGINE_FUEL_CONVERTER].based_on,
+            current_b,
+        )
+        self.assertEqual(
+            resolved[1]
+            .resolved_domains[DomainKind.ENGINE_FUEL_CONVERTER]
+            .configuration
+            .fuel_type,
+            "Gasoline",
+        )
+
     def test_result_is_deterministic_and_carries_solver_fidelity_and_provenance(self):
         transmission = resolve_domain_proposal(
             DomainProposalIdentity(DomainKind.TRANSMISSION_DRIVELINE, "TRANS-P01"),

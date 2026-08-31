@@ -50,14 +50,14 @@ class PowertrainSystemScenarioSourceLoadingTests(unittest.TestCase):
             pwt_system_scenario._CANONICAL_TECH_DELTA_EFFECT_BASES,
         )
 
-    @patch("src.vde_app.components.pwt_system_scenario.fetch_fuelcons_by_vde")
+    @patch("src.vde_app.components.pwt_system_scenario.fetch_fuelcons_row")
     @patch("src.vde_app.components.pwt_system_scenario.fetch_vde_rows_by_ids")
     @patch("src.vde_app.components.pwt_system_scenario.load_baselines_df")
     def test_large_discovery_list_materializes_only_four_active_sources(
         self,
         load_baselines,
         fetch_details,
-        fetch_fuelcons,
+        fetch_fuelcons_row,
     ):
         drafts = _drafts_with_four_unique_sources()
         load_baselines.return_value = pd.DataFrame(
@@ -73,22 +73,47 @@ class PowertrainSystemScenarioSourceLoadingTests(unittest.TestCase):
                 for vde_id in (1, 2, 3, 4)
             ]
         )
-        fetch_fuelcons.side_effect = lambda vde_id: pd.DataFrame(
-            [{"id": vde_id, "vde_id": vde_id, "electrification": "ICE", "eta_pt_est": 0.30}]
-        )
+        fetch_fuelcons_row.return_value = {
+            "id": 101,
+            "vde_id": 1,
+            "electrification": "ICE",
+            "eta_pt_est": 0.30,
+        }
 
         with patch.object(pwt_system_scenario, "ScenarioSource", wraps=ScenarioSource) as source_constructor:
             sources, labels = pwt_system_scenario._load_sources(
                 1,
+                101,
                 drafts=drafts,
             )
 
         self.assertEqual(len(labels), 5000)
         self.assertEqual(set(sources), {1, 2, 3, 4})
         fetch_details.assert_called_once_with((1, 2, 3, 4))
-        self.assertEqual({call.args[0] for call in fetch_fuelcons.call_args_list}, {1, 2, 3, 4})
-        self.assertEqual(fetch_fuelcons.call_count, 4)
+        fetch_fuelcons_row.assert_called_once_with(101)
+        self.assertTrue(all(source.fuelcons_row["id"] == 101 for source in sources.values()))
         self.assertEqual(source_constructor.call_count, 4)
+
+    @patch("src.vde_app.components.pwt_system_scenario.fetch_fuelcons_baselines")
+    def test_fuelcons_discovery_keeps_only_lightweight_search_labels(self, fetch_baselines):
+        fetch_baselines.return_value = pd.DataFrame(
+            [
+                {
+                    "fuelcons_id": 101,
+                    "vde_id": 11,
+                    "make": "Synthetic",
+                    "model": "A",
+                    "year": 2024,
+                    "electrification": "ICE",
+                }
+            ]
+        )
+
+        labels = pwt_system_scenario._fuelcons_baseline_labels()
+
+        self.assertEqual(len(labels), 1)
+        self.assertIn("FuelCons-101", labels[101])
+        self.assertIn("VDE-11", labels[101])
 
 
 if __name__ == "__main__":

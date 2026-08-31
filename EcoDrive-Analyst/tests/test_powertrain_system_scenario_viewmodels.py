@@ -18,11 +18,14 @@ from src.vde_app.powertrain_system_scenario_viewmodels import (
     current_correction_from_editor,
     current_draft,
     effective_states_for_source,
+    explainability_rows,
     friendly_issue,
     is_stale,
     metadata_incomplete_fields,
     proposal_from_editor,
     replace_draft,
+    result_deltas,
+    sequential_impact_trace,
     update_selection,
 )
 from src.vde_core.system_scenario import (
@@ -361,6 +364,77 @@ class PowertrainSystemScenarioViewmodelTests(unittest.TestCase):
         )
         self.assertEqual(proposal.configuration.usable_capacity_kwh, 0.0)
         self.assertIn("usable_capacity_kwh", proposal.requested_changes)
+
+    def test_fuelcons_identity_is_retained_by_current_and_inherited_proposals(self):
+        current = current_draft(1, ArchitectureClass.ICE, fuelcons_id=101)
+        proposal = add_proposal_draft(
+            (current,),
+            vde_id=1,
+            architecture=ArchitectureClass.ICE,
+            fuelcons_id=current.fuelcons_id,
+        )[1]
+        self.assertEqual(current.fuelcons_id, 101)
+        self.assertEqual(proposal.fuelcons_id, 101)
+
+    def test_explainability_distinguishes_adopted_configuration_and_correction(self):
+        engine = effective_states_for_source(self.sources[1])[DomainKind.ENGINE_FUEL_CONVERTER]
+        transmission = effective_states_for_source(self.sources[1])[DomainKind.TRANSMISSION_DRIVELINE]
+        adopted = proposal_from_editor(
+            proposal_id="ENG-P01",
+            domain=engine.domain,
+            based_on=engine,
+            label="Adopted",
+            recommendation_key="eta_pt_est",
+            recommendation_value=0.32,
+            adopted=True,
+        )
+        configuration_only = proposal_from_editor(
+            proposal_id="TRANS-P01",
+            domain=transmission.domain,
+            based_on=transmission,
+            label="Configuration",
+            requested_changes={"gear_count": 9},
+        )
+        correction = current_correction_from_editor(
+            based_on=effective_states_for_source(self.sources[1])[DomainKind.AUX_THERMAL],
+            requested_changes={"ambient_temp_c": 20.0},
+        )
+        draft = update_selection(self.current, engine.domain, "ENG-P01")
+        draft = update_selection(draft, transmission.domain, "TRANS-P01")
+        rows = explainability_rows(
+            draft,
+            sources=self.sources,
+            proposals={"ENG-P01": adopted, "TRANS-P01": configuration_only},
+            corrections={correction_key(1, correction.domain): correction},
+        )
+        statuses = {row["domain"]: row["status"] for row in rows}
+        self.assertEqual(statuses[engine.domain.value], "Quantitative impact adopted")
+        self.assertEqual(statuses[transmission.domain.value], "Configuration only")
+        self.assertEqual(statuses[correction.domain.value], "Current correction only")
+
+    def test_sequential_trace_uses_canonical_outputs_only_for_adopted_impacts(self):
+        engine = effective_states_for_source(self.sources[1])[DomainKind.ENGINE_FUEL_CONVERTER]
+        transmission = effective_states_for_source(self.sources[1])[DomainKind.TRANSMISSION_DRIVELINE]
+        first = proposal_from_editor(
+            proposal_id="ENG-P01", domain=engine.domain, based_on=engine, label="Engine",
+            recommendation_key="eta_pt_est", recommendation_value=0.32, adopted=True,
+        )
+        second = proposal_from_editor(
+            proposal_id="TRANS-P01", domain=transmission.domain, based_on=transmission, label="Transmission",
+            technology_deltas=(TechDeltaAssumption("Transmission", "pse_percent_delta", 1.0),),
+        )
+        draft = update_selection(self.current, engine.domain, "ENG-P01")
+        draft = update_selection(draft, transmission.domain, "TRANS-P01")
+        trace = sequential_impact_trace(
+            draft,
+            sources=self.sources,
+            proposals={"ENG-P01": first, "TRANS-P01": second},
+        )
+        self.assertEqual(len(trace), 3)
+        self.assertIn("pse", trace[-1]["outputs"])
+        current = calculate_drafts((self.current,), sources=self.sources, proposals={})["SYS-CURRENT"].result
+        final = calculate_drafts((draft,), sources=self.sources, proposals={"ENG-P01": first, "TRANS-P01": second})["SYS-CURRENT"].result
+        self.assertIn("pse", result_deltas(current, final))
 
 
 if __name__ == "__main__":

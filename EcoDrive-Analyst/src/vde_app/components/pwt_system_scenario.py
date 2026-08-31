@@ -23,17 +23,20 @@ from src.vde_app.powertrain_system_scenario_viewmodels import (
     current_correction_from_editor,
     current_draft,
     effective_states_for_source,
+    explainability_rows,
     friendly_issue,
     is_stale,
     metadata_incomplete_fields,
     proposal_from_editor,
     remove_proposal_draft,
     replace_draft,
+    result_deltas,
+    sequential_impact_trace,
     update_selection,
 )
 from src.vde_core.pwt_fuel_energy_service import (
-    derive_reference_pse,
-    fetch_fuelcons_by_vde,
+    fetch_fuelcons_baselines,
+    fetch_fuelcons_row,
     fetch_vde_rows_by_ids,
 )
 from src.vde_core.system_scenario import (
@@ -160,22 +163,6 @@ def _assumption_options_for(
     return _ASSUMPTION_OPTIONS.get(domain, ())
 
 
-def _latest_fuel_row(vde_id: int) -> dict[str, Any]:
-    rows = fetch_fuelcons_by_vde(vde_id)
-    if rows is None or rows.empty:
-        return {}
-    if "id" in rows.columns:
-        rows = rows.sort_values("id", ascending=False)
-    row = rows.iloc[0].to_dict()
-    architecture = str(row.get("electrification") or "ICE").upper()
-    assumption_key = "bev_eff_drive" if architecture == "BEV" else "eta_pt_est"
-    if row.get(assumption_key) is None:
-        observed = derive_reference_pse(row)
-        if observed.get("status") == "available":
-            row[assumption_key] = observed.get("value")
-    return row
-
-
 def _working_set_vde_ids(
     current_vde_id: int,
     drafts: tuple[ScenarioDraft, ...],
@@ -193,29 +180,35 @@ def _working_set_vde_ids(
     return tuple(sorted(working_ids))
 
 
-def _discover_source_labels() -> dict[int, str]:
-    frame = load_baselines_df()
+def _fuelcons_baseline_labels() -> dict[int, str]:
+    """Discover persisted baselines without materializing their source objects."""
+
+    frame = fetch_fuelcons_baselines()
     if frame is None or frame.empty:
         return {}
-
     labels: dict[int, str] = {}
     for row in frame.to_dict("records"):
-        if row.get("id") is None:
+        fuelcons_id = row.get("fuelcons_id")
+        vde_id = row.get("vde_id")
+        if fuelcons_id is None or vde_id is None:
             continue
-        vde_id = int(row["id"])
-        vehicle = f"{row.get('make') or ''} {row.get('model') or ''}".strip()
+        vehicle = f"{row.get('make') or ''} {row.get('model') or ''}".strip() or "Snapshot"
         year = row.get("year")
         year_text = str(int(year)) if pd.notna(year) else ""
-        labels[vde_id] = f"VDE-{vde_id} - {vehicle or 'Snapshot'} {year_text}".strip()
+        architecture = row.get("electrification") or "Architecture unavailable"
+        labels[int(fuelcons_id)] = (
+            f"FuelCons-{int(fuelcons_id)} · VDE-{int(vde_id)} · {vehicle} {year_text} · {architecture}"
+        )
     return labels
 
 
 def _load_sources(
     current_vde_id: int,
+    fuelcons_id: int | None,
     *,
     drafts: tuple[ScenarioDraft, ...] = (),
 ) -> tuple[dict[int, ScenarioSource], dict[int, str]]:
-    """Load selector labels broadly and resolver sources for the working set."""
+    """Materialize the selected FuelCons baseline and active VDE snapshots only."""
 
     frame = load_baselines_df()
     rows: list[dict[str, Any]] = []
@@ -249,11 +242,12 @@ def _load_sources(
         for row in detail_rows
         if row.get("id") is not None
     }
+    fuelcons_row = fetch_fuelcons_row(fuelcons_id) if fuelcons_id is not None else {}
     sources = {
         vde_id: ScenarioSource(
             vde_id,
             details_by_id.get(vde_id, {"id": vde_id}),
-            _latest_fuel_row(vde_id),
+            fuelcons_row,
         )
         for vde_id in working_ids
     }
@@ -268,7 +262,14 @@ def _architecture_for(source: ScenarioSource) -> ArchitectureClass:
 def _ensure_state(current_vde_id: int, sources: Mapping[int, ScenarioSource]) -> None:
     if _DRAFTS_KEY not in st.session_state:
         source = sources.get(current_vde_id, ScenarioSource(current_vde_id, {"id": current_vde_id}))
-        st.session_state[_DRAFTS_KEY] = (current_draft(current_vde_id, _architecture_for(source)),)
+        fuelcons_id = source.fuelcons_row.get("id")
+        st.session_state[_DRAFTS_KEY] = (
+            current_draft(
+                current_vde_id,
+                _architecture_for(source),
+                fuelcons_id=int(fuelcons_id) if fuelcons_id is not None else None,
+            ),
+        )
         st.session_state[_PROPOSALS_KEY] = {}
         st.session_state[_RESULTS_KEY] = {}
         st.session_state[_CORRECTIONS_KEY] = {}
@@ -303,61 +304,40 @@ def _current_draft(drafts: tuple[ScenarioDraft, ...]) -> ScenarioDraft | None:
     )
 
 
-def _legacy_current_vde_id(source_labels: Mapping[int, str]) -> int | None:
-    """Read an older page's selected VDE only as an initial visible default."""
-
-    legacy_label = str(st.session_state.get("pwt_active_vde_source") or "")
-    if not legacy_label.startswith("#"):
-        return None
-    raw_id = legacy_label.split(" ", 1)[0].removeprefix("#")
-    try:
-        vde_id = int(raw_id)
-    except ValueError:
-        return None
-    return vde_id if vde_id in source_labels else None
-
-
-def _baseline_label(vde_id: int, source_labels: Mapping[int, str]) -> str:
-    return source_labels.get(vde_id, f"VDE-{vde_id} · Snapshot")
-
-
 def _render_current_baseline_selector(
     drafts: tuple[ScenarioDraft, ...],
-    source_labels: Mapping[int, str],
-) -> tuple[int | None, bool]:
-    """Choose the Current source before any scenario composition is rendered."""
+    baseline_labels: Mapping[int, str],
+) -> tuple[int | None, int | None, bool]:
+    """Choose one persisted FuelCons row before scenario composition."""
 
-    st.subheader("Current Baseline")
-    st.caption("Search VDE ID, make, model, or year. Detailed data loads only for active scenarios.")
+    st.subheader("Current System Baseline")
+    st.caption("Search FuelCons ID, VDE ID, make, model, year, or architecture. Detailed data loads only after selection.")
 
-    available_ids = list(source_labels)
+    available_ids = list(baseline_labels)
     if not available_ids:
-        st.info("No VDE_DB snapshots are available. Create one on VDE Setup to compose a System Scenario.")
-        return None, False
+        st.info("No persisted FuelCons rows are available. Create a FuelCons row linked to a VDE before composing a System Scenario.")
+        return None, None, False
 
     current = _current_draft(drafts)
-    current_vde_id = current.vde_id if current is not None else _legacy_current_vde_id(source_labels)
-    index = available_ids.index(current_vde_id) if current_vde_id in available_ids else None
-    selected_vde_id = st.selectbox(
-        "Current baseline",
+    current_fuelcons_id = current.fuelcons_id if current is not None else None
+    index = available_ids.index(current_fuelcons_id) if current_fuelcons_id in available_ids else 0
+    selected_fuelcons_id = st.selectbox(
+        "FuelCons baseline",
         available_ids,
         index=index,
-        format_func=lambda item: _baseline_label(item, source_labels),
-        placeholder="Search a VDE baseline",
+        format_func=lambda item: baseline_labels[item],
+        placeholder="Search a FuelCons baseline",
         key=_BASELINE_SELECTOR_KEY,
     )
 
+    selected_row = fetch_fuelcons_row(int(selected_fuelcons_id))
+    selected_vde_id = selected_row.get("vde_id")
     if selected_vde_id is None:
-        st.info("Select a Current baseline to begin a System Scenario.")
-        return None, False
-
-    if current is None:
-        st.caption(f"Selected: {_baseline_label(selected_vde_id, source_labels)}")
-        return int(selected_vde_id), False
-
-    if int(selected_vde_id) == current.vde_id:
-        st.caption(f"Selected: {_baseline_label(current.vde_id, source_labels)}")
-        return current.vde_id, False
+        st.error("The selected FuelCons baseline is no longer linked to a VDE.")
+        return None, None, False
+    if current is None or int(selected_fuelcons_id) == current.fuelcons_id:
+        st.caption(f"Selected: {baseline_labels[int(selected_fuelcons_id)]}")
+        return int(selected_fuelcons_id), int(selected_vde_id), False
 
     st.warning(
         "Changing the Current baseline resets domain proposals and calculated "
@@ -369,13 +349,14 @@ def _render_current_baseline_selector(
         key="pwt_ss:confirm_baseline_change",
         type="primary",
     )
-    return (int(selected_vde_id), bool(confirmed))
+    return int(selected_fuelcons_id), int(selected_vde_id), bool(confirmed)
 
 
 def _reset_drafts_for_baseline(
     drafts: tuple[ScenarioDraft, ...],
     *,
     vde_id: int,
+    fuelcons_id: int,
     architecture: ArchitectureClass,
 ) -> tuple[ScenarioDraft, ...]:
     inherited_selections = {domain: CURRENT_SELECTION for domain in EDITABLE_DOMAINS}
@@ -383,6 +364,7 @@ def _reset_drafts_for_baseline(
         replace(
             draft,
             vde_id=vde_id,
+            fuelcons_id=fuelcons_id,
             architecture=architecture,
             selections=inherited_selections,
         )
@@ -454,6 +436,59 @@ def _render_current_readiness(
         st.warning("L0 readiness: NOT READY")
         for issue in resolved.issues:
             st.caption(f"• {friendly_issue(issue)}")
+
+
+def _display_value(value: Any, *, digits: int = 4) -> str:
+    if value is None:
+        return "Not provided"
+    if isinstance(value, float):
+        return f"{value:.{digits}f}"
+    return str(value)
+
+
+def _render_baseline_summary(draft: ScenarioDraft, source: ScenarioSource | None) -> None:
+    st.markdown("### Baseline summary")
+    if source is None:
+        st.error("The selected FuelCons baseline could not be materialized.")
+        return
+    row = source.fuelcons_row
+    columns = st.columns(4)
+    columns[0].metric("FuelCons baseline", row.get("id", draft.fuelcons_id or "Not available"))
+    columns[1].metric("Linked VDE", f"VDE-{source.vde_id}")
+    columns[2].metric("Architecture", row.get("electrification") or "Not provided")
+    columns[3].metric("Fuel type", row.get("fuel_type") or "Not provided")
+    summary = {
+        "eta_pt_est": row.get("eta_pt_est"),
+        "bev_eff_drive": row.get("bev_eff_drive"),
+        "utility_factor_pct": row.get("utility_factor_pct"),
+        "grid_gco2_per_kwh": row.get("grid_gco2_per_kwh"),
+        "observed_fuel_l_per_100km": row.get("fuel_l_per_100km"),
+        "observed_energy_Wh_per_km": row.get("energy_Wh_per_km"),
+        "observed_gco2_per_km": row.get("gco2_per_km"),
+    }
+    st.dataframe(pd.DataFrame([summary]), hide_index=True, width="stretch")
+
+
+def _render_vde_impact_only(
+    draft: ScenarioDraft,
+    sources: Mapping[int, ScenarioSource],
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
+) -> None:
+    st.markdown("### VDE impact only")
+    st.caption("Demand-side reference only. It is not a second powertrain solver.")
+    source = sources.get(draft.vde_id)
+    if source is None:
+        st.info("Linked Vehicle Demand is unavailable.")
+        return
+    state = effective_states_for_source(source, corrections=corrections)[DomainKind.VEHICLE_DEMAND]
+    result = state.configuration.vehicle_demand_result
+    if result is None:
+        st.warning("Vehicle Demand: Not evaluated.")
+        return
+    columns = st.columns(3)
+    columns[0].metric("Linked VDE", f"VDE-{draft.vde_id}")
+    columns[1].metric("TOTAL demand [MJ/km]", _display_value(result.total_summary.vde_mj_per_km))
+    columns[2].metric("NET demand [MJ/km]", _display_value(result.net_summary.vde_mj_per_km))
 
 
 def _scenario_status(
@@ -998,6 +1033,7 @@ def _render_domain_editor(
 def _render_result(
     draft: ScenarioDraft,
     calculation: ScenarioCalculation | None,
+    current_calculation: ScenarioCalculation | None,
     sources: Mapping[int, ScenarioSource],
     proposals: Mapping[str, DomainProposal],
     corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
@@ -1021,11 +1057,17 @@ def _render_result(
         if result is None:
             return
         metrics = result.effective_outputs
+        current_result = current_calculation.result if current_calculation is not None else None
+        deltas = result_deltas(current_result, result)
         cols = st.columns(4)
         cols[0].metric("Vehicle Demand", f"VDE-{draft.vde_id}")
         cols[1].metric("Architecture", draft.architecture.value)
-        cols[2].metric("Fuel [L/100km]", "-" if metrics.get("fuel_l_100km") is None else f"{metrics['fuel_l_100km']:.3f}")
-        cols[3].metric("Electric [Wh/km]", "-" if metrics.get("energy_Wh_km") is None else f"{metrics['energy_Wh_km']:.2f}")
+        fuel = metrics.get("fuel_l_100km")
+        energy = metrics.get("energy_Wh_km")
+        fuel_delta = f"{deltas['fuel_l_100km']:+.3f}" if "fuel_l_100km" in deltas else None
+        energy_delta = f"{deltas['energy_Wh_km']:+.2f}" if "energy_Wh_km" in deltas else None
+        cols[2].metric("Fuel [L/100km]", "Not evaluated" if fuel is None else f"{fuel:.3f}", None if draft.identity.role.value == "CURRENT" else fuel_delta)
+        cols[3].metric("Electric [Wh/km]", "Not evaluated" if energy is None else f"{energy:.2f}", None if draft.identity.role.value == "CURRENT" else energy_delta)
         grid_missing = (
             result.resolved_scenario.l0_request_snapshot.powertrain_features.get("grid_gco2_per_kwh")
             is None
@@ -1035,8 +1077,11 @@ def _render_result(
         if grid_missing and draft.architecture is ArchitectureClass.BEV:
             co2_display = "Not evaluated"
         cols2 = st.columns(3)
-        cols2[0].metric("CO₂ [g/km]", co2_display)
-        cols2[1].metric("PSE", "-" if metrics.get("pse_value") is None else f"{metrics['pse_value']:.4f}")
+        co2_delta = f"{deltas['gco2_km']:+.2f}" if "gco2_km" in deltas else None
+        pse = metrics.get("pse")
+        pse_delta = f"{deltas['pse'] * 100:+.2f} pp" if "pse" in deltas else None
+        cols2[0].metric("CO₂ [g/km]", co2_display, None if draft.identity.role.value == "CURRENT" else co2_delta)
+        cols2[1].metric("PSE [%]", "Not evaluated" if pse is None else f"{pse * 100:.2f}%", None if draft.identity.role.value == "CURRENT" else pse_delta)
         cols2[2].metric("Solver", result.solver_identity or "-")
         if grid_missing and draft.architecture is ArchitectureClass.PHEV:
             st.caption("Grid carbon factor is not provided; displayed CO₂ is the canonical fuel-path result only.")
@@ -1080,19 +1125,80 @@ def _render_result(
             )
 
 
+def _render_explainability(
+    drafts: tuple[ScenarioDraft, ...],
+    calculations: Mapping[str, ScenarioCalculation],
+    sources: Mapping[int, ScenarioSource],
+    proposals: Mapping[str, DomainProposal],
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
+) -> None:
+    st.markdown("### Why did it change?")
+    st.caption("This is a trace of adopted L0 scenario composition, not a physical subsystem decomposition.")
+    proposal_drafts = [draft for draft in drafts if draft.identity.role.value == "PROPOSAL"]
+    if not proposal_drafts:
+        st.info("Add a proposal to compare adopted L0 impacts with Effective Current.")
+        return
+    for draft in proposal_drafts:
+        calculation = calculations.get(draft.identity.scenario_id)
+        if calculation is None or calculation.result is None or _scenario_status(
+            draft, calculation, sources, proposals, corrections
+        ) != "READY":
+            st.caption(f"{draft.label}: calculate a current result to show its trace.")
+            continue
+        st.markdown(f"#### {draft.label}")
+        rows = explainability_rows(
+            draft,
+            sources=sources,
+            proposals=proposals,
+            corrections=corrections,
+        )
+        display_rows = [
+            {
+                "Domain": _DOMAIN_LABELS[DomainKind(row["domain"])],
+                "Config change": row["config_change"],
+                "Quantitative representation": row["representation"],
+                "Provenance": row["provenance"],
+                "Status": row["status"],
+                "Effect on PSE": "Shown in sequential trace" if row["status"] == "Quantitative impact adopted" else "—",
+                "Effect on Fuel": "Shown in sequential trace" if row["status"] == "Quantitative impact adopted" else "—",
+            }
+            for row in rows
+        ]
+        st.dataframe(pd.DataFrame(display_rows), hide_index=True, width="stretch")
+        trace = sequential_impact_trace(
+            draft,
+            sources=sources,
+            proposals=proposals,
+            corrections=corrections,
+        )
+        trace_rows = []
+        for step in trace:
+            outputs = step["outputs"]
+            pse = outputs.get("pse")
+            fuel = outputs.get("fuel_l_100km")
+            trace_rows.append(
+                {
+                    "Composition step": step["label"],
+                    "PSE": "Not evaluated" if pse is None else f"{pse * 100:.2f}%",
+                    "Fuel [L/100km]": "Not evaluated" if fuel is None else f"{fuel:.3f}",
+                }
+            )
+        st.dataframe(pd.DataFrame(trace_rows), hide_index=True, width="stretch")
+
+
 def render_system_scenario_workspace() -> None:
     """Render one Current + max-three Proposal workspace."""
 
     drafts = _drafts()
-    discovery_labels = _discover_source_labels()
-    current_vde_id, baseline_changed = _render_current_baseline_selector(
+    baseline_labels = _fuelcons_baseline_labels()
+    fuelcons_id, current_vde_id, baseline_changed = _render_current_baseline_selector(
         drafts,
-        discovery_labels,
+        baseline_labels,
     )
-    if current_vde_id is None:
+    if fuelcons_id is None or current_vde_id is None:
         return
 
-    sources, source_labels = _load_sources(current_vde_id, drafts=drafts)
+    sources, source_labels = _load_sources(current_vde_id, fuelcons_id, drafts=drafts)
     if baseline_changed:
         source = sources.get(
             current_vde_id,
@@ -1101,6 +1207,7 @@ def render_system_scenario_workspace() -> None:
         reset_drafts = _reset_drafts_for_baseline(
             drafts,
             vde_id=current_vde_id,
+            fuelcons_id=fuelcons_id,
             architecture=_architecture_for(source),
         )
         st.session_state[_DRAFTS_KEY] = reset_drafts
@@ -1119,7 +1226,9 @@ def render_system_scenario_workspace() -> None:
         return
 
     st.session_state["current_vde_id"] = current.vde_id
+    _render_baseline_summary(current, sources.get(current.vde_id))
     _render_current_readiness(current, sources, proposals, corrections)
+    _render_vde_impact_only(current, sources, corrections)
 
     st.subheader("Multi-domain System Scenarios")
     st.caption(
@@ -1137,6 +1246,7 @@ def render_system_scenario_workspace() -> None:
             drafts,
             vde_id=current.vde_id,
             architecture=current.architecture,
+            fuelcons_id=current.fuelcons_id,
         )
         st.session_state[_DRAFTS_KEY] = drafts
         st.rerun()
@@ -1193,10 +1303,12 @@ def render_system_scenario_workspace() -> None:
         _render_result(
             draft,
             calculations.get(draft.identity.scenario_id),
+            calculations.get("SYS-CURRENT"),
             sources,
             proposals,
             corrections,
         )
+    _render_explainability(drafts, calculations, sources, proposals, corrections)
 
 
 __all__ = ["render_system_scenario_workspace"]

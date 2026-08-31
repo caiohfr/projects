@@ -45,6 +45,39 @@ def fetch_fuelcons_by_vde_id(vde_id: int) -> list[dict]:
     )
 
 
+def fetch_fuelcons_by_id(fuelcons_id: int) -> dict | None:
+    """Return the one detailed persisted FuelCons row selected as a baseline."""
+
+    rows = fetchall(
+        (
+            "SELECT id, vde_id, created_at, method_note, electrification, energy_basis, engine_method, engine_version, "
+            "source_vde_revision, assumptions_json, provenance_json, "
+            "fuel_type, eta_pt_est, bev_eff_drive, utility_factor_pct, "
+            "engine_max_power_kw, engine_max_torque_nm, "
+            "battery_capacity_kwh, battery_usable_kwh, bms_discharge_limit_kw, bms_regen_limit_kw, bms_note, "
+            "ambient_temp_c, ac_on, "
+            "fuel_l_per_100km, fuel_km_per_l, energy_Wh_per_km, gco2_per_km, "
+            "fuel_ftp75_l_per_100km, fuel_hwfet_l_per_100km, "
+            "energy_ftp75_Wh_per_km, energy_hwfet_Wh_per_km, "
+            "gear_count, final_drive_ratio "
+            "FROM fuelcons_db WHERE id=?"
+        ),
+        (int(fuelcons_id),),
+    )
+    return rows[0] if rows else None
+
+
+def fetch_fuelcons_baseline_labels() -> list[dict]:
+    """Load only selector fields for FuelCons-first System Scenario discovery."""
+
+    return fetchall(
+        "SELECT f.id AS fuelcons_id, f.vde_id, f.electrification, f.fuel_type, "
+        "v.make, v.model, v.year "
+        "FROM fuelcons_db f JOIN vde_db v ON v.id = f.vde_id "
+        "ORDER BY f.id DESC"
+    ) or []
+
+
 def fetch_fuelcons_rows(filters: dict[str, Any]) -> list[dict]:
     base = (
         "SELECT f.id, f.created_at, f.vde_id, f.electrification, f.method_note, "

@@ -82,6 +82,7 @@ class ScenarioDraft:
     label: str
     vde_id: int
     architecture: ArchitectureClass
+    fuelcons_id: int | None = None
     selections: Mapping[DomainKind, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -105,18 +106,28 @@ class ScenarioCalculation:
         return self.result.readiness
 
 
-def current_draft(vde_id: int, architecture: ArchitectureClass) -> ScenarioDraft:
+def current_draft(
+    vde_id: int,
+    architecture: ArchitectureClass,
+    *,
+    fuelcons_id: int | None = None,
+) -> ScenarioDraft:
     return ScenarioDraft(
         identity=SystemScenarioIdentity("SYS-CURRENT", SystemScenarioRole.CURRENT),
         label="Current",
         vde_id=int(vde_id),
         architecture=architecture,
+        fuelcons_id=fuelcons_id,
         selections={domain: CURRENT_SELECTION for domain in EDITABLE_DOMAINS},
     )
 
 
 def add_proposal_draft(
-    drafts: Sequence[ScenarioDraft], *, vde_id: int, architecture: ArchitectureClass
+    drafts: Sequence[ScenarioDraft],
+    *,
+    vde_id: int,
+    architecture: ArchitectureClass,
+    fuelcons_id: int | None = None,
 ) -> tuple[ScenarioDraft, ...]:
     drafts = tuple(drafts)
     used = {
@@ -136,6 +147,7 @@ def add_proposal_draft(
         label=f"Proposal {chr(64 + available)}",
         vde_id=int(vde_id),
         architecture=architecture,
+        fuelcons_id=fuelcons_id,
         selections={domain: CURRENT_SELECTION for domain in EDITABLE_DOMAINS},
     )
     return (*drafts, proposal)
@@ -435,6 +447,141 @@ def is_stale(
     )
 
 
+def explainability_rows(
+    draft: ScenarioDraft,
+    *,
+    sources: Mapping[int, ScenarioSource],
+    proposals: Mapping[str, DomainProposal],
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection] | None = None,
+) -> tuple[Mapping[str, str], ...]:
+    """Describe scenario composition without assigning fabricated subsystem physics."""
+
+    corrections = corrections or {}
+    source = sources.get(draft.vde_id)
+    if source is None:
+        return ()
+    effective = effective_states_for_source(source, corrections=corrections)
+    rows: list[Mapping[str, str]] = []
+    for domain in EDITABLE_DOMAINS:
+        selection = draft.selection_for(domain)
+        correction = corrections.get(correction_key(draft.vde_id, domain))
+        if selection == CURRENT_SELECTION:
+            status = "Current correction only" if correction is not None else "Not represented"
+            rows.append(
+                MappingProxyType(
+                    {
+                        "domain": domain.value,
+                        "config_change": "Inherited from Effective Current",
+                        "representation": "Current correction" if correction is not None else "None",
+                        "provenance": "CURRENT_CORRECTION" if correction is not None else "-",
+                        "status": status,
+                    }
+                )
+            )
+            continue
+        if selection == NOT_APPLICABLE_SELECTION:
+            rows.append(
+                MappingProxyType(
+                    {
+                        "domain": domain.value,
+                        "config_change": "Not applicable",
+                        "representation": "None",
+                        "provenance": "-",
+                        "status": "Not represented",
+                    }
+                )
+            )
+            continue
+        proposal = proposals.get(selection)
+        if proposal is None:
+            continue
+        changed = proposal.configuration != effective[domain].configuration
+        represented = bool(proposal.l0_effective_assumption or proposal.technology_deltas)
+        if represented:
+            status = "Quantitative impact adopted"
+            representation = "Direct L0 assumption" if proposal.l0_effective_assumption else "Technology Delta"
+            provenance = ", ".join(
+                value.value for value in proposal.l0_assumption_provenance.values()
+            ) or "Technology Delta"
+        elif changed:
+            status = "Configuration only"
+            representation = "None"
+            provenance = "-"
+        else:
+            status = "Not represented"
+            representation = "None"
+            provenance = "-"
+        rows.append(
+            MappingProxyType(
+                {
+                    "domain": domain.value,
+                    "config_change": "Changed" if changed else "Unchanged",
+                    "representation": representation,
+                    "provenance": provenance,
+                    "status": status,
+                }
+            )
+        )
+    return tuple(rows)
+
+
+def sequential_impact_trace(
+    draft: ScenarioDraft,
+    *,
+    sources: Mapping[int, ScenarioSource],
+    proposals: Mapping[str, DomainProposal],
+    corrections: Mapping[tuple[int, DomainKind], DomainCorrection] | None = None,
+) -> tuple[Mapping[str, Any], ...]:
+    """Run canonical L0 after each adopted domain in deterministic domain order."""
+
+    corrections = corrections or {}
+    selections = {domain: CURRENT_SELECTION for domain in EDITABLE_DOMAINS}
+    base_draft = replace(draft, selections=selections)
+    steps: list[Mapping[str, Any]] = []
+    for label, candidate in [("Base Effective Current", base_draft)]:
+        definition, request = build_definition(
+            candidate, sources=sources, proposals=proposals, corrections=corrections
+        )
+        result = run_system_scenario(definition, request_template=request)
+        steps.append(MappingProxyType({"label": label, "outputs": dict(result.effective_outputs)}))
+    for domain in EDITABLE_DOMAINS:
+        selection = draft.selection_for(domain)
+        proposal = proposals.get(selection)
+        if proposal is None or not (proposal.l0_effective_assumption or proposal.technology_deltas):
+            continue
+        selections[domain] = selection
+        candidate = replace(draft, selections=selections)
+        definition, request = build_definition(
+            candidate, sources=sources, proposals=proposals, corrections=corrections
+        )
+        result = run_system_scenario(definition, request_template=request)
+        steps.append(
+            MappingProxyType(
+                {"label": f"{domain.value}: adopted L0 impact", "outputs": dict(result.effective_outputs)}
+            )
+        )
+    return tuple(steps)
+
+
+def result_deltas(
+    current: SystemScenarioResult | None,
+    candidate: SystemScenarioResult | None,
+) -> Mapping[str, float]:
+    """Compare already-calculated canonical outputs; this owns no physics."""
+
+    if current is None or candidate is None:
+        return MappingProxyType({})
+    baseline = current.effective_outputs
+    proposed = candidate.effective_outputs
+    deltas: dict[str, float] = {}
+    for key in ("fuel_l_100km", "energy_Wh_km", "gco2_km", "pse"):
+        before = baseline.get(key)
+        after = proposed.get(key)
+        if isinstance(before, (int, float)) and isinstance(after, (int, float)):
+            deltas[key] = float(after) - float(before)
+    return MappingProxyType(deltas)
+
+
 def metadata_incomplete_fields(definition: SystemScenarioDefinition) -> Mapping[DomainKind, tuple[str, ...]]:
     missing: dict[DomainKind, tuple[str, ...]] = {}
     for domain, selection in definition.slots.items():
@@ -496,6 +643,9 @@ __all__ = [
     "calculation_fingerprint",
     "calculate_drafts",
     "is_stale",
+    "explainability_rows",
+    "sequential_impact_trace",
+    "result_deltas",
     "metadata_incomplete_fields",
     "friendly_issue",
 ]

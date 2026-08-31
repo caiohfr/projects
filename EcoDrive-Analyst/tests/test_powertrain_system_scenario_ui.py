@@ -40,11 +40,18 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         )
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
+        selector = app.selectbox(key="pwt_ss:current_baseline")
+        selected = next(
+            option for option in selector.options if f"VDE-{vde_prefix[1:7]}" in option
+        )
+        if selector.value != selected:
+            selector.set_value(selected).run(timeout=90)
         return app
 
     def test_primary_workspace_is_canonical_without_legacy_renderers(self):
         app = self._app()
-        self.assertTrue(any(item.label == "Current baseline" for item in app.selectbox))
+        self.assertTrue(any(item.label == "FuelCons baseline" for item in app.selectbox))
+        self.assertTrue(any("FuelCons baseline" in item.value for item in app.metric))
         self.assertTrue(any("Multi-domain System Scenarios" in item.value for item in app.subheader))
         self.assertTrue(any("Vehicle Demand" in str(frame.value) for frame in app.dataframe))
         self.assertFalse(any("legacy" in item.label.lower() for item in app.expander))
@@ -149,10 +156,13 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
 
     def test_current_baseline_change_materializes_current_source_before_engine_edit(self):
         app = self._app()
-        app.selectbox(key="pwt_ss:current_baseline").set_value(900001).run(timeout=90)
+        selector = app.selectbox(key="pwt_ss:current_baseline")
+        selected = next(option for option in selector.options if "VDE-900001" in option)
+        selector.set_value(selected).run(timeout=90)
         self.assertTrue(any("resets domain proposals" in item.value for item in app.warning))
         app.button(key="pwt_ss:confirm_baseline_change").click().run(timeout=90)
         self.assertEqual(app.session_state["pwt_ss_drafts"][0].vde_id, 900001)
+        self.assertIsNotNone(app.session_state["pwt_ss_drafts"][0].fuelcons_id)
 
         app.selectbox(key="pwt_ss:editor:domain").set_value(
             DomainKind.ENGINE_FUEL_CONVERTER
@@ -182,7 +192,9 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         app.button(key="pwt_ss:calculate").click().run(timeout=90)
         identities_before = [draft.identity for draft in app.session_state["pwt_ss_drafts"]]
 
-        app.selectbox(key="pwt_ss:current_baseline").set_value(900001).run(timeout=90)
+        selector = app.selectbox(key="pwt_ss:current_baseline")
+        selected = next(option for option in selector.options if "VDE-900001" in option)
+        selector.set_value(selected).run(timeout=90)
         app.button(key="pwt_ss:confirm_baseline_change").click().run(timeout=90)
 
         drafts = app.session_state["pwt_ss_drafts"]

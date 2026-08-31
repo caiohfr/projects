@@ -62,6 +62,11 @@ EDITABLE_DOMAINS: tuple[DomainKind, ...] = tuple(
 
 MANUAL_EVIDENCE_SOURCE = "Engineering assumption"
 
+DEMAND_DRIVEN = "DEMAND-DRIVEN"
+POWERTRAIN_DRIVEN = "POWERTRAIN-DRIVEN"
+MIXED_DRIVER = "MIXED DEMAND + POWERTRAIN"
+NO_QUANTITATIVE_CHANGE = "NO QUANTITATIVE CHANGE"
+
 
 @dataclass(frozen=True)
 class ScenarioSource:
@@ -104,6 +109,41 @@ class ScenarioCalculation:
         if self.result is None:
             return SolverReadiness.NOT_READY
         return self.result.readiness
+
+
+@dataclass(frozen=True)
+class ScenarioResultCard:
+    label: str
+    scenario_id: str
+    fuel_l_100km: float | None
+    energy_wh_km: float | None
+    pse: float | None
+    gco2_km: float | None
+    deltas: Mapping[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "deltas", MappingProxyType(dict(self.deltas)))
+
+
+@dataclass(frozen=True)
+class VehicleDemandComparison:
+    current_vde_id: int
+    proposal_vde_id: int
+    current_mj_per_km: float | None
+    proposal_mj_per_km: float | None
+    basis: str
+
+    @property
+    def changed(self) -> bool:
+        if self.current_mj_per_km is not None and self.proposal_mj_per_km is not None:
+            return self.current_mj_per_km != self.proposal_mj_per_km
+        return self.current_vde_id != self.proposal_vde_id
+
+    @property
+    def delta_percent(self) -> float | None:
+        if self.current_mj_per_km in (None, 0) or self.proposal_mj_per_km is None:
+            return None
+        return (self.proposal_mj_per_km / self.current_mj_per_km - 1.0) * 100.0
 
 
 def current_draft(
@@ -582,6 +622,134 @@ def result_deltas(
     return MappingProxyType(deltas)
 
 
+def result_card_viewmodel(
+    draft: ScenarioDraft,
+    calculation: ScenarioCalculation | None,
+    *,
+    current: ScenarioCalculation | None = None,
+) -> ScenarioResultCard:
+    result = calculation.result if calculation is not None else None
+    outputs = result.effective_outputs if result is not None else {}
+    current_result = current.result if current is not None else None
+    return ScenarioResultCard(
+        label=draft.label,
+        scenario_id=draft.identity.scenario_id,
+        fuel_l_100km=outputs.get("fuel_l_100km"),
+        energy_wh_km=outputs.get("energy_Wh_km"),
+        pse=outputs.get("pse"),
+        gco2_km=outputs.get("gco2_km"),
+        deltas=result_deltas(current_result, result),
+    )
+
+
+def _vehicle_demand_value(source: ScenarioSource | None, basis: str) -> float | None:
+    if source is None:
+        return None
+    state = effective_states_for_source(source)[DomainKind.VEHICLE_DEMAND]
+    result = state.configuration.vehicle_demand_result
+    if result is None:
+        return None
+    summary = result.net_summary if basis == "NET" else result.total_summary
+    return summary.vde_mj_per_km if summary is not None else None
+
+
+def vehicle_demand_comparison(
+    current: ScenarioDraft,
+    proposal: ScenarioDraft,
+    *,
+    sources: Mapping[int, ScenarioSource],
+) -> VehicleDemandComparison:
+    source = sources.get(current.vde_id)
+    basis = str((source.fuelcons_row if source is not None else {}).get("energy_basis") or "VDE_TOTAL")
+    basis = "NET" if basis.upper() == "VDE_NET" else "TOTAL"
+    return VehicleDemandComparison(
+        current_vde_id=current.vde_id,
+        proposal_vde_id=proposal.vde_id,
+        current_mj_per_km=_vehicle_demand_value(sources.get(current.vde_id), basis),
+        proposal_mj_per_km=_vehicle_demand_value(sources.get(proposal.vde_id), basis),
+        basis=basis,
+    )
+
+
+def compact_impact_rows(
+    draft: ScenarioDraft,
+    *,
+    proposals: Mapping[str, DomainProposal],
+) -> tuple[Mapping[str, str], ...]:
+    """Return changed proposal domains only; inherited rows stay technical."""
+
+    rows: list[Mapping[str, str]] = []
+    for domain in EDITABLE_DOMAINS:
+        selection = draft.selection_for(domain)
+        proposal = proposals.get(selection)
+        if proposal is None:
+            continue
+        represented = bool(proposal.l0_effective_assumption or proposal.technology_deltas)
+        changed = bool(proposal.requested_changes)
+        if not represented and not changed:
+            continue
+        if proposal.l0_effective_assumption:
+            key, value = next(iter(proposal.l0_effective_assumption.items()))
+            representation = _friendly_l0_assumption(key, value)
+            evidence = ", ".join(
+                item.value for item in proposal.l0_assumption_provenance.values()
+            ) or "ASSUMED"
+            status = "ADOPTED"
+        elif proposal.technology_deltas:
+            delta = proposal.technology_deltas[0]
+            representation = f"{delta.effect_value:+g}% {delta.effect_basis.replace('_percent_delta', '').upper()}"
+            evidence = delta.source_type
+            status = "ADOPTED"
+        else:
+            representation = "Not represented"
+            evidence = "—"
+            status = "CONFIG ONLY"
+        rows.append(
+            MappingProxyType(
+                {
+                    "domain": domain.value,
+                    "representation": representation,
+                    "evidence": evidence,
+                    "status": status,
+                }
+            )
+        )
+    return tuple(rows)
+
+
+def _friendly_l0_assumption(key: str, value: float) -> str:
+    if key == "eta_pt_est":
+        return f"Aggregate fuel-path efficiency: {value * 100:.2f}%"
+    if key == "bev_eff_drive":
+        return f"Electric-path efficiency: {value * 100:.2f}%"
+    if key == "utility_factor":
+        return f"Utility factor: {value * 100:.1f}%"
+    if key == "grid_gco2_kwh":
+        return f"Grid CO₂ factor: {value:g} g/kWh"
+    return f"Effective assumption: {value:g}"
+
+
+def result_driver(
+    current: ScenarioDraft,
+    proposal: ScenarioDraft,
+    *,
+    sources: Mapping[int, ScenarioSource],
+    proposals: Mapping[str, DomainProposal],
+) -> str:
+    demand_changed = vehicle_demand_comparison(current, proposal, sources=sources).changed
+    powertrain_changed = any(
+        row["status"] == "ADOPTED"
+        for row in compact_impact_rows(proposal, proposals=proposals)
+    )
+    if demand_changed and powertrain_changed:
+        return MIXED_DRIVER
+    if demand_changed:
+        return DEMAND_DRIVEN
+    if powertrain_changed:
+        return POWERTRAIN_DRIVEN
+    return NO_QUANTITATIVE_CHANGE
+
+
 def metadata_incomplete_fields(definition: SystemScenarioDefinition) -> Mapping[DomainKind, tuple[str, ...]]:
     missing: dict[DomainKind, tuple[str, ...]] = {}
     for domain, selection in definition.slots.items():
@@ -626,9 +794,15 @@ __all__ = [
     "NOT_APPLICABLE_SELECTION",
     "EDITABLE_DOMAINS",
     "MANUAL_EVIDENCE_SOURCE",
+    "DEMAND_DRIVEN",
+    "POWERTRAIN_DRIVEN",
+    "MIXED_DRIVER",
+    "NO_QUANTITATIVE_CHANGE",
     "ScenarioSource",
     "ScenarioDraft",
     "ScenarioCalculation",
+    "ScenarioResultCard",
+    "VehicleDemandComparison",
     "current_draft",
     "add_proposal_draft",
     "replace_draft",
@@ -646,6 +820,10 @@ __all__ = [
     "explainability_rows",
     "sequential_impact_trace",
     "result_deltas",
+    "result_card_viewmodel",
+    "vehicle_demand_comparison",
+    "compact_impact_rows",
+    "result_driver",
     "metadata_incomplete_fields",
     "friendly_issue",
 ]

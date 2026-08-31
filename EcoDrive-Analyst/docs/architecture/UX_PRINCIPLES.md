@@ -49,6 +49,11 @@ never imply hidden model effects.
 Recommendations are evidence, not state. They affect calculation only after
 explicit adoption.
 
+Scenario result UIs explain deltas in canonical causal order: upstream demand
+changes first, downstream system assumptions second, and the final output
+last. Presentation may classify that resolved story, but it must not invent a
+physical subsystem decomposition.
+
 ## Validation
 
 AppTest supplies automated UI evidence, but it does not replace a real browser

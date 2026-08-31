@@ -8,12 +8,17 @@ from unittest.mock import patch
 
 from src.vde_app.powertrain_system_scenario_viewmodels import (
     CURRENT_SELECTION,
+    DEMAND_DRIVEN,
+    MIXED_DRIVER,
+    NO_QUANTITATIVE_CHANGE,
     NOT_APPLICABLE_SELECTION,
+    POWERTRAIN_DRIVEN,
     ScenarioSource,
     add_proposal_draft,
     build_definition,
     calculate_drafts,
     calculation_fingerprint,
+    compact_impact_rows,
     correction_key,
     current_correction_from_editor,
     current_draft,
@@ -24,9 +29,12 @@ from src.vde_app.powertrain_system_scenario_viewmodels import (
     metadata_incomplete_fields,
     proposal_from_editor,
     replace_draft,
+    result_card_viewmodel,
+    result_driver,
     result_deltas,
     sequential_impact_trace,
     update_selection,
+    vehicle_demand_comparison,
 )
 from src.vde_core.system_scenario import (
     ArchitectureClass,
@@ -435,6 +443,113 @@ class PowertrainSystemScenarioViewmodelTests(unittest.TestCase):
         current = calculate_drafts((self.current,), sources=self.sources, proposals={})["SYS-CURRENT"].result
         final = calculate_drafts((draft,), sources=self.sources, proposals={"ENG-P01": first, "TRANS-P01": second})["SYS-CURRENT"].result
         self.assertIn("pse", result_deltas(current, final))
+
+    def _proposal_with_adopted_engine_impact(self, *, vde_id: int = 1):
+        base = effective_states_for_source(self.sources[1])[DomainKind.ENGINE_FUEL_CONVERTER]
+        proposal = proposal_from_editor(
+            proposal_id="ENG-P01",
+            domain=base.domain,
+            based_on=base,
+            label="Efficient engine",
+            recommendation_key="eta_pt_est",
+            recommendation_value=0.34,
+            adopted=True,
+        )
+        draft = add_proposal_draft(
+            (self.current,), vde_id=vde_id, architecture=ArchitectureClass.ICE
+        )[1]
+        return update_selection(draft, base.domain, "ENG-P01"), proposal
+
+    def test_result_driver_classifies_demand_driven(self):
+        proposal = add_proposal_draft(
+            (self.current,), vde_id=2, architecture=ArchitectureClass.ICE
+        )[1]
+        self.assertEqual(
+            result_driver(self.current, proposal, sources=self.sources, proposals={}),
+            DEMAND_DRIVEN,
+        )
+
+    def test_result_driver_classifies_powertrain_driven(self):
+        draft, proposal = self._proposal_with_adopted_engine_impact()
+        self.assertEqual(
+            result_driver(
+                self.current, draft, sources=self.sources, proposals={"ENG-P01": proposal}
+            ),
+            POWERTRAIN_DRIVEN,
+        )
+
+    def test_result_driver_classifies_mixed(self):
+        draft, proposal = self._proposal_with_adopted_engine_impact(vde_id=2)
+        self.assertEqual(
+            result_driver(
+                self.current, draft, sources=self.sources, proposals={"ENG-P01": proposal}
+            ),
+            MIXED_DRIVER,
+        )
+
+    def test_result_driver_classifies_no_quantitative_change(self):
+        proposal = add_proposal_draft(
+            (self.current,), vde_id=1, architecture=ArchitectureClass.ICE
+        )[1]
+        self.assertEqual(
+            result_driver(self.current, proposal, sources=self.sources, proposals={}),
+            NO_QUANTITATIVE_CHANGE,
+        )
+
+    def test_vehicle_demand_comparison_reports_canonical_values_and_delta(self):
+        proposal = add_proposal_draft(
+            (self.current,), vde_id=2, architecture=ArchitectureClass.ICE
+        )[1]
+        comparison = vehicle_demand_comparison(self.current, proposal, sources=self.sources)
+        self.assertEqual(comparison.current_mj_per_km, 1.8)
+        self.assertEqual(comparison.proposal_mj_per_km, 2.0)
+        self.assertAlmostEqual(comparison.delta_percent, 11.1111111111)
+
+    def test_vehicle_demand_comparison_uses_value_not_snapshot_identity(self):
+        sources = {1: self.sources[1], 4: _source(4, total=1.8)}
+        proposal = add_proposal_draft(
+            (self.current,), vde_id=4, architecture=ArchitectureClass.ICE
+        )[1]
+        comparison = vehicle_demand_comparison(self.current, proposal, sources=sources)
+        self.assertFalse(comparison.changed)
+        self.assertEqual(
+            result_driver(self.current, proposal, sources=sources, proposals={}),
+            NO_QUANTITATIVE_CHANGE,
+        )
+
+    def test_result_card_formats_from_canonical_outputs_and_exposes_deltas(self):
+        draft, proposal = self._proposal_with_adopted_engine_impact()
+        calculations = calculate_drafts(
+            (self.current, draft), sources=self.sources, proposals={"ENG-P01": proposal}
+        )
+        current_card = result_card_viewmodel(
+            self.current, calculations["SYS-CURRENT"]
+        )
+        proposal_card = result_card_viewmodel(
+            draft, calculations["SYS-P1"], current=calculations["SYS-CURRENT"]
+        )
+        self.assertIsNotNone(current_card.pse)
+        self.assertIn("pse", proposal_card.deltas)
+        self.assertIn("fuel_l_100km", proposal_card.deltas)
+
+    def test_compact_trace_omits_inherited_and_keeps_adopted_and_config_only(self):
+        draft, adopted = self._proposal_with_adopted_engine_impact()
+        storage = effective_states_for_source(self.sources[1])[DomainKind.ENERGY_STORAGE]
+        config_only = proposal_from_editor(
+            proposal_id="BAT-P01",
+            domain=storage.domain,
+            based_on=storage,
+            label="Larger battery",
+            requested_changes={"usable_capacity_kwh": 1.5},
+        )
+        draft = update_selection(draft, storage.domain, "BAT-P01")
+        rows = compact_impact_rows(
+            draft, proposals={"ENG-P01": adopted, "BAT-P01": config_only}
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["status"] for row in rows}, {"ADOPTED", "CONFIG ONLY"})
+        config_row = next(row for row in rows if row["status"] == "CONFIG ONLY")
+        self.assertEqual(config_row["representation"], "Not represented")
 
 
 if __name__ == "__main__":

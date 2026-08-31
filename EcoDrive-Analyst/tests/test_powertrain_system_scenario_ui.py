@@ -55,7 +55,7 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
     def test_primary_workspace_is_canonical_without_legacy_renderers(self):
         app = self._app()
         self.assertTrue(any(item.label == "FuelCons baseline" for item in app.selectbox))
-        self.assertTrue(any("FuelCons baseline" in item.value for item in app.metric))
+        self.assertTrue(any(item.label == "FuelCons" for item in app.metric))
         self.assertTrue(any("Multi-domain System Scenarios" in item.value for item in app.subheader))
         self.assertTrue(any("Vehicle Demand" in str(frame.value) for frame in app.dataframe))
         self.assertFalse(any("legacy" in item.label.lower() for item in app.expander))
@@ -77,7 +77,10 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         self.assertFalse(any(item.label == "Technical audit and diagnostics" for item in app.expander))
         app.button(key="pwt_ss:calculate").click().run(timeout=90)
         self.assertEqual(len(app.exception), 0)
-        self.assertTrue(any(item.label == "Technical trace" for item in app.expander))
+        self.assertTrue(
+            any(item.label == "PSE" and item.value.endswith("%") for item in app.metric)
+        )
+        self.assertTrue(any(item.label == "Technical baseline details" for item in app.expander))
 
     def test_current_only_renders_compact_matrix_and_calculates(self):
         app = self._app()
@@ -97,6 +100,13 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
             if calculation.result
             else calculation.programming_error,
         )
+
+    def test_calculate_action_remains_available_after_domain_workspace(self):
+        app = self._app()
+        self.assertTrue(any(item.key == "pwt_ss:calculate_after_editor" for item in app.button))
+        app.button(key="pwt_ss:calculate_after_editor").click().run(timeout=90)
+        self.assertEqual(len(app.exception), 0)
+        self.assertIn("SYS-CURRENT", app.session_state["pwt_ss_calculations"])
 
     def test_current_plus_three_proposals_and_fourth_is_prevented(self):
         app = self._app()

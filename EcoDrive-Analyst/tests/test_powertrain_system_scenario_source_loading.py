@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -114,6 +114,19 @@ class PowertrainSystemScenarioSourceLoadingTests(unittest.TestCase):
         self.assertEqual(len(labels), 1)
         self.assertIn("FuelCons-101", labels[101])
         self.assertIn("VDE-11", labels[101])
+
+    def test_vde_impact_view_keeps_missing_net_as_not_evaluated(self):
+        source = ScenarioSource(
+            vde_id=1,
+            vde_row={"id": 1, "vde_total_mj_per_km": 1.8, "vde_net_mj_per_km": None},
+            fuelcons_row={"id": 101, "vde_id": 1, "electrification": "ICE"},
+        )
+        draft = current_draft(1, ArchitectureClass.ICE, fuelcons_id=101)
+        columns = [MagicMock() for _ in range(3)]
+        with patch.object(pwt_system_scenario.st, "columns", return_value=columns):
+            pwt_system_scenario._render_vde_impact_only(draft, {1: source}, {})
+
+        self.assertEqual(columns[2].metric.call_args.args[1], "Not evaluated")
 
 
 if __name__ == "__main__":

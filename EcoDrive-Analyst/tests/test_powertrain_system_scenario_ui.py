@@ -18,6 +18,10 @@ from src.vde_app.components.pwt_fuel_energy import _vde_snapshot_options
 PAGE_PATH = Path(__file__).resolve().parents[1] / "pages" / "Powertrain_Scenario.py"
 
 
+def _fuelcons_id(label: str) -> int:
+    return int(label.split(" ", 1)[0].removeprefix("FuelCons-"))
+
+
 class PowertrainSystemScenarioAppTests(unittest.TestCase):
     def setUp(self):
         self._temp_dir = tempfile.TemporaryDirectory()
@@ -45,7 +49,7 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
             option for option in selector.options if f"VDE-{vde_prefix[1:7]}" in option
         )
         if selector.value != selected:
-            selector.set_value(selected).run(timeout=90)
+            selector.set_value(_fuelcons_id(selected)).run(timeout=90)
         return app
 
     def test_primary_workspace_is_canonical_without_legacy_renderers(self):
@@ -59,14 +63,14 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         self.assertFalse(any(item.label == "Baseline powertrain source" for item in app.selectbox))
         self.assertFalse(any("Load source pairing" in item.label for item in app.checkbox))
 
-    def test_incomplete_current_keeps_matrix_visible_and_reports_not_ready(self):
-        app = self._app(vde_prefix="#900007 ")
+    def test_fuelcons_baseline_options_exclude_unlinked_vde_snapshots(self):
+        app = self._app()
+        selector = app.selectbox(key="pwt_ss:current_baseline")
+        self.assertFalse(any("VDE-900007" in option for option in selector.options))
         self.assertTrue(any("Vehicle Demand" in str(frame.value) for frame in app.dataframe))
-        self.assertTrue(any("Assumed ICE" in item.value for item in app.warning))
         app.button(key="pwt_ss:calculate").click().run(timeout=90)
         calculation = app.session_state["pwt_ss_calculations"]["SYS-CURRENT"]
-        self.assertIs(calculation.readiness, SolverReadiness.NOT_READY)
-        self.assertTrue(any("NOT READY" in str(frame.value) for frame in app.dataframe))
+        self.assertIs(calculation.readiness, SolverReadiness.READY)
 
     def test_canonical_result_keeps_technical_trace_without_legacy_footer(self):
         app = self._app()
@@ -158,7 +162,7 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         app = self._app()
         selector = app.selectbox(key="pwt_ss:current_baseline")
         selected = next(option for option in selector.options if "VDE-900001" in option)
-        selector.set_value(selected).run(timeout=90)
+        selector.set_value(_fuelcons_id(selected)).run(timeout=90)
         self.assertTrue(any("resets domain proposals" in item.value for item in app.warning))
         app.button(key="pwt_ss:confirm_baseline_change").click().run(timeout=90)
         self.assertEqual(app.session_state["pwt_ss_drafts"][0].vde_id, 900001)
@@ -194,7 +198,7 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
 
         selector = app.selectbox(key="pwt_ss:current_baseline")
         selected = next(option for option in selector.options if "VDE-900001" in option)
-        selector.set_value(selected).run(timeout=90)
+        selector.set_value(_fuelcons_id(selected)).run(timeout=90)
         app.button(key="pwt_ss:confirm_baseline_change").click().run(timeout=90)
 
         drafts = app.session_state["pwt_ss_drafts"]

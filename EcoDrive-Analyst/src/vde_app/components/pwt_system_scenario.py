@@ -488,7 +488,12 @@ def _render_vde_impact_only(
     columns = st.columns(3)
     columns[0].metric("Linked VDE", f"VDE-{draft.vde_id}")
     columns[1].metric("TOTAL demand [MJ/km]", _display_value(result.total_summary.vde_mj_per_km))
-    columns[2].metric("NET demand [MJ/km]", _display_value(result.net_summary.vde_mj_per_km))
+    net_summary = result.net_summary
+    net_demand = net_summary.vde_mj_per_km if net_summary is not None else None
+    columns[2].metric(
+        "NET demand [MJ/km]",
+        "Not evaluated" if net_demand is None else _display_value(net_demand),
+    )
 
 
 def _scenario_status(

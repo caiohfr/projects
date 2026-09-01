@@ -50,10 +50,12 @@ def _sidebar(ctx):
     st.sidebar.subheader("Navigation")
 
     st.page_link("app.py", label="Home", icon="🏠")
+    st.sidebar.subheader("Analysis")
     st.page_link("pages/VDE_Setup.py", label="VDE Setup", icon="📥")
-    st.page_link("pages/Powertrain_Scenario.py", label="Powertrain Scenario", icon="⚙️")
-    st.page_link("pages/Comparison_Report.py", label="Powertrain Comparison", icon="📊")
-
+    st.page_link("pages/Powertrain_Scenario.py", label="Powertrain System Scenarios", icon="⚙️")
+    st.page_link("pages/Comparison_Report.py", label="Comparison Report", icon="📊")
+    st.sidebar.subheader("Engineering / Support")
+    st.page_link("pages/Legacy_Engineering_Tools.py", label="Legacy & Engineering Tools", icon="🧰")
     st.page_link("pages/Database_Management.py", label="Database Management")
     st.sidebar.divider()
     ctx["db_path"] = st.sidebar.text_input("DB path", value=ctx.get("db_path", DB_DEFAULT))

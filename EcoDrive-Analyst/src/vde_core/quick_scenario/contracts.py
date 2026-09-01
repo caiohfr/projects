@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping
 
+from src.vde_core.technology_delta import TechDeltaAssumption
 
 QUICK_SCENARIO_CONTRACT_VERSION = "0.1"
 
@@ -359,39 +360,12 @@ class VehicleQuickOverrides:
 
 MAX_TECH_DELTAS_PER_SCENARIO = 3
 
-
-@dataclass(frozen=True)
-class TechDeltaAssumption:
-    """Sec 13-17: one Technology Delta planning assumption. Reuses the
-    existing canonical Technology Delta vocabulary extracted (verbatim, not
-    redesigned) into `src.vde_core.technology_delta` from the existing
-    Powertrain Scenario contract -- this is not a second Technology Delta
-    schema, just the same field names carried by a typed Quick Scenario
-    input. `effect_basis` must be one of
-    `technology_delta.normalize_delta_effect_basis`'s recognized keys (e.g.
-    `"pse_percent_delta"`, `"fuel_delta"`) for the assumption to apply
-    quantitatively; an unrecognized basis is preserved as a registered-only
-    (non-quantitative) entry by the resolver, never silently dropped.
-
-    `effect_value` has no default (Sec 17: "No hidden default magnitude") --
-    a custom assumption must state its own numeric effect explicitly.
-    """
-
-    name: str
-    effect_basis: str
-    effect_value: float
-    affected_subsystem: str = "whole powertrain"
-    source_type: str = "manual"
-    maturity_level: str = "engineering_assumption"
-    confidence: str = "unknown"
-    notes: str = ""
-    enabled: bool = True
-
-    def __post_init__(self) -> None:
-        if not self.name:
-            raise ValueError("TechDeltaAssumption.name is required.")
-        if not self.effect_basis:
-            raise ValueError("TechDeltaAssumption.effect_basis is required.")
+# TechDeltaAssumption is imported from src.vde_core.technology_delta above
+# (Sprint 11C Pre-flight 3B ownership cleanup) -- it moved to that neutral,
+# feature-agnostic module once System Scenario needed the same canonical
+# contract, rather than a second feature package importing it from here.
+# Still exported from this module for backward compatibility (identical
+# object, not a copy -- see tests/test_technology_delta.py).
 
 
 @dataclass(frozen=True)

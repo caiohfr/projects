@@ -33,10 +33,81 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
 from src.vde_core.fuel_energy import GCO2_PER_L, LHV_MJ_PER_L, MJ_TO_Wh
 from src.vde_core.vde_setup_service import to_float
+
+# Sprint 11C Pre-flight 3B: TechDeltaAssumption moved here (from
+# src.vde_core.quick_scenario.contracts, where Sprint 10D originally placed
+# it) so it has the same neutral, feature-agnostic owner as the stacking
+# math it describes, rather than living inside one feature package
+# (Quick Scenario) that a second, unrelated feature package (System
+# Scenario) would otherwise have to import from for a canonical contract.
+# quick_scenario.contracts.TechDeltaAssumption is now a re-exported alias
+# of this exact class (see quick_scenario/contracts.py), not a copy --
+# identity-checked in tests/test_technology_delta.py.
+
+
+@dataclass(frozen=True)
+class TechDeltaAssumption:
+    """One Technology Delta planning assumption -- the canonical, typed
+    carrier for the vocabulary this module's own stacking function
+    (`apply_delta_stack_to_baseline`) consumes. Originally introduced in
+    Sprint 10D as a Quick-Scenario-specific input contract; moved here in
+    Sprint 11C once a second, unrelated feature package (System Scenario)
+    needed the same contract, since a shared canonical value belongs next
+    to its math, not inside either consumer's own feature package.
+
+    `effect_basis` must be one of `normalize_delta_effect_basis`'s
+    recognized keys (e.g. `"pse_percent_delta"`, `"fuel_delta"`) for the
+    assumption to apply quantitatively; an unrecognized basis is preserved
+    as a registered-only (non-quantitative) entry by a resolver, never
+    silently dropped. `effect_value` has no default ("no hidden default
+    magnitude") -- a custom assumption must state its own numeric effect
+    explicitly.
+    """
+
+    name: str
+    effect_basis: str
+    effect_value: float
+    affected_subsystem: str = "whole powertrain"
+    source_type: str = "manual"
+    maturity_level: str = "engineering_assumption"
+    confidence: str = "unknown"
+    notes: str = ""
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("TechDeltaAssumption.name is required.")
+        if not self.effect_basis:
+            raise ValueError("TechDeltaAssumption.effect_basis is required.")
+
+
+def tech_delta_assumption_from_dict(data: Mapping[str, Any]) -> TechDeltaAssumption:
+    """JSON-boundary round-trip for `TechDeltaAssumption`, moved alongside
+    the dataclass itself in Sprint 11C for the same ownership reason."""
+
+    return TechDeltaAssumption(
+        name=data["name"],
+        effect_basis=data["effect_basis"],
+        effect_value=float(data["effect_value"]),
+        affected_subsystem=data.get("affected_subsystem", "whole powertrain"),
+        source_type=data.get("source_type", "manual"),
+        maturity_level=data.get("maturity_level", "engineering_assumption"),
+        confidence=data.get("confidence", "unknown"),
+        notes=data.get("notes", ""),
+        enabled=bool(data.get("enabled", True)),
+    )
+
+
+def tech_delta_assumption_to_dict(assumption: TechDeltaAssumption) -> dict[str, Any]:
+    """Return the canonical stack input for one typed assumption."""
+
+    return asdict(assumption)
+
 
 DELTA_SUBSYSTEM_OPTIONS = [
     "engine",
@@ -331,6 +402,9 @@ def apply_delta_stack_to_baseline(
 
 
 __all__ = [
+    "TechDeltaAssumption",
+    "tech_delta_assumption_from_dict",
+    "tech_delta_assumption_to_dict",
     "DELTA_SUBSYSTEM_OPTIONS",
     "DELTA_SOURCE_TYPE_OPTIONS",
     "DELTA_MATURITY_OPTIONS",

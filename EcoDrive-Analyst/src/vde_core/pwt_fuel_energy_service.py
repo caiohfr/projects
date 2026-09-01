@@ -10,6 +10,8 @@ from src.vde_core.fuel_energy import LHV_MJ_PER_L, MJ_TO_Wh
 from src.vde_core.repositories import (
     delete_fuelcons_by_id,
     fetch_fuelcons_allowed_columns,
+    fetch_fuelcons_baseline_labels as repo_fetch_fuelcons_baseline_labels,
+    fetch_fuelcons_by_id,
     fetch_fuelcons_by_vde_id,
     fetch_fuelcons_distinct_electrifications,
     fetch_fuelcons_join_rows,
@@ -284,6 +286,19 @@ def fetch_vde_legislation(vde_id: int) -> str:
 def fetch_fuelcons_by_vde(vde_id: int) -> pd.DataFrame:
     rows = fetch_fuelcons_by_vde_id(vde_id)
     return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def fetch_fuelcons_baselines() -> pd.DataFrame:
+    """Lightweight persisted rows for FuelCons baseline discovery."""
+
+    rows = repo_fetch_fuelcons_baseline_labels()
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def fetch_fuelcons_row(fuelcons_id: int) -> dict[str, Any]:
+    """Materialize one selected FuelCons baseline row."""
+
+    return fetch_fuelcons_by_id(fuelcons_id) or {}
 
 
 def fetch_fuelcons_all(filters: Dict[str, Any]) -> pd.DataFrame:

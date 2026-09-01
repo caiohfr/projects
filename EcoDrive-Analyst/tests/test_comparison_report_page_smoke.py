@@ -87,6 +87,8 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
         self.assertTrue(any("Select at least one scenario" in info.value for info in app.info))
+        self.assertFalse(any(item.label == "Powertrain Scenario Tools" for item in app.expander))
+        self.assertFalse(any(item.label == "Legacy comparison workflow" for item in app.radio))
 
     def test_browse_scenarios_expander_lists_the_currently_filtered_candidates(self):
         app = AppTest.from_file(str(PAGE_PATH))

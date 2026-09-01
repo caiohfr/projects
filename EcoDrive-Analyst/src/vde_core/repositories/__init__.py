@@ -1,6 +1,8 @@
 from .fuelcons_repository import (
     delete_fuelcons_by_id,
     fetch_fuelcons_allowed_columns,
+    fetch_fuelcons_baseline_labels,
+    fetch_fuelcons_by_id,
     fetch_fuelcons_by_vde_id,
     fetch_fuelcons_distinct_electrifications,
     fetch_fuelcons_join_rows,
@@ -48,6 +50,8 @@ __all__ = [
     "delete_tire_roadload",
     "delete_vde_by_id",
     "fetch_fuelcons_allowed_columns",
+    "fetch_fuelcons_baseline_labels",
+    "fetch_fuelcons_by_id",
     "fetch_fuelcons_by_vde_id",
     "fetch_fuelcons_distinct_electrifications",
     "fetch_fuelcons_join_rows",

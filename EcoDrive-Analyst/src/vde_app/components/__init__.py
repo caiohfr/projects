@@ -37,6 +37,7 @@ from .pwt_fuel_energy import (
     render_results_save_tab,
     render_saved_scenarios_panel,
     render_scenario_definition_section,
+    resolve_active_vde_source,
     resolve_comparison_report_anchor,
 )
 
@@ -65,6 +66,7 @@ __all__ = [
     "render_results_save_tab",
     "render_saved_scenarios_panel",
     "render_scenario_definition_section",
+    "resolve_active_vde_source",
     "render_technical_build_up_view_selector",
     "render_transmission_losses_section",
     "render_vehicle_basics_sidebar",

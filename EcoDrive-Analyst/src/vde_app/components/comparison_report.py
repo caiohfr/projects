@@ -6,9 +6,8 @@
 # renderer's Scenario Compare tab is fully superseded by Technical Scorecard
 # above and is not linked from here; its other three sub-tabs (Method
 # Analysis, Peers & Outlook, Saved Estimates) are Powertrain-Scenario-owned
-# capabilities with no Comparison equivalent, and stay reachable behind
-# "Powertrain Scenario Tools" (see _render_legacy_bridge) indefinitely -- not
-# as a placeholder pending a future package.
+# capabilities with no Comparison equivalent. They remain reachable on the
+# dedicated Legacy & Engineering Tools page, not beneath this canonical page.
 #
 # Reference is optional (Package 8F): a dataset may hold only Comparison-role
 # items (e.g. a benchmark-only review). Analytical presentation role
@@ -106,10 +105,6 @@ from src.vde_app.comparison_report_viewmodels import (
     visible_rows,
 )
 from src.vde_app.components.comparison_quick_scenario_tab import render_quick_scenario_tab
-from src.vde_app.components.pwt_fuel_energy import (
-    render_comparison_report_page,
-    resolve_comparison_report_anchor,
-)
 from src.vde_app.plots import roadload_curve_comparison_chart
 from src.vde_app.units import normalize_unit_system, quantity_input, unit_label
 from src.vde_core.comparison_metric_registry import MetricDirection, get_metric
@@ -1819,26 +1814,6 @@ def _render_explore_tab(scorecard_dataset: ComparisonDataset | None) -> None:
 
 
 # -----------------------------------------------------------------------------
-# Legacy bridge and page entry point
-# -----------------------------------------------------------------------------
-
-
-def _render_legacy_bridge() -> None:
-    st.divider()
-    with st.expander("Powertrain Scenario Tools", expanded=False):
-        st.caption(
-            "Method Analysis, Peers & Outlook, and Saved Estimates remain here -- they are Powertrain Scenario "
-            "capabilities (ML method explanation, DB-wide peer benchmarking, saved-estimate management) with no "
-            "equivalent above. The Scenario Compare tab below is superseded by Technical Scorecard above; prefer "
-            "that one for engineering comparison."
-        )
-        vde_id, vde_row = resolve_comparison_report_anchor()
-        if not vde_id:
-            st.info("No VDE source could be resolved yet.")
-            return
-        render_comparison_report_page(vde_id, vde_row)
-
-
 def render_comparison_report() -> None:
     st.title("Program Energy & Fuel Economy Review")
     st.caption("Reference-optional engineering comparison across FuelCons scenarios and physical VDEs.")
@@ -1846,7 +1821,6 @@ def render_comparison_report() -> None:
     catalog_rows = _load_catalog()
     if not catalog_rows:
         st.info("No FuelCons scenarios are available yet. Save at least one Powertrain Scenario first.")
-        _render_legacy_bridge()
         return
 
     state = _render_selection(catalog_rows)
@@ -1872,8 +1846,5 @@ def render_comparison_report() -> None:
         _render_scorecard_tab(dataset)
     with explore_tab:
         _render_explore_tab(dataset)
-
-    _render_legacy_bridge()
-
 
 __all__ = ["render_comparison_report"]

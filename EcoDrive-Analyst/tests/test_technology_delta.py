@@ -12,13 +12,35 @@ from src.vde_core.fuel_estimation import FuelEstimateRequest, run_fuel_estimatio
 from src.vde_core.technology_delta import (
     DELTA_CONFIDENCE_OPTIONS,
     DELTA_MATURITY_OPTIONS,
+    TechDeltaAssumption,
     apply_delta_stack_to_baseline,
     delta_status_counts,
     maturity_rank,
     normalize_delta_effect_basis,
     normalize_technology_delta,
     proposal_confidence_label,
+    tech_delta_assumption_from_dict,
+    tech_delta_assumption_to_dict,
 )
+
+
+class TechDeltaContractOwnershipTests(unittest.TestCase):
+    def test_quick_scenario_reexports_the_exact_canonical_class(self):
+        from src.vde_core.quick_scenario.contracts import TechDeltaAssumption as QuickAssumption
+
+        self.assertIs(QuickAssumption, TechDeltaAssumption)
+
+    def test_quick_serialization_reexports_the_exact_canonical_parser(self):
+        from src.vde_core.quick_scenario.serialization import tech_delta_assumption_from_dict as quick_parser
+
+        self.assertIs(quick_parser, tech_delta_assumption_from_dict)
+
+    def test_typed_assumption_roundtrip_has_one_shared_adapter(self):
+        assumption = TechDeltaAssumption("Efficiency", "pse_percent_delta", 1.25)
+        self.assertEqual(
+            tech_delta_assumption_from_dict(tech_delta_assumption_to_dict(assumption)),
+            assumption,
+        )
 
 
 def _baseline_result():

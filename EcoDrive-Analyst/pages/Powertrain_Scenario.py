@@ -18,10 +18,15 @@ ensure_db()
 def main():
     ensure_pwt_sidebar_defaults(st.session_state)
     inject_powertrain_scenario_style()
-    st.title("Powertrain System Scenarios")
     render_powertrain_sidebar_controls()
-    st.caption(
-        "Compose Current and up to three independent multi-domain Proposals, then calculate all ready scenarios through Energy Balance L0."
+    st.markdown(
+        """
+        <div class="pwt-page-intro">
+            <strong>Powertrain System Scenarios</strong>
+            <span>Canonical Energy Balance L0 workspace</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
     render_system_scenario_workspace()

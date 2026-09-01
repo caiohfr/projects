@@ -61,15 +61,14 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
     def test_primary_workspace_is_canonical_without_legacy_renderers(self):
         app = self._app()
         self.assertTrue(any(item.label == "Source Baseline" for item in app.selectbox))
-        self.assertTrue(any(item.value == "Source Baseline" for item in app.subheader))
-        self.assertTrue(any("Effective Current" in item.value for item in app.markdown))
-        self.assertFalse(
-            any("Current System Baseline" in item.value for item in app.subheader)
-        )
-        self.assertFalse(
-            any("Current System Baseline" in item.value for item in app.markdown)
-        )
-        self.assertTrue(any(item.label == "FuelCons" for item in app.metric))
+        cockpit_surface = "\n".join(item.value for item in app.markdown)
+        self.assertIn("Current System Baseline", cockpit_surface)
+        self.assertIn("Source Baseline", cockpit_surface)
+        self.assertIn("Effective Current", cockpit_surface)
+        self.assertIn("FuelCons ID", cockpit_surface)
+        self.assertIn("Scenario Results", cockpit_surface)
+        self.assertIn("System Composition", cockpit_surface)
+        self.assertIn("Domain Workspace", cockpit_surface)
         availability_surface = "\n".join(
             [item.value for item in app.caption]
             + [item.value for item in app.markdown]
@@ -78,7 +77,6 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         self.assertIn("Utility factor", availability_surface)
         self.assertGreaterEqual(availability_surface.count("Not applicable"), 2)
         self.assertTrue(any(item.label == "Fuel" and item.value == "—" for item in app.metric))
-        self.assertTrue(any("Multi-domain System Scenarios" in item.value for item in app.subheader))
         self.assertTrue(any("Vehicle Demand" in str(frame.value) for frame in app.dataframe))
         self.assertFalse(any("legacy" in item.label.lower() for item in app.expander))
         self.assertFalse(any(item.label == "Active VDE snapshot" for item in app.selectbox))
@@ -106,7 +104,7 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
 
     def test_current_only_renders_compact_matrix_and_calculates(self):
         app = self._app()
-        self.assertTrue(any("Multi-domain System Scenarios" in item.value for item in app.subheader))
+        self.assertTrue(any("System Composition" in item.value for item in app.markdown))
         self.assertTrue(any("Vehicle Demand" in str(frame.value) for frame in app.dataframe))
         app.button(key="pwt_ss:calculate").click().run(timeout=90)
         self.assertEqual(len(app.exception), 0)
@@ -197,10 +195,9 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
             [item.value for item in app.markdown]
             + [item.value for item in app.caption]
         )
-        self.assertIn("RESULT DRIVER", story)
-        self.assertIn("DEMAND-DRIVEN", story)
+        self.assertIn("Demand-driven", story)
         self.assertLess(story.index("1 · Vehicle Demand"), story.index("2 · Powertrain / PSE"))
-        self.assertLess(story.index("2 · Powertrain / PSE"), story.index("3 · Final result"))
+        self.assertLess(story.index("2 · Powertrain / PSE"), story.index("3 · Final Result"))
         self.assertIn("No represented powertrain-efficiency improvement contributed.", story)
         pse_metrics = [item for item in app.metric if item.label == "PSE"]
         self.assertTrue(any(item.value.endswith("%") for item in pse_metrics))
@@ -250,8 +247,7 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
             + [item.value for item in app.caption]
         )
         self.assertEqual(len(app.exception), 0)
-        self.assertIn("RESULT DRIVER", story)
-        self.assertIn("POWERTRAIN-DRIVEN", story)
+        self.assertIn("Powertrain-driven", story)
         self.assertIn("Vehicle Demand remained unchanged", story)
         self.assertIn("Adopted L0 impacts", story)
 
@@ -264,7 +260,7 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
             + [item.value for item in app.caption]
         )
         self.assertEqual(len(app.exception), 0)
-        self.assertIn("NO QUANTITATIVE CHANGE", story)
+        self.assertIn("No quantitative change", story)
         self.assertNotIn("Adopted L0 impacts", story)
 
     def test_configuration_only_story_says_not_represented(self):

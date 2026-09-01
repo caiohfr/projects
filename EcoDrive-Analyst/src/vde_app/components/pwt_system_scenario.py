@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import replace
+from html import escape
 from typing import Any, Mapping
 
 import pandas as pd
@@ -149,6 +150,45 @@ _FIDELITY_LABELS = {
     FidelityLevel.CONFIGURATION_ONLY: "Configuration only",
     FidelityLevel.NOT_REPRESENTED: "Not represented",
 }
+
+
+def _render_stage_header(number: int, title: str, caption: str = "") -> None:
+    caption_html = f"<span>{escape(caption)}</span>" if caption else ""
+    st.markdown(
+        (
+            "<div class='pwt-stage-header'>"
+            f"<span class='pwt-stage-number'>{number}</span>"
+            "<div class='pwt-stage-copy'>"
+            f"<strong>{escape(title)}</strong>{caption_html}"
+            "</div></div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _overview_card(
+    *,
+    icon: str,
+    title: str,
+    rows: tuple[tuple[str, str], ...],
+    tone: str = "",
+) -> str:
+    row_html = "".join(
+        (
+            "<div class='pwt-detail-row'>"
+            f"<span>{escape(label)}</span><strong>{value}</strong>"
+            "</div>"
+        )
+        for label, value in rows
+    )
+    tone_class = f" {tone}" if tone else ""
+    return (
+        f"<div class='pwt-overview-card{tone_class}'>"
+        "<div class='pwt-overview-title'>"
+        f"<span class='pwt-overview-icon'>{escape(icon)}</span>{escape(title)}"
+        "</div>"
+        f"{row_html}</div>"
+    )
 
 
 def _assumption_options_for(
@@ -329,10 +369,10 @@ def _render_current_baseline_selector(
 ) -> tuple[int | None, int | None, bool]:
     """Choose one persisted FuelCons row before scenario composition."""
 
-    st.subheader("Source Baseline")
-    st.caption(
-        "Select a persisted FuelCons record to establish Current. Search by "
-        "FuelCons ID, VDE ID, make, model, year, or architecture."
+    _render_stage_header(
+        1,
+        "Current System Baseline",
+        "Select the persisted FuelCons source that establishes Effective Current.",
     )
 
     available_ids = list(baseline_labels)
@@ -343,14 +383,21 @@ def _render_current_baseline_selector(
     current = _current_draft(drafts)
     current_fuelcons_id = current.fuelcons_id if current is not None else None
     index = available_ids.index(current_fuelcons_id) if current_fuelcons_id in available_ids else 0
-    selected_fuelcons_id = st.selectbox(
-        "Source Baseline",
-        available_ids,
-        index=index,
-        format_func=lambda item: baseline_labels[item],
-        placeholder="Search persisted FuelCons records",
-        key=_BASELINE_SELECTOR_KEY,
+    label_column, selector_column = st.columns([1.15, 6.85], vertical_alignment="center")
+    label_column.markdown(
+        "<div class='pwt-selector-label'>Select a FuelCons baseline</div>",
+        unsafe_allow_html=True,
     )
+    with selector_column:
+        selected_fuelcons_id = st.selectbox(
+            "Source Baseline",
+            available_ids,
+            index=index,
+            format_func=lambda item: baseline_labels[item],
+            placeholder="Search persisted FuelCons records",
+            key=_BASELINE_SELECTOR_KEY,
+            label_visibility="collapsed",
+        )
 
     selected_row = fetch_fuelcons_row(int(selected_fuelcons_id))
     selected_vde_id = selected_row.get("vde_id")
@@ -358,7 +405,6 @@ def _render_current_baseline_selector(
         st.error("The selected FuelCons baseline is no longer linked to a VDE.")
         return None, None, False
     if current is None or int(selected_fuelcons_id) == current.fuelcons_id:
-        st.caption(f"Selected: {baseline_labels[int(selected_fuelcons_id)]}")
         return int(selected_fuelcons_id), int(selected_vde_id), False
 
     st.warning(
@@ -488,7 +534,6 @@ def _render_baseline_summary(
     proposals: Mapping[str, DomainProposal],
     corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
 ) -> None:
-    st.markdown("### Effective Current")
     if source is None:
         st.error("The selected FuelCons baseline could not be materialized.")
         return
@@ -504,24 +549,54 @@ def _render_baseline_summary(
     )
     demand = demand_summary.vde_mj_per_km if demand_summary is not None else None
     vehicle = f"{source.vde_row.get('make') or ''} {source.vde_row.get('model') or ''}".strip()
+    readiness = resolved.solver_readiness.value
+    readiness_display = (
+        f"<span class='pwt-ready-pill'>{escape(readiness)}</span>"
+        if readiness == "READY"
+        else escape(readiness)
+    )
+    demand_display = "Not evaluated" if demand is None else f"{demand:.4f} MJ/km"
 
     baseline_card, demand_card, readiness_card = st.columns(3)
-    with baseline_card.container(border=True):
-        st.caption("FUELCONS")
-        st.metric("FuelCons", f"FC-{row.get('id', draft.fuelcons_id or '—')}")
-        st.write(vehicle or "Vehicle not identified")
-        st.caption(f"{row.get('fuel_type') or 'Fuel not provided'} · {draft.architecture.value}")
-    with demand_card.container(border=True):
-        st.caption("VEHICLE DEMAND")
-        st.metric("Linked VDE", f"VDE-{source.vde_id}")
-        st.write("Not evaluated" if demand is None else f"{demand:.4f} MJ/km")
-        st.caption(f"{basis} basis")
-    with readiness_card.container(border=True):
-        st.caption("L0 READINESS")
-        readiness = resolved.solver_readiness.value
-        st.metric("Canonical solver", readiness)
-        st.write(draft.architecture.value)
-        st.caption("Assumptions ready" if readiness == "READY" else "Input attention required")
+    baseline_card.markdown(
+        _overview_card(
+            icon="▣",
+            title="Source Baseline",
+            rows=(
+                ("FuelCons ID", escape(f"FC-{row.get('id', draft.fuelcons_id or '—')}")),
+                ("Vehicle", escape(vehicle or "Vehicle not identified")),
+                ("Fuel type", escape(str(row.get("fuel_type") or "Not provided"))),
+                ("Architecture", escape(draft.architecture.value)),
+            ),
+        ),
+        unsafe_allow_html=True,
+    )
+    demand_card.markdown(
+        _overview_card(
+            icon="↗",
+            title="Vehicle Demand",
+            tone="is-green",
+            rows=(
+                ("Linked VDE ID", escape(f"VDE-{source.vde_id}")),
+                ("Total demand", escape(demand_display)),
+                ("Basis", escape(basis)),
+            ),
+        ),
+        unsafe_allow_html=True,
+    )
+    readiness_card.markdown(
+        _overview_card(
+            icon="✓",
+            title="L0 Readiness",
+            tone="is-violet",
+            rows=(
+                ("Status", readiness_display),
+                ("Solver architecture", escape(f"{draft.architecture.value} (L0)")),
+                ("Assumptions ready", "Yes" if readiness == "READY" else "Needs attention"),
+            ),
+        ),
+        unsafe_allow_html=True,
+    )
 
     powertrain = resolved.l0_request_snapshot.powertrain_features
     fuel_path_applicable = draft.architecture is not ArchitectureClass.BEV
@@ -557,14 +632,23 @@ def _render_baseline_summary(
         ),
     )
     correction_count = sum(1 for key in corrections if key[0] == draft.vde_id)
-    assumptions = st.columns(4)
-    for column, (label, value) in zip(
-        assumptions,
-        (*assumption_values, ("Current corrections", str(correction_count))),
-    ):
-        with column.container(border=True):
-            st.caption(label)
-            st.write(value)
+    assumption_items = (*assumption_values, ("Current corrections", str(correction_count)))
+    assumption_html = "".join(
+        (
+            "<div class='pwt-assumption-item'>"
+            f"<span>{escape(label)}</span><strong>{escape(value)}</strong>"
+            "</div>"
+        )
+        for label, value in assumption_items
+    )
+    st.markdown(
+        (
+            "<div class='pwt-assumption-strip'>"
+            "<div class='pwt-assumption-title'>Baseline assumptions (aggregate)</div>"
+            f"{assumption_html}</div>"
+        ),
+        unsafe_allow_html=True,
+    )
     if correction_count:
         st.caption(
             f"Effective Current includes {correction_count} correction"
@@ -835,7 +919,15 @@ def _render_domain_editor(
         if draft.identity.role.value == "CURRENT"
         else draft.label.upper()
     )
-    st.markdown(f"#### {context_label} · {_DOMAIN_LABELS[domain].upper()}")
+    st.markdown(
+        (
+            "<div class='pwt-workspace-context'>"
+            f"<strong>{escape(context_label)}</strong>"
+            f"<span>{escape(_DOMAIN_LABELS[domain])}</span>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
 
     if domain is DomainKind.VEHICLE_DEMAND:
         available_ids = list(source_labels)
@@ -1050,168 +1142,154 @@ def _render_domain_editor(
         return drafts, proposals, corrections
 
     proposal = proposals[selection]
-    configuration_context, l0_context = st.columns(2)
-    with configuration_context.container(border=True):
-        st.markdown("##### A · Configuration")
-        st.caption("What physically changed?")
-        changed_fields = [
-            name
-            for name in _CONFIG_FIELDS.get(domain, ())
-            if getattr(proposal.configuration, name) != getattr(based_on.configuration, name)
-        ]
-        if changed_fields:
-            for field_name in changed_fields:
-                before = getattr(based_on.configuration, field_name)
-                after = getattr(proposal.configuration, field_name)
-                st.write(f"{field_name.replace('_', ' ').title()}: {before} → {after}")
-        else:
-            st.caption("No physical configuration change.")
-    with l0_context.container(border=True):
-        st.markdown("##### B · L0 Representation")
-        st.caption("What quantitative effect are we representing?")
-        if proposal.l0_effective_assumption:
-            for key, value in proposal.l0_effective_assumption.items():
-                st.write(f"{_assumption_preview(domain, key, value)} · ADOPTED")
-        elif proposal.technology_deltas:
-            for delta in proposal.technology_deltas:
-                st.write(
-                    f"{_technology_delta_preview(delta.effect_basis, delta.effect_value)} "
-                    "· ADOPTED"
-                )
-        elif proposal.requested_changes:
-            st.write("CONFIGURATION ONLY")
-            st.caption("Quantitative effect at Energy Balance L0: NOT REPRESENTED")
-        else:
-            st.caption("No quantitative L0 impact adopted.")
-    st.caption(f"Edit {_DOMAIN_LABELS[domain]} proposal `{selection}` below.")
-    st.markdown("##### Configuration inputs")
-    label = st.text_input(
-        "Proposal label",
-        value=proposal.label or selection,
-        key=f"pwt_ss:proposal:{selection}:label",
-    )
     requested_changes: dict[str, Any] = {}
     config_type = type(based_on.configuration)
     annotations = {field.name: field.type for field in dataclasses.fields(config_type)}
-    columns = st.columns(2)
-    for index, field_name in enumerate(_CONFIG_FIELDS.get(domain, ())):
-        current_value = getattr(based_on.configuration, field_name)
-        proposed_value = getattr(proposal.configuration, field_name)
-        with columns[index % 2]:
+    assumption_options = _assumption_options_for(domain, draft.architecture)
+    adopted = False
+    assumption_key: str | None = None
+    recommendation_value: float | None = None
+    evidence_reference = ""
+    prior_delta = proposal.technology_deltas[0] if proposal.technology_deltas else None
+    use_delta = False
+    deltas: tuple[TechDeltaAssumption, ...] = ()
+
+    configuration_context, l0_context = st.columns([5, 6], gap="medium")
+    with configuration_context.container(border=True):
+        st.markdown(
+            "<div class='pwt-editor-pane'>⚙ &nbsp; Configuration (Physical Changes)</div>",
+            unsafe_allow_html=True,
+        )
+        label = st.text_input(
+            "Proposal label",
+            value=proposal.label or selection,
+            key=f"pwt_ss:proposal:{selection}:label",
+        )
+        for field_name in _CONFIG_FIELDS.get(domain, ()):
+            current_value = getattr(based_on.configuration, field_name)
+            proposed_value = getattr(proposal.configuration, field_name)
             st.caption(f"Current: {current_value if current_value is not None else 'Not provided'}")
             raw = _optional_value_widget(
                 key=f"pwt_ss:proposal:{selection}:{field_name}",
                 label=field_name,
                 value=proposed_value,
             )
-        value = _coerce_config_value(current_value, raw, annotations[field_name])
-        if value != current_value:
-            requested_changes[field_name] = value
-
-    assumption_options = _assumption_options_for(domain, draft.architecture)
-    adopted = False
-    assumption_key: str | None = None
-    recommendation_value: float | None = None
-    evidence_reference = ""
-    if assumption_options:
-        st.markdown("##### L0 representation")
-        st.caption(
-            "A manual value is an Engineering assumption. Benchmark, ML and Regression "
-            "recommendations are unavailable here until a canonical evidence owner supplies one."
-        )
-        assumption_keys = [item[0] for item in assumption_options]
-        existing_assumption_key = next(
-            (key for key in proposal.l0_effective_assumption if key in assumption_keys),
-            assumption_keys[0],
-        )
-        assumption_key = st.selectbox(
-            "Canonical L0 assumption",
-            assumption_keys,
-            index=assumption_keys.index(existing_assumption_key),
-            format_func=lambda item: dict(assumption_options)[item],
-            key=f"pwt_ss:proposal:{selection}:assumption_key",
-        )
-        prior = proposal.l0_effective_assumption.get(assumption_key)
-        if assumption_key == "utility_factor":
-            recommendation_value = st.number_input(
-                "Utility factor (%)",
-                min_value=0.0,
-                max_value=100.0,
-                value=float((prior if prior is not None else 0.0) * 100.0),
-                key=f"pwt_ss:proposal:{selection}:assumption_value",
-            ) / 100.0
+            value = _coerce_config_value(current_value, raw, annotations[field_name])
+            if value != current_value:
+                requested_changes[field_name] = value
+        if requested_changes:
+            st.success(f"{len(requested_changes)} physical configuration change(s).")
         else:
-            recommendation_value = st.number_input(
-                "Manual engineering-assumption value",
-                value=float(prior if prior is not None else 0.0),
-                format="%.6f",
-                key=f"pwt_ss:proposal:{selection}:assumption_value",
-            )
-        evidence_reference = st.text_input(
-            "Engineering evidence/reference note",
-            key=f"pwt_ss:proposal:{selection}:evidence_reference",
-        )
-        adopted = st.checkbox(
-            "Adopt this value into the deterministic L0 scenario",
-            value=assumption_key in proposal.l0_effective_assumption,
-            key=f"pwt_ss:proposal:{selection}:adopt",
-        )
-        if not adopted:
-            st.caption("Recommendation only — deterministic result is unchanged until explicit adoption.")
+            st.caption("No physical configuration change from Effective Current.")
 
-    st.markdown("#### Technology Delta representation")
-    prior_delta = proposal.technology_deltas[0] if proposal.technology_deltas else None
-    use_delta = False
-    if draft.architecture is ArchitectureClass.PHEV:
-        st.info(
-            "Generic Technology Delta is unavailable for PHEV because the current contract "
-            "does not assign it to one thermal or electric path."
+    with l0_context.container(border=True):
+        st.markdown(
+            "<div class='pwt-editor-pane is-quantitative'>⌁ &nbsp; L0 Representation (Quantitative)</div>",
+            unsafe_allow_html=True,
         )
-    else:
-        use_delta = st.checkbox(
-            "Associate an active canonical Technology Delta",
-            value=prior_delta is not None,
-            key=f"pwt_ss:proposal:{selection}:delta_enabled",
-        )
-    deltas: tuple[TechDeltaAssumption, ...] = ()
-    if use_delta:
-        delta_basis = st.selectbox(
-            "Effect basis",
-            _CANONICAL_TECH_DELTA_EFFECT_BASES,
-            index=(
-                _CANONICAL_TECH_DELTA_EFFECT_BASES.index(prior_delta.effect_basis)
-                if prior_delta and prior_delta.effect_basis in _CANONICAL_TECH_DELTA_EFFECT_BASES
-                else 0
-            ),
-            key=f"pwt_ss:proposal:{selection}:delta_basis",
-        )
-        delta_value = st.number_input(
-            "Effect value",
-            value=float(prior_delta.effect_value if prior_delta else 0.0),
-            key=f"pwt_ss:proposal:{selection}:delta_value",
-        )
-        delta_source = st.selectbox(
-            "Delta source",
-            [
-                "engineering_assumption",
-                "supplier_data",
-                "imported_map",
-                "simulation_result",
-                "test_data",
-            ],
-            key=f"pwt_ss:proposal:{selection}:delta_source",
-        )
-        deltas = (
-            TechDeltaAssumption(
-                name=f"{selection} L0 representation",
-                effect_basis=delta_basis,
-                effect_value=float(delta_value),
-                affected_subsystem=_DOMAIN_LABELS[domain],
-                source_type=delta_source,
-                confidence="engineering",
-            ),
-        )
-        st.caption("Stacking is performed by the canonical Technology Delta owner, never by this UI.")
+        if assumption_options:
+            st.caption(
+                "Manual values are Engineering assumptions and affect L0 only after explicit adoption."
+            )
+            assumption_keys = [item[0] for item in assumption_options]
+            existing_assumption_key = next(
+                (
+                    key
+                    for key in proposal.l0_effective_assumption
+                    if key in assumption_keys
+                ),
+                assumption_keys[0],
+            )
+            assumption_key = st.selectbox(
+                "Canonical L0 assumption",
+                assumption_keys,
+                index=assumption_keys.index(existing_assumption_key),
+                format_func=lambda item: dict(assumption_options)[item],
+                key=f"pwt_ss:proposal:{selection}:assumption_key",
+            )
+            prior = proposal.l0_effective_assumption.get(assumption_key)
+            if assumption_key == "utility_factor":
+                recommendation_value = st.number_input(
+                    "Utility factor (%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=float((prior if prior is not None else 0.0) * 100.0),
+                    key=f"pwt_ss:proposal:{selection}:assumption_value",
+                ) / 100.0
+            else:
+                recommendation_value = st.number_input(
+                    "Manual engineering-assumption value",
+                    value=float(prior if prior is not None else 0.0),
+                    format="%.6f",
+                    key=f"pwt_ss:proposal:{selection}:assumption_value",
+                )
+            evidence_reference = st.text_input(
+                "Engineering evidence/reference note",
+                key=f"pwt_ss:proposal:{selection}:evidence_reference",
+            )
+            adopted = st.checkbox(
+                "Adopt in deterministic L0",
+                value=assumption_key in proposal.l0_effective_assumption,
+                key=f"pwt_ss:proposal:{selection}:adopt",
+            )
+            if not adopted:
+                st.caption("Unchecked values are not adopted in L0.")
+        else:
+            st.caption("No direct canonical L0 assumption is available for this domain.")
+
+        with st.expander("Technology Delta representation", expanded=prior_delta is not None):
+            if draft.architecture is ArchitectureClass.PHEV:
+                st.info(
+                    "Generic Technology Delta is unavailable for PHEV because the current "
+                    "contract does not assign it to one thermal or electric path."
+                )
+            else:
+                use_delta = st.checkbox(
+                    "Associate an active canonical Technology Delta",
+                    value=prior_delta is not None,
+                    key=f"pwt_ss:proposal:{selection}:delta_enabled",
+                )
+            if use_delta:
+                delta_basis = st.selectbox(
+                    "Effect basis",
+                    _CANONICAL_TECH_DELTA_EFFECT_BASES,
+                    index=(
+                        _CANONICAL_TECH_DELTA_EFFECT_BASES.index(prior_delta.effect_basis)
+                        if prior_delta
+                        and prior_delta.effect_basis in _CANONICAL_TECH_DELTA_EFFECT_BASES
+                        else 0
+                    ),
+                    key=f"pwt_ss:proposal:{selection}:delta_basis",
+                )
+                delta_value = st.number_input(
+                    "Effect value",
+                    value=float(prior_delta.effect_value if prior_delta else 0.0),
+                    key=f"pwt_ss:proposal:{selection}:delta_value",
+                )
+                delta_source = st.selectbox(
+                    "Delta source",
+                    [
+                        "engineering_assumption",
+                        "supplier_data",
+                        "imported_map",
+                        "simulation_result",
+                        "test_data",
+                    ],
+                    key=f"pwt_ss:proposal:{selection}:delta_source",
+                )
+                deltas = (
+                    TechDeltaAssumption(
+                        name=f"{selection} L0 representation",
+                        effect_basis=delta_basis,
+                        effect_value=float(delta_value),
+                        affected_subsystem=_DOMAIN_LABELS[domain],
+                        source_type=delta_source,
+                        confidence="engineering",
+                    ),
+                )
+                st.caption(
+                    "Stacking remains owned by the canonical Technology Delta service."
+                )
 
     rebuilt = proposal_from_editor(
         proposal_id=selection,
@@ -1363,16 +1441,33 @@ def _render_result_card(
     status = _scenario_status(draft, calculation, sources, proposals, corrections)
     card = result_card_viewmodel(draft, calculation, current=current_calculation)
     with st.container(border=True):
-        title = "CURRENT — EFFECTIVE" if draft.identity.role.value == "CURRENT" else card.label.upper()
-        st.markdown(f"#### {title}")
-        st.caption(status)
+        proposal_index = draft.identity.proposal_index or 0
+        tone_class = (
+            "is-current"
+            if draft.identity.role.value == "CURRENT"
+            else f"is-proposal-{chr(96 + min(proposal_index, 3))}"
+        )
+        title = (
+            "Effective Current (Baseline)"
+            if draft.identity.role.value == "CURRENT"
+            else card.label
+        )
+        st.markdown(
+            (
+                f"<div class='pwt-result-anchor {tone_class}'>"
+                f"<div class='pwt-result-title'>{escape(title)}</div>"
+                f"<div class='pwt-result-status'>{escape(status)} · Energy Balance L0</div>"
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
         if status == "Needs recalculation":
             st.warning("Needs recalculation — visible inputs changed.")
         fuel_delta = card.deltas.get("fuel_l_100km")
         pse_delta = card.deltas.get("pse")
         co2_delta = card.deltas.get("gco2_km")
         energy_delta = card.deltas.get("energy_Wh_km")
-        fuel, pse, co2, electric = st.columns(4)
+        fuel, electric, pse, co2 = st.columns(4)
         fuel.metric(
             "Fuel",
             _compact_metric(card.fuel_l_100km, digits=3),
@@ -1380,6 +1475,13 @@ def _render_result_card(
             delta_color="off",
         )
         fuel.caption("L/100 km")
+        electric.metric(
+            "Electric",
+            _compact_metric(card.energy_wh_km, digits=1),
+            _metric_delta(energy_delta, digits=1),
+            delta_color="off",
+        )
+        electric.caption("Wh/km")
         pse.metric(
             "PSE",
             "—" if card.pse is None else f"{card.pse * 100:.2f}%",
@@ -1393,13 +1495,6 @@ def _render_result_card(
             delta_color="off",
         )
         co2.caption("g/km")
-        electric.metric(
-            "Electric",
-            _compact_metric(card.energy_wh_km, digits=1),
-            _metric_delta(energy_delta, digits=1),
-            delta_color="off",
-        )
-        electric.caption("Wh/km")
 
 
 def _render_result_summary(
@@ -1409,8 +1504,11 @@ def _render_result_summary(
     proposals: Mapping[str, DomainProposal],
     corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
 ) -> None:
-    st.markdown("### Scenario Results")
-    st.caption("Proposals compare directly with Effective Current. Deltas use neutral styling.")
+    _render_stage_header(
+        2,
+        "Scenario Results",
+        "All proposal deltas are compared with Effective Current; colors remain neutral.",
+    )
     columns = st.columns(len(drafts))
     current_calculation = calculations.get("SYS-CURRENT")
     for column, draft in zip(columns, drafts):
@@ -1462,7 +1560,11 @@ def _render_result_drivers(
     proposals: Mapping[str, DomainProposal],
     corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
 ) -> None:
-    st.markdown("### Why did it change?")
+    _render_stage_header(
+        5,
+        "Why did it change?",
+        "Read each Proposal from Vehicle Demand through Powertrain/PSE to the final L0 result.",
+    )
     current = _current_draft(drafts)
     current_calculation = calculations.get("SYS-CURRENT")
     if current is None:
@@ -1474,7 +1576,6 @@ def _render_result_drivers(
     for draft in proposal_drafts:
         calculation = calculations.get(draft.identity.scenario_id)
         with st.container(border=True):
-            st.markdown(f"#### Why did {draft.label} change?")
             if (
                 calculation is None
                 or calculation.result is None
@@ -1489,14 +1590,24 @@ def _render_result_drivers(
                 sources=sources,
                 proposals=proposals,
             )
-            st.caption(f"RESULT DRIVER · {_driver_label(driver).upper()}")
+            st.markdown(
+                (
+                    f"<strong>{escape(draft.label)} vs Effective Current</strong> &nbsp; "
+                    f"<span class='pwt-driver-pill'>{escape(_driver_label(driver))}</span>"
+                ),
+                unsafe_allow_html=True,
+            )
+            st.caption(_driver_narrative(driver))
 
             demand = vehicle_demand_comparison(current, draft, sources=sources)
             current_card = result_card_viewmodel(current, current_calculation)
             proposal_card = result_card_viewmodel(draft, calculation, current=current_calculation)
             demand_column, powertrain_column, final_column = st.columns(3)
-            with demand_column:
-                st.markdown("##### 1 · Vehicle Demand")
+            with demand_column.container(border=True):
+                st.markdown(
+                    "<div class='pwt-story-card'>◫ &nbsp; 1 · Vehicle Demand Change</div>",
+                    unsafe_allow_html=True,
+                )
                 st.caption("CHANGED" if demand.changed else "UNCHANGED")
                 st.write(
                     f"{_format_metric(demand.current_mj_per_km, digits=4, suffix=' MJ/km')} → "
@@ -1519,8 +1630,11 @@ def _render_result_drivers(
                 else:
                     st.write("Vehicle Demand increased.")
                 st.caption(f"Canonical {demand.basis} Vehicle Demand")
-            with powertrain_column:
-                st.markdown("##### 2 · Powertrain / PSE")
+            with powertrain_column.container(border=True):
+                st.markdown(
+                    "<div class='pwt-story-card'>⚙ &nbsp; 2 · Powertrain / PSE Change</div>",
+                    unsafe_allow_html=True,
+                )
                 pse_delta = proposal_card.deltas.get("pse")
                 impact_rows = compact_impact_rows(draft, proposals=proposals)
                 adopted = [row for row in impact_rows if row["status"] == "ADOPTED"]
@@ -1540,8 +1654,11 @@ def _render_result_drivers(
                         st.write("PSE remained unchanged.")
                 elif pse_delta == 0:
                     st.write("Adopted impacts are active; net PSE remained unchanged.")
-            with final_column:
-                st.markdown("##### 3 · Final result")
+            with final_column.container(border=True):
+                st.markdown(
+                    "<div class='pwt-story-card'>✓ &nbsp; 3 · Final Result (L0)</div>",
+                    unsafe_allow_html=True,
+                )
                 st.write(
                     f"Fuel: {_format_metric(current_card.fuel_l_100km, digits=3, suffix='')} → "
                     f"{_format_metric(proposal_card.fuel_l_100km, digits=3, suffix='')} L/100 km"
@@ -1560,9 +1677,6 @@ def _render_result_drivers(
                 co2_delta = proposal_card.deltas.get("gco2_km")
                 if co2_delta is not None:
                     st.caption(f"Δ {co2_delta:+.1f} g/km")
-
-            st.markdown("##### Interpretation")
-            st.write(_driver_narrative(driver))
 
             impact_rows = compact_impact_rows(draft, proposals=proposals)
             if impact_rows:
@@ -1723,89 +1837,115 @@ def render_system_scenario_workspace() -> None:
     )
     _render_result_summary(drafts, calculations, sources, proposals, corrections)
 
-    st.subheader("Multi-domain System Scenarios")
-    st.caption(
-        "Each column is an independent complete scenario. The matrix shows composition; edit one domain at a time below."
-    )
+    composition_column, workspace_column = st.columns([5, 7], gap="medium")
+    with composition_column:
+        _render_stage_header(
+            3,
+            "System Composition",
+            "Current and each Proposal remain complete independent scenarios.",
+        )
+        st.markdown(
+            "<div class='pwt-cockpit-panel'>Working-set composition</div>",
+            unsafe_allow_html=True,
+        )
+        add_action, remove_selection, remove_action = st.columns([1, 1.25, 1])
+        if add_action.button(
+            "+ Add Proposal",
+            disabled=len(drafts) >= 4,
+            key="pwt_ss:add_proposal",
+            width="stretch",
+        ):
+            drafts = add_proposal_draft(
+                drafts,
+                vde_id=current.vde_id,
+                architecture=current.architecture,
+                fuelcons_id=current.fuelcons_id,
+            )
+            st.session_state[_DRAFTS_KEY] = drafts
+            st.rerun()
+        removable = [
+            draft for draft in drafts if draft.identity.role.value == "PROPOSAL"
+        ]
+        remove_id = remove_selection.selectbox(
+            "Proposal to remove",
+            [draft.identity.scenario_id for draft in removable] or ["None"],
+            format_func=lambda item: next(
+                (draft.label for draft in removable if draft.identity.scenario_id == item),
+                item,
+            ),
+            key="pwt_ss:remove_select",
+            label_visibility="collapsed",
+            disabled=not removable,
+        )
+        if removable and remove_action.button(
+            "Remove",
+            key="pwt_ss:remove",
+            width="stretch",
+        ):
+            drafts = remove_proposal_draft(drafts, remove_id)
+            calculations.pop(remove_id, None)
+            st.session_state[_DRAFTS_KEY] = drafts
+            st.session_state[_RESULTS_KEY] = calculations
+            st.rerun()
+        with st.expander("Scenario names", expanded=False):
+            drafts = _render_scenario_identity_editor(drafts)
+        st.session_state[_DRAFTS_KEY] = drafts
+        _render_matrix(drafts, calculations, sources, proposals, corrections)
 
-    action1, action2 = st.columns(2)
-    if action1.button(
-        "Add Proposal",
-        disabled=len(drafts) >= 4,
-        key="pwt_ss:add_proposal",
-        width="stretch",
-    ):
-        drafts = add_proposal_draft(
+        if st.button(
+            "Calculate System Scenarios",
+            key="pwt_ss:calculate",
+            type="primary",
+            width="stretch",
+        ):
+            calculations = dict(
+                calculate_drafts(
+                    drafts,
+                    sources=sources,
+                    proposals=proposals,
+                    corrections=corrections,
+                )
+            )
+            st.session_state[_RESULTS_KEY] = calculations
+            st.rerun()
+
+    with workspace_column:
+        _render_stage_header(
+            4,
+            "Domain Workspace",
+            "Edit physical configuration and its optional quantitative L0 representation.",
+        )
+        st.markdown(
+            "<div class='pwt-cockpit-panel'>Focused scenario/domain editor</div>",
+            unsafe_allow_html=True,
+        )
+        drafts, proposals, corrections = _render_domain_editor(
             drafts,
-            vde_id=current.vde_id,
-            architecture=current.architecture,
-            fuelcons_id=current.fuelcons_id,
+            sources,
+            source_labels,
+            proposals,
+            corrections,
         )
         st.session_state[_DRAFTS_KEY] = drafts
-        st.rerun()
-    removable = [draft for draft in drafts if draft.identity.role.value == "PROPOSAL"]
-    remove_id = action2.selectbox(
-        "Remove",
-        [draft.identity.scenario_id for draft in removable] or ["None"],
-        format_func=lambda item: next((d.label for d in removable if d.identity.scenario_id == item), item),
-        key="pwt_ss:remove_select",
-        label_visibility="collapsed",
-        disabled=not removable,
-    )
-    if removable and action2.button("Remove Proposal", key="pwt_ss:remove", width="stretch"):
-        drafts = remove_proposal_draft(drafts, remove_id)
-        calculations.pop(remove_id, None)
-        st.session_state[_DRAFTS_KEY] = drafts
-        st.session_state[_RESULTS_KEY] = calculations
-        st.rerun()
-    drafts = _render_scenario_identity_editor(drafts)
-    st.session_state[_DRAFTS_KEY] = drafts
-    _render_matrix(drafts, calculations, sources, proposals, corrections)
+        st.session_state[_PROPOSALS_KEY] = proposals
+        st.session_state[_CORRECTIONS_KEY] = corrections
 
-    if st.button(
-        "Calculate System Scenarios",
-        key="pwt_ss:calculate",
-        type="primary",
-    ):
-        calculations = dict(
-            calculate_drafts(
-                drafts,
-                sources=sources,
-                proposals=proposals,
-                corrections=corrections,
+        if st.button(
+            "Recalculate after editing",
+            key="pwt_ss:calculate_after_editor",
+            type="primary",
+            width="stretch",
+        ):
+            calculations = dict(
+                calculate_drafts(
+                    drafts,
+                    sources=sources,
+                    proposals=proposals,
+                    corrections=corrections,
+                )
             )
-        )
-        st.session_state[_RESULTS_KEY] = calculations
-        st.rerun()
-
-    st.markdown("### Domain Workspace")
-    st.caption("Choose one scenario and domain, then separate physical configuration from its optional L0 representation.")
-    drafts, proposals, corrections = _render_domain_editor(
-        drafts,
-        sources,
-        source_labels,
-        proposals,
-        corrections,
-    )
-    st.session_state[_DRAFTS_KEY] = drafts
-    st.session_state[_PROPOSALS_KEY] = proposals
-    st.session_state[_CORRECTIONS_KEY] = corrections
-
-    if st.button(
-        "Calculate after editing",
-        key="pwt_ss:calculate_after_editor",
-        type="primary",
-    ):
-        calculations = dict(
-            calculate_drafts(
-                drafts,
-                sources=sources,
-                proposals=proposals,
-                corrections=corrections,
-            )
-        )
-        st.session_state[_RESULTS_KEY] = calculations
-        st.rerun()
+            st.session_state[_RESULTS_KEY] = calculations
+            st.rerun()
 
     _render_result_drivers(drafts, calculations, sources, proposals, corrections)
 

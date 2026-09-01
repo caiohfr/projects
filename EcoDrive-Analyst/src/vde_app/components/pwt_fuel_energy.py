@@ -2246,6 +2246,304 @@ def inject_powertrain_scenario_style() -> None:
     st.markdown(
         """
         <style>
+        :root {
+            --pwt-blue: #2563eb;
+            --pwt-blue-soft: #eff6ff;
+            --pwt-green: #168447;
+            --pwt-green-soft: #f0fdf4;
+            --pwt-violet: #6d4bd1;
+            --pwt-violet-soft: #f7f3ff;
+            --pwt-ink: #172033;
+            --pwt-muted: #667085;
+            --pwt-line: #dce3ec;
+            --pwt-panel: #ffffff;
+        }
+        .stMainBlockContainer, .block-container {
+            max-width: 1680px;
+            padding-top: 1.1rem;
+            padding-left: 1.6rem;
+            padding-right: 1.6rem;
+            padding-bottom: 3rem;
+        }
+        [data-testid="stSidebar"] {
+            border-right: 1px solid #e4e8ef;
+            background: #fbfcfe;
+        }
+        .pwt-sidebar-brand {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            margin: 0.15rem 0 1rem;
+            color: var(--pwt-ink);
+            font-size: 1.02rem;
+            font-weight: 750;
+            line-height: 1.18;
+        }
+        .pwt-sidebar-brand span {
+            display: grid;
+            place-items: center;
+            width: 2rem;
+            height: 2rem;
+            border-radius: 0.65rem;
+            color: var(--pwt-blue);
+            background: var(--pwt-blue-soft);
+            font-size: 1.15rem;
+        }
+        .pwt-page-intro {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            padding-bottom: 0.7rem;
+            margin-bottom: 0.45rem;
+            border-bottom: 1px solid #e8ecf2;
+        }
+        .pwt-page-intro strong {
+            color: var(--pwt-ink);
+            font-size: 1.05rem;
+        }
+        .pwt-page-intro span {
+            color: var(--pwt-muted);
+            font-size: 0.78rem;
+        }
+        .pwt-stage-header {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            margin: 0.55rem 0 0.45rem;
+            color: var(--pwt-ink);
+        }
+        .pwt-stage-number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 1.48rem;
+            height: 1.48rem;
+            flex: 0 0 1.48rem;
+            border: 1.5px solid #4d82e8;
+            border-radius: 999px;
+            color: #245fc7;
+            background: #f8fbff;
+            font-size: 0.78rem;
+            font-weight: 750;
+        }
+        .pwt-stage-copy strong {
+            display: block;
+            font-size: 1rem;
+            line-height: 1.1;
+        }
+        .pwt-stage-copy span {
+            display: block;
+            margin-top: 0.12rem;
+            color: var(--pwt-muted);
+            font-size: 0.73rem;
+            line-height: 1.25;
+        }
+        .pwt-selector-label {
+            padding-top: 1.72rem;
+            color: #344054;
+            font-size: 0.78rem;
+            font-weight: 650;
+        }
+        .pwt-overview-card {
+            min-height: 7.25rem;
+            padding: 0.82rem 0.95rem;
+            border: 1px solid var(--pwt-line);
+            border-radius: 0.7rem;
+            background: var(--pwt-panel);
+            box-shadow: 0 1px 2px rgba(16, 24, 40, 0.025);
+        }
+        .pwt-overview-title {
+            display: flex;
+            align-items: center;
+            gap: 0.55rem;
+            margin-bottom: 0.48rem;
+            color: var(--pwt-ink);
+            font-size: 0.82rem;
+            font-weight: 750;
+        }
+        .pwt-overview-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 1.65rem;
+            height: 1.65rem;
+            border-radius: 999px;
+            color: var(--pwt-blue);
+            background: var(--pwt-blue-soft);
+            font-size: 0.9rem;
+        }
+        .pwt-overview-card.is-green .pwt-overview-icon {
+            color: var(--pwt-green);
+            background: #eaf7ef;
+        }
+        .pwt-overview-card.is-violet .pwt-overview-icon {
+            color: var(--pwt-violet);
+            background: var(--pwt-violet-soft);
+        }
+        .pwt-detail-row {
+            display: grid;
+            grid-template-columns: minmax(6.6rem, 0.9fr) minmax(0, 1.2fr);
+            gap: 0.45rem;
+            margin: 0.18rem 0;
+            color: #344054;
+            font-size: 0.72rem;
+            line-height: 1.24;
+        }
+        .pwt-detail-row span:first-child { color: var(--pwt-muted); }
+        .pwt-detail-row strong {
+            font-weight: 650;
+            overflow-wrap: anywhere;
+        }
+        .pwt-ready-pill, .pwt-driver-pill {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 0.16rem 0.52rem;
+            font-size: 0.68rem;
+            font-weight: 750;
+            letter-spacing: 0.01em;
+        }
+        .pwt-ready-pill {
+            color: #16703b;
+            background: #def4e5;
+        }
+        .pwt-assumption-strip {
+            display: grid;
+            grid-template-columns: minmax(10rem, 1.35fr) repeat(4, minmax(7rem, 1fr));
+            align-items: stretch;
+            margin: 0.4rem 0 0.65rem;
+            border: 1px solid var(--pwt-line);
+            border-radius: 0.65rem;
+            background: #fff;
+            overflow: hidden;
+        }
+        .pwt-assumption-title, .pwt-assumption-item {
+            padding: 0.62rem 0.78rem;
+            min-width: 0;
+        }
+        .pwt-assumption-title {
+            display: flex;
+            align-items: center;
+            color: var(--pwt-ink);
+            font-size: 0.75rem;
+            font-weight: 750;
+            background: #fbfcfe;
+        }
+        .pwt-assumption-item {
+            border-left: 1px solid #e8ecf2;
+        }
+        .pwt-assumption-item span {
+            display: block;
+            color: var(--pwt-muted);
+            font-size: 0.65rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .pwt-assumption-item strong {
+            display: block;
+            margin-top: 0.12rem;
+            color: var(--pwt-ink);
+            font-size: 0.86rem;
+        }
+        .pwt-result-anchor {
+            margin: -0.55rem -0.72rem 0.3rem;
+            padding: 0.5rem 0.7rem;
+            border-bottom: 1px solid #c8d8f0;
+            border-radius: 0.58rem 0.58rem 0 0;
+            background: #f4f8ff;
+        }
+        .pwt-result-anchor.is-proposal-a {
+            border-bottom-color: #c7e2d2;
+            background: #f1fbf5;
+        }
+        .pwt-result-anchor.is-proposal-b,
+        .pwt-result-anchor.is-proposal-c {
+            border-bottom-color: #dcd3ef;
+            background: #f8f5ff;
+        }
+        .pwt-result-title {
+            color: #1f5fbf;
+            font-size: 0.8rem;
+            font-weight: 760;
+            line-height: 1.2;
+        }
+        .pwt-result-anchor.is-proposal-a .pwt-result-title { color: var(--pwt-green); }
+        .pwt-result-anchor.is-proposal-b .pwt-result-title,
+        .pwt-result-anchor.is-proposal-c .pwt-result-title { color: var(--pwt-violet); }
+        .pwt-result-status {
+            color: var(--pwt-muted);
+            font-size: 0.63rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .pwt-cockpit-panel {
+            padding-bottom: 0.35rem;
+            border-bottom: 1px solid #e7ebf1;
+            color: var(--pwt-muted);
+            font-size: 0.68rem;
+        }
+        .pwt-editor-pane {
+            padding-bottom: 0.45rem;
+            margin-bottom: 0.45rem;
+            border-bottom: 1px solid #e7ebf1;
+            color: #315f9e;
+            font-size: 0.76rem;
+            font-weight: 760;
+        }
+        .pwt-editor-pane.is-quantitative { color: var(--pwt-violet); }
+        .pwt-workspace-context {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            padding: 0.38rem 0.55rem;
+            border-radius: 0.45rem;
+            color: #344054;
+            background: #f7f9fc;
+            font-size: 0.7rem;
+        }
+        .pwt-workspace-context strong { color: var(--pwt-blue); }
+        .pwt-workspace-context span { color: var(--pwt-muted); }
+        .pwt-story-card {
+            margin: -0.55rem -0.72rem 0.3rem;
+            padding: 0.55rem 0.72rem;
+            border-bottom: 1px solid #d8e2f1;
+            border-radius: 0.58rem 0.58rem 0 0;
+            background: #f7faff;
+            color: #245fc7;
+            font-size: 0.79rem;
+            font-weight: 750;
+        }
+        .pwt-driver-pill {
+            color: #176c3b;
+            background: #e3f5e9;
+        }
+        [data-testid="stDataFrame"] {
+            border: 1px solid var(--pwt-line);
+            border-radius: 0.55rem;
+            overflow: hidden;
+        }
+        [data-testid="stSelectbox"] label,
+        [data-testid="stTextInput"] label,
+        [data-testid="stNumberInput"] label {
+            color: #344054;
+            font-size: 0.72rem;
+            font-weight: 650;
+        }
+        [data-testid="stButton"] button {
+            min-height: 2.18rem;
+            border-radius: 0.48rem;
+            font-size: 0.75rem;
+        }
+        @media (max-width: 1100px) {
+            .pwt-assumption-strip {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .pwt-assumption-title { grid-column: 1 / -1; }
+            .pwt-assumption-item { border-top: 1px solid #e8ecf2; }
+        }
         .pwt-step-title {
             font-size: 1.05rem;
             font-weight: 600;
@@ -2376,8 +2674,11 @@ def _current_pwt_input_mode() -> str:
 
 def render_powertrain_sidebar_controls() -> str:
     with st.sidebar:
-        st.header("Powertrain Scenario")
-        st.caption("Choose the workspace style and display units for the active scenario draft.")
+        st.markdown(
+            "<div class='pwt-sidebar-brand'><span>âš¡</span>Powertrain<br>System Scenarios</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption("Workspace preferences")
         st.radio(
             "Display units",
             ["Metric", "US customary"],

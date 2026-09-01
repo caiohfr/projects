@@ -1,7 +1,7 @@
 # Sprint 11 — Multi-Domain System Scenario Foundation
 
-**Target repository path:** `docs/specs/sprint_11_multi_domain_system_scenario.md`  
-**Status:** Draft approved for Sprint 11 implementation  
+**Target repository path:** `docs/specs/sprint_11_multi_domain_system_scenario.md`
+**Status:** Draft approved for Sprint 11 implementation
 **Implementation sequence:** 11A → 11B → 11C → 11D → 11E
 
 ---

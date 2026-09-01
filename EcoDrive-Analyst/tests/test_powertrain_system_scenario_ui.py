@@ -13,6 +13,12 @@ from src.vde_core import db as db_module
 from src.vde_core.qa_mock_data import seed_qa_database, seed_qa_fuelcons_mock_rows
 from src.vde_core.system_scenario import ArchitectureClass, DomainKind, SolverReadiness
 from src.vde_app.components.pwt_fuel_energy import _vde_snapshot_options
+from src.vde_app.components.pwt_system_scenario import (
+    _assumption_availability,
+    _driver_label,
+    _driver_narrative,
+    _metric_delta,
+)
 
 
 PAGE_PATH = Path(__file__).resolve().parents[1] / "pages" / "Powertrain_Scenario.py"
@@ -54,8 +60,24 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
 
     def test_primary_workspace_is_canonical_without_legacy_renderers(self):
         app = self._app()
-        self.assertTrue(any(item.label == "FuelCons baseline" for item in app.selectbox))
+        self.assertTrue(any(item.label == "Source Baseline" for item in app.selectbox))
+        self.assertTrue(any(item.value == "Source Baseline" for item in app.subheader))
+        self.assertTrue(any("Effective Current" in item.value for item in app.markdown))
+        self.assertFalse(
+            any("Current System Baseline" in item.value for item in app.subheader)
+        )
+        self.assertFalse(
+            any("Current System Baseline" in item.value for item in app.markdown)
+        )
         self.assertTrue(any(item.label == "FuelCons" for item in app.metric))
+        availability_surface = "\n".join(
+            [item.value for item in app.caption]
+            + [item.value for item in app.markdown]
+        )
+        self.assertIn("Electric-path efficiency", availability_surface)
+        self.assertIn("Utility factor", availability_surface)
+        self.assertGreaterEqual(availability_surface.count("Not applicable"), 2)
+        self.assertTrue(any(item.label == "Fuel" and item.value == "—" for item in app.metric))
         self.assertTrue(any("Multi-domain System Scenarios" in item.value for item in app.subheader))
         self.assertTrue(any("Vehicle Demand" in str(frame.value) for frame in app.dataframe))
         self.assertFalse(any("legacy" in item.label.lower() for item in app.expander))
@@ -108,6 +130,22 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         self.assertIn("SYS-CURRENT", app.session_state["pwt_ss_calculations"])
 
+    def test_upper_and_lower_calculate_use_the_same_canonical_path(self):
+        upper = self._app()
+        upper.button(key="pwt_ss:calculate").click().run(timeout=90)
+        upper_outputs = dict(
+            upper.session_state["pwt_ss_calculations"]["SYS-CURRENT"]
+            .result.effective_outputs
+        )
+
+        lower = self._app()
+        lower.button(key="pwt_ss:calculate_after_editor").click().run(timeout=90)
+        lower_outputs = dict(
+            lower.session_state["pwt_ss_calculations"]["SYS-CURRENT"]
+            .result.effective_outputs
+        )
+        self.assertEqual(upper_outputs, lower_outputs)
+
     def test_current_plus_three_proposals_and_fourth_is_prevented(self):
         app = self._app()
         app.button(key="pwt_ss:add_proposal").click().run(timeout=90)
@@ -140,6 +178,122 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         drafts = app.session_state["pwt_ss_drafts"]
         self.assertNotEqual(drafts[0].vde_id, drafts[1].vde_id)
+
+    def test_demand_driven_story_is_ordered_and_uses_compact_neutral_deltas(self):
+        app = self._app()
+        app.button(key="pwt_ss:add_proposal").click().run(timeout=90)
+        app.selectbox(key="pwt_ss:editor:scenario").select("SYS-P1").run(timeout=90)
+        app.selectbox(key="pwt_ss:editor:domain").set_value(
+            DomainKind.VEHICLE_DEMAND
+        ).run(timeout=90)
+        widget = app.selectbox(key="pwt_ss:SYS-P1:VEHICLE_DEMAND:vde_id")
+        current = app.session_state["pwt_ss_drafts"][1].vde_id
+        alternative = 900001 if current != 900001 else 900002
+        widget.set_value(alternative).run(timeout=90)
+        app.button(key="pwt_ss:calculate_after_editor").click().run(timeout=90)
+
+        self.assertEqual(len(app.exception), 0)
+        story = "\n".join(
+            [item.value for item in app.markdown]
+            + [item.value for item in app.caption]
+        )
+        self.assertIn("RESULT DRIVER", story)
+        self.assertIn("DEMAND-DRIVEN", story)
+        self.assertLess(story.index("1 · Vehicle Demand"), story.index("2 · Powertrain / PSE"))
+        self.assertLess(story.index("2 · Powertrain / PSE"), story.index("3 · Final result"))
+        self.assertIn("No represented powertrain-efficiency improvement contributed.", story)
+        pse_metrics = [item for item in app.metric if item.label == "PSE"]
+        self.assertTrue(any(item.value.endswith("%") for item in pse_metrics))
+        self.assertTrue(any(item.delta.endswith(" pp") for item in pse_metrics if item.delta))
+
+    def test_inherited_proposal_stays_compact_until_a_deviation_is_created(self):
+        app = self._app()
+        app.button(key="pwt_ss:add_proposal").click().run(timeout=90)
+        app.selectbox(key="pwt_ss:editor:scenario").select("SYS-P1").run(timeout=90)
+        app.selectbox(key="pwt_ss:editor:domain").set_value(
+            DomainKind.ENGINE_FUEL_CONVERTER
+        ).run(timeout=90)
+
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(any("INHERIT" in item.value for item in app.caption))
+        self.assertFalse(any(item.label == "Current correction" for item in app.expander))
+        app.button(key="pwt_ss:SYS-P1:ENGINE_FUEL_CONVERTER:create").click().run(
+            timeout=90
+        )
+        self.assertNotEqual(
+            app.session_state["pwt_ss_drafts"][1].selection_for(
+                DomainKind.ENGINE_FUEL_CONVERTER
+            ),
+            "CURRENT",
+        )
+
+    def test_powertrain_driven_story_follows_an_adopted_l0_assumption(self):
+        app = self._app()
+        app.button(key="pwt_ss:add_proposal").click().run(timeout=90)
+        app.selectbox(key="pwt_ss:editor:scenario").select("SYS-P1").run(timeout=90)
+        app.selectbox(key="pwt_ss:editor:domain").set_value(
+            DomainKind.ENGINE_FUEL_CONVERTER
+        ).run(timeout=90)
+        app.button(key="pwt_ss:SYS-P1:ENGINE_FUEL_CONVERTER:create").click().run(
+            timeout=90
+        )
+        app.number_input(key="pwt_ss:proposal:ENG-P01:assumption_value").set_value(
+            0.4
+        ).run(timeout=90)
+        app.checkbox(key="pwt_ss:proposal:ENG-P01:adopt").set_value(True).run(
+            timeout=90
+        )
+        app.button(key="pwt_ss:calculate_after_editor").click().run(timeout=90)
+
+        story = "\n".join(
+            [item.value for item in app.markdown]
+            + [item.value for item in app.caption]
+        )
+        self.assertEqual(len(app.exception), 0)
+        self.assertIn("RESULT DRIVER", story)
+        self.assertIn("POWERTRAIN-DRIVEN", story)
+        self.assertIn("Vehicle Demand remained unchanged", story)
+        self.assertIn("Adopted L0 impacts", story)
+
+    def test_inherited_proposal_has_a_concise_no_change_story(self):
+        app = self._app()
+        app.button(key="pwt_ss:add_proposal").click().run(timeout=90)
+        app.button(key="pwt_ss:calculate_after_editor").click().run(timeout=90)
+        story = "\n".join(
+            [item.value for item in app.markdown]
+            + [item.value for item in app.caption]
+        )
+        self.assertEqual(len(app.exception), 0)
+        self.assertIn("NO QUANTITATIVE CHANGE", story)
+        self.assertNotIn("Adopted L0 impacts", story)
+
+    def test_configuration_only_story_says_not_represented(self):
+        app = self._app()
+        app.button(key="pwt_ss:add_proposal").click().run(timeout=90)
+        app.selectbox(key="pwt_ss:editor:scenario").select("SYS-P1").run(timeout=90)
+        app.selectbox(key="pwt_ss:editor:domain").set_value(
+            DomainKind.TRANSMISSION_DRIVELINE
+        ).run(timeout=90)
+        app.button(
+            key="pwt_ss:SYS-P1:TRANSMISSION_DRIVELINE:create"
+        ).click().run(timeout=90)
+        final_drive = app.number_input(
+            key="pwt_ss:proposal:TRANS-P01:final_drive_ratio"
+        )
+        final_drive.set_value(float(final_drive.value) + 0.1).run(timeout=90)
+        app.button(key="pwt_ss:calculate_after_editor").click().run(timeout=90)
+
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(
+            any(
+                "CONFIGURATION ONLY" in item.value
+                and "NOT REPRESENTED" in item.value
+                for item in app.info
+            )
+        )
+        self.assertTrue(
+            any("Not represented" in str(frame.value) for frame in app.dataframe)
+        )
 
     def test_bev_architecture_updates_engine_to_na_and_keeps_partial_results(self):
         app = self._app()
@@ -227,6 +381,36 @@ class PowertrainSystemScenarioAppTests(unittest.TestCase):
         app = self._app()
         self.assertEqual(len([button for button in app.button if button.label == "Confirm baseline"]), 0)
         self.assertFalse(any(item.key == "pwt_ss_load_evidence_tools" for item in app.checkbox))
+
+
+class PowertrainSystemScenarioPresentationTests(unittest.TestCase):
+    def test_assumption_availability_distinguishes_not_applicable_and_not_provided(self):
+        self.assertEqual(
+            _assumption_availability(None, applicable=False, digits=2),
+            "Not applicable",
+        )
+        self.assertEqual(
+            _assumption_availability(None, applicable=True, digits=2),
+            "Not provided",
+        )
+
+    def test_pse_delta_uses_percentage_points(self):
+        self.assertEqual(
+            _metric_delta(0.0091, digits=2, scale=100.0, suffix=" pp"),
+            "+0.91 pp",
+        )
+
+    def test_all_result_story_labels_and_interpretations_are_explicit(self):
+        expectations = {
+            "DEMAND-DRIVEN": "Demand-driven",
+            "POWERTRAIN-DRIVEN": "Powertrain-driven",
+            "MIXED DEMAND + POWERTRAIN": "Mixed demand + powertrain",
+            "NO QUANTITATIVE CHANGE": "No quantitative change",
+        }
+        for driver, label in expectations.items():
+            with self.subTest(driver=driver):
+                self.assertEqual(_driver_label(driver), label)
+                self.assertTrue(_driver_narrative(driver))
 
 
 if __name__ == "__main__":

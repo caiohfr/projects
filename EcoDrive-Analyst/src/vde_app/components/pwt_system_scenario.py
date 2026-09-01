@@ -329,8 +329,11 @@ def _render_current_baseline_selector(
 ) -> tuple[int | None, int | None, bool]:
     """Choose one persisted FuelCons row before scenario composition."""
 
-    st.subheader("Current System Baseline")
-    st.caption("Search FuelCons ID, VDE ID, make, model, year, or architecture. Detailed data loads only after selection.")
+    st.subheader("Source Baseline")
+    st.caption(
+        "Select a persisted FuelCons record to establish Current. Search by "
+        "FuelCons ID, VDE ID, make, model, year, or architecture."
+    )
 
     available_ids = list(baseline_labels)
     if not available_ids:
@@ -341,11 +344,11 @@ def _render_current_baseline_selector(
     current_fuelcons_id = current.fuelcons_id if current is not None else None
     index = available_ids.index(current_fuelcons_id) if current_fuelcons_id in available_ids else 0
     selected_fuelcons_id = st.selectbox(
-        "FuelCons baseline",
+        "Source Baseline",
         available_ids,
         index=index,
         format_func=lambda item: baseline_labels[item],
-        placeholder="Search a FuelCons baseline",
+        placeholder="Search persisted FuelCons records",
         key=_BASELINE_SELECTOR_KEY,
     )
 
@@ -359,7 +362,7 @@ def _render_current_baseline_selector(
         return int(selected_fuelcons_id), int(selected_vde_id), False
 
     st.warning(
-        "Changing the Current baseline resets domain proposals and calculated "
+        "Changing the Source Baseline resets domain proposals and calculated "
         "results. Scenario identities remain stable, but every proposal returns "
         "to Inherit from the new Effective Current."
     )
@@ -465,6 +468,19 @@ def _display_value(value: Any, *, digits: int = 4) -> str:
     return str(value)
 
 
+def _assumption_availability(
+    value: float | None,
+    *,
+    applicable: bool,
+    digits: int,
+) -> str:
+    if not applicable:
+        return "Not applicable"
+    if value is None:
+        return "Not provided"
+    return f"{value * 100:.{digits}f}%"
+
+
 def _render_baseline_summary(
     draft: ScenarioDraft,
     source: ScenarioSource | None,
@@ -472,7 +488,7 @@ def _render_baseline_summary(
     proposals: Mapping[str, DomainProposal],
     corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
 ) -> None:
-    st.markdown("### Current System Baseline")
+    st.markdown("### Effective Current")
     if source is None:
         st.error("The selected FuelCons baseline could not be materialized.")
         return
@@ -491,7 +507,7 @@ def _render_baseline_summary(
 
     baseline_card, demand_card, readiness_card = st.columns(3)
     with baseline_card.container(border=True):
-        st.caption("BASELINE")
+        st.caption("FUELCONS")
         st.metric("FuelCons", f"FC-{row.get('id', draft.fuelcons_id or '—')}")
         st.write(vehicle or "Vehicle not identified")
         st.caption(f"{row.get('fuel_type') or 'Fuel not provided'} · {draft.architecture.value}")
@@ -508,23 +524,54 @@ def _render_baseline_summary(
         st.caption("Assumptions ready" if readiness == "READY" else "Input attention required")
 
     powertrain = resolved.l0_request_snapshot.powertrain_features
+    fuel_path_applicable = draft.architecture is not ArchitectureClass.BEV
+    electric_path_applicable = draft.architecture in {
+        ArchitectureClass.PHEV,
+        ArchitectureClass.BEV,
+    }
+    utility_factor_applicable = draft.architecture is ArchitectureClass.PHEV
+    assumption_values = (
+        (
+            "Aggregate fuel-path efficiency",
+            _assumption_availability(
+                powertrain.get("eta_pt_est"),
+                applicable=fuel_path_applicable,
+                digits=2,
+            ),
+        ),
+        (
+            "Electric-path efficiency",
+            _assumption_availability(
+                powertrain.get("bev_eff_drive"),
+                applicable=electric_path_applicable,
+                digits=2,
+            ),
+        ),
+        (
+            "Utility factor",
+            _assumption_availability(
+                powertrain.get("utility_factor"),
+                applicable=utility_factor_applicable,
+                digits=1,
+            ),
+        ),
+    )
+    correction_count = sum(1 for key in corrections if key[0] == draft.vde_id)
     assumptions = st.columns(4)
-    assumptions[0].metric(
-        "Aggregate fuel-path efficiency",
-        "Not provided" if powertrain.get("eta_pt_est") is None else f"{powertrain['eta_pt_est'] * 100:.2f}%",
-    )
-    assumptions[1].metric(
-        "Electric-path efficiency",
-        "Not provided" if powertrain.get("bev_eff_drive") is None else f"{powertrain['bev_eff_drive'] * 100:.2f}%",
-    )
-    assumptions[2].metric(
-        "Utility factor",
-        "Not provided" if powertrain.get("utility_factor") is None else f"{powertrain['utility_factor'] * 100:.1f}%",
-    )
-    assumptions[3].metric(
-        "Current corrections",
-        sum(1 for key in corrections if key[0] == draft.vde_id),
-    )
+    for column, (label, value) in zip(
+        assumptions,
+        (*assumption_values, ("Current corrections", str(correction_count))),
+    ):
+        with column.container(border=True):
+            st.caption(label)
+            st.write(value)
+    if correction_count:
+        st.caption(
+            f"Effective Current includes {correction_count} correction"
+            f"{'s' if correction_count != 1 else ''} over the Source Baseline."
+        )
+    else:
+        st.caption("Source Baseline = Effective Current · no Current Corrections applied.")
     if resolved.solver_readiness is SolverReadiness.NOT_READY:
         with st.expander("Readiness issues", expanded=False):
             for issue in resolved.issues:
@@ -768,13 +815,14 @@ def _render_domain_editor(
     dict[tuple[int, DomainKind], DomainCorrection],
 ]:
     scenario_ids = [draft.identity.scenario_id for draft in drafts]
-    scenario_id = st.selectbox(
+    scenario_context, domain_context = st.columns(2)
+    scenario_id = scenario_context.selectbox(
         "Scenario",
         scenario_ids,
         format_func=lambda item: next(d.label for d in drafts if d.identity.scenario_id == item),
         key="pwt_ss:editor:scenario",
     )
-    domain = st.selectbox(
+    domain = domain_context.selectbox(
         "Domain",
         list(DomainKind),
         format_func=lambda item: _DOMAIN_LABELS[item],
@@ -782,6 +830,12 @@ def _render_domain_editor(
     )
     draft = next(item for item in drafts if item.identity.scenario_id == scenario_id)
     key_base = f"pwt_ss:{draft.identity.scenario_id}:{domain.value}"
+    context_label = (
+        "EFFECTIVE CURRENT"
+        if draft.identity.role.value == "CURRENT"
+        else draft.label.upper()
+    )
+    st.markdown(f"#### {context_label} · {_DOMAIN_LABELS[domain].upper()}")
 
     if domain is DomainKind.VEHICLE_DEMAND:
         available_ids = list(source_labels)
@@ -819,12 +873,15 @@ def _render_domain_editor(
         proposal for proposal in proposals.values() if proposal.domain is domain
     ]
     options = [CURRENT_SELECTION, *[proposal.identity.proposal_id for proposal in domain_proposals]]
-    if applicability is DomainApplicability.NOT_APPLICABLE:
+    if draft.identity.role.value == "CURRENT":
+        options = [CURRENT_SELECTION]
+    elif applicability is DomainApplicability.NOT_APPLICABLE:
         options = [NOT_APPLICABLE_SELECTION]
     current_selection = draft.selection_for(domain)
     if current_selection not in options:
         current_selection = options[0]
-    selection = st.selectbox(
+    proposal_context, create_context = st.columns([3, 1])
+    selection = proposal_context.selectbox(
         "Selection",
         options,
         index=options.index(current_selection),
@@ -852,7 +909,13 @@ def _render_domain_editor(
         )
         return drafts, proposals, corrections
     based_on = effective_states_for_source(source, corrections=corrections)[domain]
-    if st.button("Create Domain Proposal", key=f"{key_base}:create"):
+    can_create = draft.identity.role.value == "PROPOSAL"
+    if create_context.button(
+        "+ Create Proposal",
+        key=f"{key_base}:create",
+        disabled=not can_create,
+        width="stretch",
+    ):
         proposal_id = _next_proposal_id(domain, proposals)
         proposal = proposal_from_editor(
             proposal_id=proposal_id,
@@ -861,10 +924,24 @@ def _render_domain_editor(
             label=proposal_id,
         )
         proposals[proposal_id] = proposal
+        drafts = replace_draft(
+            drafts,
+            update_selection(draft, domain, proposal_id),
+        )
         st.session_state[_PROPOSALS_KEY] = proposals
+        st.session_state[_DRAFTS_KEY] = drafts
         st.rerun()
 
     if selection == CURRENT_SELECTION:
+        if draft.identity.role.value == "PROPOSAL":
+            with st.container(border=True):
+                st.caption("INHERIT")
+                st.write(
+                    f"{draft.label} uses Effective Current for "
+                    f"{_DOMAIN_LABELS[domain]}. Create or select a Domain Proposal "
+                    "to define a deviation."
+                )
+            return drafts, proposals, corrections
         config = based_on.configuration
         values = {
             name: getattr(config, name)
@@ -1002,13 +1079,12 @@ def _render_domain_editor(
                     "· ADOPTED"
                 )
         elif proposal.requested_changes:
-            st.write("Configuration only")
-            st.caption("Impact on current L0 result: Not represented")
+            st.write("CONFIGURATION ONLY")
+            st.caption("Quantitative effect at Energy Balance L0: NOT REPRESENTED")
         else:
             st.caption("No quantitative L0 impact adopted.")
-    st.caption("Edit the selected configuration and L0 representation below.")
-    st.markdown("##### Configuration")
-    st.markdown(f"#### {_DOMAIN_LABELS[domain]} proposal · `{selection}`")
+    st.caption(f"Edit {_DOMAIN_LABELS[domain]} proposal `{selection}` below.")
+    st.markdown("##### Configuration inputs")
     label = st.text_input(
         "Proposal label",
         value=proposal.label or selection,
@@ -1260,6 +1336,22 @@ def _format_metric(value: float | None, *, digits: int, suffix: str) -> str:
     return "Not evaluated" if value is None else f"{value:.{digits}f}{suffix}"
 
 
+def _compact_metric(value: float | None, *, digits: int) -> str:
+    return "—" if value is None else f"{value:.{digits}f}"
+
+
+def _metric_delta(
+    value: float | None,
+    *,
+    digits: int,
+    scale: float = 1.0,
+    suffix: str = "",
+) -> str | None:
+    if value is None:
+        return None
+    return f"{value * scale:+.{digits}f}{suffix}"
+
+
 def _render_result_card(
     draft: ScenarioDraft,
     calculation: ScenarioCalculation | None,
@@ -1271,7 +1363,8 @@ def _render_result_card(
     status = _scenario_status(draft, calculation, sources, proposals, corrections)
     card = result_card_viewmodel(draft, calculation, current=current_calculation)
     with st.container(border=True):
-        st.markdown(f"#### {card.label}")
+        title = "CURRENT — EFFECTIVE" if draft.identity.role.value == "CURRENT" else card.label.upper()
+        st.markdown(f"#### {title}")
         st.caption(status)
         if status == "Needs recalculation":
             st.warning("Needs recalculation — visible inputs changed.")
@@ -1279,26 +1372,34 @@ def _render_result_card(
         pse_delta = card.deltas.get("pse")
         co2_delta = card.deltas.get("gco2_km")
         energy_delta = card.deltas.get("energy_Wh_km")
-        st.metric(
-            "Fuel [L/100 km]",
-            _format_metric(card.fuel_l_100km, digits=3, suffix=""),
-            None if fuel_delta is None else f"{fuel_delta:+.3f}",
+        fuel, pse, co2, electric = st.columns(4)
+        fuel.metric(
+            "Fuel",
+            _compact_metric(card.fuel_l_100km, digits=3),
+            _metric_delta(fuel_delta, digits=3),
+            delta_color="off",
         )
-        st.metric(
-            "Electric energy [Wh/km]",
-            _format_metric(card.energy_wh_km, digits=2, suffix=""),
-            None if energy_delta is None else f"{energy_delta:+.2f}",
-        )
-        st.metric(
+        fuel.caption("L/100 km")
+        pse.metric(
             "PSE",
-            _format_metric(None if card.pse is None else card.pse * 100, digits=2, suffix="%"),
-            None if pse_delta is None else f"{pse_delta * 100:+.2f} pp",
+            "—" if card.pse is None else f"{card.pse * 100:.2f}%",
+            _metric_delta(pse_delta, digits=2, scale=100.0, suffix=" pp"),
+            delta_color="off",
         )
-        st.metric(
-            "CO₂ [g/km]",
-            _format_metric(card.gco2_km, digits=2, suffix=""),
-            None if co2_delta is None else f"{co2_delta:+.2f}",
+        co2.metric(
+            "CO₂",
+            _compact_metric(card.gco2_km, digits=1),
+            _metric_delta(co2_delta, digits=1),
+            delta_color="off",
         )
+        co2.caption("g/km")
+        electric.metric(
+            "Electric",
+            _compact_metric(card.energy_wh_km, digits=1),
+            _metric_delta(energy_delta, digits=1),
+            delta_color="off",
+        )
+        electric.caption("Wh/km")
 
 
 def _render_result_summary(
@@ -1309,7 +1410,7 @@ def _render_result_summary(
     corrections: Mapping[tuple[int, DomainKind], DomainCorrection],
 ) -> None:
     st.markdown("### Scenario Results")
-    st.caption("Current and proposals use the same compact canonical result surface.")
+    st.caption("Proposals compare directly with Effective Current. Deltas use neutral styling.")
     columns = st.columns(len(drafts))
     current_calculation = calculations.get("SYS-CURRENT")
     for column, draft in zip(columns, drafts):
@@ -1327,19 +1428,20 @@ def _render_result_summary(
 def _driver_narrative(driver: str) -> str:
     return {
         "DEMAND-DRIVEN": (
-            "Fuel or energy changed with Vehicle Demand. No adopted powertrain "
-            "representation changed the system path."
+            "Fuel consumption changed because Vehicle Demand changed. "
+            "No represented powertrain-efficiency improvement contributed."
         ),
         "POWERTRAIN-DRIVEN": (
-            "Vehicle Demand is unchanged. Adopted system-level L0 representations "
-            "drive the result delta."
+            "Vehicle Demand remained unchanged. The scenario result changed "
+            "through adopted L0 powertrain assumptions."
         ),
         "MIXED DEMAND + POWERTRAIN": (
             "Vehicle Demand and adopted system-level L0 representations both "
-            "contribute to this scenario delta."
+            "changed. No additive causal allocation is inferred."
         ),
         "NO QUANTITATIVE CHANGE": (
-            "No demand-side or adopted powertrain quantitative change is active."
+            "Vehicle Demand remained unchanged, no adopted powertrain impact is "
+            "active, and the final result remained unchanged."
         ),
     }[driver]
 
@@ -1387,27 +1489,38 @@ def _render_result_drivers(
                 sources=sources,
                 proposals=proposals,
             )
-            st.caption("RESULT DRIVER")
-            st.markdown(f"### {_driver_label(driver)}")
-            st.write(_driver_narrative(driver))
+            st.caption(f"RESULT DRIVER · {_driver_label(driver).upper()}")
 
             demand = vehicle_demand_comparison(current, draft, sources=sources)
             current_card = result_card_viewmodel(current, current_calculation)
             proposal_card = result_card_viewmodel(draft, calculation, current=current_calculation)
             demand_column, powertrain_column, final_column = st.columns(3)
             with demand_column:
-                st.markdown("##### 1 · Vehicle Demand impact")
+                st.markdown("##### 1 · Vehicle Demand")
                 st.caption("CHANGED" if demand.changed else "UNCHANGED")
-                st.write(f"VDE-{demand.current_vde_id} → VDE-{demand.proposal_vde_id}")
                 st.write(
                     f"{_format_metric(demand.current_mj_per_km, digits=4, suffix=' MJ/km')} → "
                     f"{_format_metric(demand.proposal_mj_per_km, digits=4, suffix=' MJ/km')}"
                 )
                 if demand.delta_percent is not None:
-                    st.metric("Demand delta", f"{demand.delta_percent:+.2f}%")
+                    st.metric(
+                        "Demand delta",
+                        f"{demand.delta_percent:+.2f}%",
+                        delta_color="off",
+                    )
+                if not demand.changed:
+                    st.write("Vehicle Demand remained unchanged.")
+                elif (
+                    demand.current_mj_per_km is not None
+                    and demand.proposal_mj_per_km is not None
+                    and demand.proposal_mj_per_km < demand.current_mj_per_km
+                ):
+                    st.write("Vehicle Demand decreased.")
+                else:
+                    st.write("Vehicle Demand increased.")
                 st.caption(f"Canonical {demand.basis} Vehicle Demand")
             with powertrain_column:
-                st.markdown("##### 2 · Powertrain / PSE impact")
+                st.markdown("##### 2 · Powertrain / PSE")
                 pse_delta = proposal_card.deltas.get("pse")
                 impact_rows = compact_impact_rows(draft, proposals=proposals)
                 adopted = [row for row in impact_rows if row["status"] == "ADOPTED"]
@@ -1416,15 +1529,26 @@ def _render_result_drivers(
                     f"{_format_metric(None if current_card.pse is None else current_card.pse * 100, digits=2, suffix='%')} → "
                     f"{_format_metric(None if proposal_card.pse is None else proposal_card.pse * 100, digits=2, suffix='%')}"
                 )
-                st.metric("PSE delta", "Not evaluated" if pse_delta is None else f"{pse_delta * 100:+.2f} pp")
+                st.metric(
+                    "PSE delta",
+                    "—" if pse_delta is None else f"{pse_delta * 100:+.2f} pp",
+                    delta_color="off",
+                )
                 if not adopted:
-                    st.caption("No adopted L0 powertrain impacts.")
+                    st.write("No adopted L0 powertrain impact.")
+                    if pse_delta == 0:
+                        st.write("PSE remained unchanged.")
+                elif pse_delta == 0:
+                    st.write("Adopted impacts are active; net PSE remained unchanged.")
             with final_column:
                 st.markdown("##### 3 · Final result")
                 st.write(
                     f"Fuel: {_format_metric(current_card.fuel_l_100km, digits=3, suffix='')} → "
                     f"{_format_metric(proposal_card.fuel_l_100km, digits=3, suffix='')} L/100 km"
                 )
+                fuel_delta = proposal_card.deltas.get("fuel_l_100km")
+                if fuel_delta is not None:
+                    st.caption(f"Δ {fuel_delta:+.3f} L/100 km")
                 st.write(
                     f"Energy: {_format_metric(current_card.energy_wh_km, digits=2, suffix='')} → "
                     f"{_format_metric(proposal_card.energy_wh_km, digits=2, suffix='')} Wh/km"
@@ -1433,10 +1557,21 @@ def _render_result_drivers(
                     f"CO₂: {_format_metric(current_card.gco2_km, digits=2, suffix='')} → "
                     f"{_format_metric(proposal_card.gco2_km, digits=2, suffix='')} g/km"
                 )
+                co2_delta = proposal_card.deltas.get("gco2_km")
+                if co2_delta is not None:
+                    st.caption(f"Δ {co2_delta:+.1f} g/km")
+
+            st.markdown("##### Interpretation")
+            st.write(_driver_narrative(driver))
 
             impact_rows = compact_impact_rows(draft, proposals=proposals)
             if impact_rows:
-                st.markdown("##### Adopted impact trace")
+                st.markdown("##### Adopted L0 impacts")
+                if any(row["status"] == "CONFIG ONLY" for row in impact_rows):
+                    st.info(
+                        "CONFIGURATION ONLY · Physical configuration changed. "
+                        "Quantitative effect at Energy Balance L0: NOT REPRESENTED."
+                    )
                 st.dataframe(
                     pd.DataFrame(
                         [

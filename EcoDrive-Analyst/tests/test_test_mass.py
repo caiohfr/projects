@@ -183,7 +183,8 @@ class TestMassTests(unittest.TestCase):
         try:
             with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmpfile:
                 temp_db_path = Path(tmpfile.name)
-            db_module.DB_PATH = temp_db_path
+            db_module.configure_db_path(temp_db_path)
+            db_module._set_legacy_fixture_mode(True)
             db_module.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
             db_module.ensure_db()
             db_module.ensure_migrations()
@@ -212,7 +213,7 @@ class TestMassTests(unittest.TestCase):
             self.assertIn("mass_rule_status", cols)
             self.assertIn("mass_rule_notes", cols)
         finally:
-            db_module.DB_PATH = original_db_path
+            db_module.configure_db_path(original_db_path)
             if temp_db_path and temp_db_path.exists():
                 try:
                     os.unlink(temp_db_path)
@@ -225,7 +226,8 @@ class TestMassTests(unittest.TestCase):
         try:
             with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmpfile:
                 temp_db_path = Path(tmpfile.name)
-            db_module.DB_PATH = temp_db_path
+            db_module.configure_db_path(temp_db_path)
+            db_module._set_legacy_fixture_mode(True)
             db_module.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
             db_module.ensure_db()
 
@@ -256,7 +258,7 @@ class TestMassTests(unittest.TestCase):
             self.assertIsNone(row[0])
             self.assertIsNone(row[1])
         finally:
-            db_module.DB_PATH = original_db_path
+            db_module.configure_db_path(original_db_path)
             if temp_db_path and temp_db_path.exists():
                 try:
                     os.unlink(temp_db_path)

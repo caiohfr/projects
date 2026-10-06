@@ -24,6 +24,8 @@ from src.vde_core.vde_request_compact_state import (
     resolve_v22_baseline_mass_review,
     set_v22_tire_pressure_unit_preference,
 )
+from src.vde_core.vde_request_compact_adapter import compact_baseline_context
+from src.vde_core.vde_request_detail_mapping import detail_key_for_domain_field
 
 
 class TestVdeRequestCompactState(unittest.TestCase):
@@ -188,6 +190,59 @@ class TestVdeRequestCompactState(unittest.TestCase):
         self.assertNotIn("mass", state["proposals"][0]["inputs"])
         self.assertEqual(draft["proposals"][0]["domain_requests"]["transmission"]["raw_values"]["delta_A"], 0)
         self.assertEqual(draft["proposals"][0]["domain_requests"]["mass"]["raw_values"], {})
+
+    def test_lookup_keeps_absolute_component_fields_and_defaults_to_no_recalculation(self):
+        state = apply_v22_baseline(create_v22_state(), {"id": 15, "A": 120.0, "B": 0.02, "C": 0.01})
+        state = apply_v22_proposal_matrix(
+            state,
+            [{"proposal_id": "requested_1", "walk_from": "baseline", "brake": "Lookup from DB"}],
+        )
+        state = apply_v22_domain_inputs(
+            state,
+            "brake",
+            {
+                "requested_1": {
+                    "brake_component_db_id": "BRAKE-ABSOLUTE",
+                    "brake_A_coef_N": 7.0,
+                    "brake_B_Npkph": 0.002,
+                    "brake_C_coef_Npkph2": 0.0003,
+                }
+            },
+        )
+
+        draft = build_v22_canonical_request_draft(state)
+        raw_values = draft["proposals"][0]["domain_requests"]["brake"]["raw_values"]
+
+        self.assertEqual(raw_values["recalculate_total_abc"], "No")
+        self.assertEqual(raw_values["brake_A_coef_N"], 7.0)
+        self.assertEqual(
+            detail_key_for_domain_field(
+                "brake",
+                "BRAKE_METADATA_ONLY",
+                "brake_A_coef_N",
+                {"selection_mode": "Lookup from DB"},
+            ),
+            "brake_A_coef_N",
+        )
+
+    def test_associated_component_resolutions_survive_baseline_state_and_context(self):
+        resolution = {
+            "component_resolution_id": "CR_BASE_BRAKE",
+            "boundary": "BRAKE",
+            "resolved_A_N": 4.0,
+            "resolved_B_N_per_kph": 0.0008,
+            "resolved_C_N_per_kph2": 0.0001,
+            "record_status": "ACTIVE",
+        }
+        state = apply_v22_baseline(
+            create_v22_state(),
+            {"id": 16, "A": 120.0, "B": 0.02, "C": 0.01, "associated_component_resolutions": [resolution]},
+        )
+
+        self.assertEqual(
+            compact_baseline_context(state)["associated_component_resolutions"],
+            [resolution],
+        )
 
     def test_apply_domain_inputs_increments_only_target_domain_revision_once(self):
         state = apply_v22_baseline(create_v22_state(), {"id": 13, "mass_kg": 1400.0, "cda_m2": 0.62})

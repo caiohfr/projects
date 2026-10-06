@@ -415,7 +415,7 @@ class TestVdeRequestCompactPersistence(unittest.TestCase):
         self.assertEqual(save_result["status"], "success")
         self.assertEqual(len(save_result["saved_proposals"]), 2)
 
-    def test_save_reload_preserves_transmission_application_mode(self):
+    def test_save_reload_preserves_lookup_recalculation_choice(self):
         db_path = self._temp_db_path()
         seed_qa_database(db_path, overwrite=False)
 
@@ -427,7 +427,7 @@ class TestVdeRequestCompactPersistence(unittest.TestCase):
                 {
                     "requested_1": {
                         **dict(state["proposals"][0]["inputs"]["transmission"]),
-                        "transmission_application_mode": "KEEP_TOTAL_FIXED",
+                        "recalculate_total_abc": "Yes",
                     }
                 },
             )
@@ -447,9 +447,9 @@ class TestVdeRequestCompactPersistence(unittest.TestCase):
         self._assert_roundtrip_metrics(before_bundle, after_bundle)
         before_snapshot = before_bundle["resolution_result"]["proposal_results"][0]["resolved_snapshot"]
         after_snapshot = after_bundle["resolution_result"]["proposal_results"][0]["resolved_snapshot"]
-        self.assertEqual(loaded["state"]["proposals"][0]["inputs"]["transmission"]["transmission_application_mode"], "KEEP_TOTAL_FIXED")
-        self.assertEqual(before_snapshot["transmission_application_mode"], "KEEP_TOTAL_FIXED")
-        self.assertEqual(after_snapshot["transmission_application_mode"], "KEEP_TOTAL_FIXED")
+        self.assertEqual(loaded["state"]["proposals"][0]["inputs"]["transmission"]["recalculate_total_abc"], "Yes")
+        self.assertEqual(before_snapshot["transmission_application_mode"], "APPLY_DELTA_TO_TOTAL")
+        self.assertEqual(after_snapshot["transmission_application_mode"], "APPLY_DELTA_TO_TOTAL")
         self.assertEqual(before_bundle["resolution_result"]["proposal_results"][0]["abc_total"], after_bundle["resolution_result"]["proposal_results"][0]["abc_total"])
 
     def test_saved_request_ignores_baseline_db_mutation(self):

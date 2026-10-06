@@ -2175,6 +2175,7 @@ class LineageStep:
     formatted_delta: str | None
     semantic: str | None  # "BETTER" | "WORSE" | None
     status: str  # "OK" | "UNAVAILABLE" | "INCOMPATIBLE"
+    lineage_relation: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2240,6 +2241,7 @@ def build_lineage_waterfall(
             formatted_delta=None,
             semantic=None,
             status="OK",
+            lineage_relation=chain.nodes[0].lineage_relation,
         )
     ]
 
@@ -2263,6 +2265,7 @@ def build_lineage_waterfall(
                     formatted_delta=None,
                     semantic=None,
                     status="INCOMPATIBLE",
+                    lineage_relation=node.lineage_relation,
                 )
             )
             break
@@ -2281,6 +2284,7 @@ def build_lineage_waterfall(
                     formatted_delta=None,
                     semantic=None,
                     status="UNAVAILABLE",
+                    lineage_relation=node.lineage_relation,
                 )
             )
             break
@@ -2296,6 +2300,7 @@ def build_lineage_waterfall(
                 formatted_delta=_format_delta(result["absolute_delta"], result["percent_delta"], metric.unit_family, unit_system),
                 semantic=_semantic_for_display(result["semantic"]),
                 status="OK",
+                lineage_relation=node.lineage_relation,
             )
         )
 

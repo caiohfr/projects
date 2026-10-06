@@ -14,7 +14,11 @@ from src.vde_core.database_management_impact_service import (
     discover_vde_dependencies,
     preview_dependency_impact,
 )
-from src.vde_core.database_management_policy import FieldAccess, field_access_for
+from src.vde_core.database_management_policy import (
+    FieldAccess,
+    field_access_for,
+    is_record_origin_protected,
+)
 from src.vde_core.database_management_service import (
     apply_change,
     browse_records,
@@ -43,7 +47,7 @@ _GRID_FIELDS = {
     EntityType.VDE: ("id", "legislation", "category", "make", "model", "year", "source_name", "record_origin", "record_status", "updated_at"),
     EntityType.FUEL_CONSUMPTION: ("id", "vde_id", "electrification", "fuel_type", "method_note", "review_status", "record_origin", "record_status", "updated_at"),
     EntityType.TIRE: ("id", "tire_test_code", "manufacturer", "model", "size_code", "standard_family", "rr_n_per_kn", "source_name", "record_origin", "is_active", "updated_at"),
-    EntityType.COMPONENT: ("id", "component_code", "component_name", "source_name", "equivalent_A_N", "equivalent_B_N_per_kph", "equivalent_C_N_per_kph2", "loss_pct", "record_origin", "record_status", "updated_at"),
+    EntityType.COMPONENT: ("id", "component_code", "component_name", "source_name", "component_resolution_id", "resolution_boundary", "equivalent_A_N", "equivalent_B_N_per_kph", "equivalent_C_N_per_kph2", "record_origin", "record_status", "updated_at"),
 }
 _DETAIL_FIELDS = {
     EntityType.VDE: (
@@ -72,6 +76,8 @@ _DETAIL_FIELDS = {
         "configuration_from", "configuration_to", "test_condition_type", "test_method", "net_bridge_eligible",
         "equivalent_A_N", "equivalent_B_N_per_kph", "equivalent_C_N_per_kph2", "loss_pct",
         "residual_torque_front_nm", "residual_torque_rear_nm", "wheel_radius_m", "notes",
+        "component_resolution_id", "resolution_boundary", "resolution_method", "resolution_confidence",
+        "resolution_fidelity_level", "component_provenance_json", "resolution_provenance_json",
     ),
 }
 _CREATE_DEFAULTS = {
@@ -199,7 +205,11 @@ def _render_grid(entity: EntityType, rows: list[dict], *, component_domain: str 
         width="stretch",
         num_rows="fixed",
     )
-    if st.button("Stage grid edits", key=f"database_management_stage_grid_{entity.value.lower()}", disabled=not rows):
+    if st.button(
+        "Stage grid edits",
+        key=f"database_management_stage_grid_{entity.value.lower()}",
+        disabled=not rows or not editable_columns,
+    ):
         changed = 0
         for original, edited_row in zip(rows, edited.to_dict(orient="records")):
             payload = {
@@ -221,7 +231,10 @@ def _render_grid(entity: EntityType, rows: list[dict], *, component_domain: str 
 def _render_add_form(entity: EntityType, *, component_domain: str | None) -> None:
     with st.expander("Add row"):
         with st.form(f"database_management_add_{entity.value.lower()}"):
-            origin_options = sorted(ORIGINS_BY_ENTITY[entity])
+            origin_options = sorted(
+                origin for origin in ORIGINS_BY_ENTITY[entity]
+                if not is_record_origin_protected(entity, origin)
+            )
             origin = st.selectbox("Record origin", origin_options, key=f"database_management_add_origin_{entity.value.lower()}")
             if entity is EntityType.COMPONENT:
                 st.caption(f"Domain: {component_domain}")
@@ -258,7 +271,7 @@ def _render_create_fields(entity: EntityType) -> dict:
     if entity is EntityType.FUEL_CONSUMPTION:
         cols = st.columns(2)
         return {
-            "vde_id": cols[0].number_input("VDE ID", min_value=1, value=None, step=1),
+            "vde_id": cols[0].number_input("VDE ID", value=None, step=1),
             "electrification": cols[1].selectbox("Electrification", ("ICE", "MHEV", "HEV", "PHEV", "BEV")),
             "fuel_type": cols[0].text_input("Fuel type"),
             "method_note": cols[1].text_input("Method note"),
@@ -322,7 +335,11 @@ def _render_detail_editor(entity: EntityType, record: dict, *, component_domain:
         width="stretch",
         num_rows="fixed",
     )
-    if st.button("Stage selected edits", key=f"database_management_stage_detail_{entity.value.lower()}_{record['id']}"):
+    if st.button(
+        "Stage selected edits",
+        key=f"database_management_stage_detail_{entity.value.lower()}_{record['id']}",
+        disabled=not editable,
+    ):
         edited = detail.to_dict(orient="records")[0]
         payload = {field: edited.get(field) for field in editable if not _same_value(record.get(field), edited.get(field))}
         if payload:
@@ -333,10 +350,17 @@ def _render_detail_editor(entity: EntityType, record: dict, *, component_domain:
     readonly = [field for field in fields if field not in editable and record.get(field) is not None]
     if readonly:
         with st.expander("Read-only and derived values"):
-            st.dataframe(pd.DataFrame([{"Field": field, "Value": record.get(field)} for field in readonly]), hide_index=True, width="stretch")
+            st.dataframe(
+                pd.DataFrame([{"Field": field, "Value": str(record.get(field))} for field in readonly]),
+                hide_index=True,
+                width="stretch",
+            )
 
 
 def _render_record_actions(entity: EntityType, record: dict, *, component_domain: str | None) -> None:
+    if is_record_origin_protected(entity, record.get("record_origin")):
+        st.info("Source-managed canonical record: lifecycle actions are read-only.")
+        return
     action_cols = st.columns(4)
     if action_cols[0].button("Duplicate", key=f"database_management_duplicate_{entity.value.lower()}_{record['id']}"):
         _stage_command(

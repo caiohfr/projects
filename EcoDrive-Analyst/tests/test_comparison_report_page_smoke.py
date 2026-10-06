@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import sqlite3
 import tempfile
 import unittest
@@ -11,7 +12,6 @@ from streamlit.testing.v1 import AppTest
 from src.vde_app.comparison_report_viewmodels import PresentationState, SelectionState, TargetState
 from src.vde_core import db as db_module
 from src.vde_core.qa_mock_data import (
-    DEFAULT_QA_DB_PATH,
     build_fuelcons_seed_rows,
     seed_qa_database,
     seed_qa_fuelcons_mock_rows,
@@ -737,59 +737,34 @@ class ComparisonReportDbPathSelectorTests(unittest.TestCase):
         self.assertIn("Switch to default DB", button_labels)
         self.assertTrue(any(c.value.startswith("Runtime DB:") for c in app.caption))
 
-    def test_switch_to_qa_button_points_runtime_db_at_the_qa_fixture(self):
+    def test_switch_to_qa_button_points_runtime_db_at_the_canonical_qa_instance(self):
         app = AppTest.from_file(str(PAGE_PATH))
         app.run(timeout=90)
         qa_button = next(b for b in app.button if b.label == "Switch to QA data")
         qa_button.click().run(timeout=90)
         self.assertEqual(len(app.exception), 0)
-        self.assertEqual(db_module.current_db_path(), Path(DEFAULT_QA_DB_PATH))
+        self.assertEqual(db_module.current_db_path(), db_module.QA_DB_PATH)
         db_path_input = app.text_input(key="comparison_report_runtime_db_path")
-        self.assertEqual(db_path_input.value, str(DEFAULT_QA_DB_PATH))
+        self.assertEqual(db_path_input.value, str(db_module.QA_DB_PATH))
 
-    def test_switch_to_qa_button_also_seeds_the_fuelcons_mock_rows(self):
-        # seed_qa_database() alone leaves fuelcons_db empty (by design --
-        # most QA consumers control their own scenarios), so without also
-        # calling seed_qa_fuelcons_mock_rows() the Comparison Browse table
-        # would show "No scenarios match the current filters" even after
-        # switching to QA data. Regression test for that exact gap.
+    def test_switch_to_qa_button_does_not_reseed_or_mutate_canonical_qa(self):
+        with db_module.QA_DB_PATH.open("rb") as handle:
+            before = hashlib.file_digest(handle, "sha256").hexdigest()
         app = AppTest.from_file(str(PAGE_PATH))
         app.run(timeout=90)
         qa_button = next(b for b in app.button if b.label == "Switch to QA data")
         qa_button.click().run(timeout=90)
         self.assertEqual(len(app.exception), 0)
-        with sqlite3.connect(str(DEFAULT_QA_DB_PATH)) as con:
-            stored_ids = {row[0] for row in con.execute("SELECT id FROM fuelcons_db").fetchall()}
-        self.assertEqual(stored_ids, {row["id"] for row in build_fuelcons_seed_rows()})
-
-    def test_switch_to_qa_button_refreshes_the_fixture_even_when_it_already_exists_and_is_stale(self):
-        # The button always reseeds with overwrite=True rather than only
-        # when the file is missing -- a QA db file left over from an older
-        # version of the fixture code (fewer/different baselines) must not
-        # sit there stale forever, since seed_qa_fuelcons_mock_rows()
-        # assumes today's exact baselines exist (a stale file caused a
-        # FOREIGN KEY failure here once already). Simulate that staleness
-        # directly: seed once, then delete one of the baselines the mock
-        # FuelCons rows depend on before clicking the button.
-        seed_qa_database(DEFAULT_QA_DB_PATH, overwrite=True)
-        with sqlite3.connect(str(DEFAULT_QA_DB_PATH)) as con:
-            con.execute("DELETE FROM vde_db WHERE id=900008")
-            con.commit()
-        app = AppTest.from_file(str(PAGE_PATH))
-        app.run(timeout=90)
-        qa_button = next(b for b in app.button if b.label == "Switch to QA data")
-        qa_button.click().run(timeout=90)
-        self.assertEqual(len(app.exception), 0)
-        with sqlite3.connect(str(DEFAULT_QA_DB_PATH)) as con:
-            restored = con.execute("SELECT COUNT(*) FROM vde_db WHERE id=900008").fetchone()[0]
-        self.assertEqual(restored, 1)
+        with db_module.QA_DB_PATH.open("rb") as handle:
+            after = hashlib.file_digest(handle, "sha256").hexdigest()
+        self.assertEqual(after, before)
 
     def test_switch_to_default_button_restores_the_default_db_path(self):
         app = AppTest.from_file(str(PAGE_PATH))
         app.run(timeout=90)
         qa_button = next(b for b in app.button if b.label == "Switch to QA data")
         qa_button.click().run(timeout=90)
-        self.assertEqual(db_module.current_db_path(), Path(DEFAULT_QA_DB_PATH))
+        self.assertEqual(db_module.current_db_path(), db_module.QA_DB_PATH)
 
         default_button = next(b for b in app.button if b.label == "Switch to default DB")
         default_button.click().run(timeout=90)

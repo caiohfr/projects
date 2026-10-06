@@ -7,8 +7,15 @@ import json
 import sqlite3
 from typing import Any
 
+from src.vde_core import db as db_module
 from src.vde_core.component_repositories import COMPONENT_PROVENANCE_FIELDS, create_component
-from src.vde_core.db import DB_PATH, ensure_db, table_columns
+from src.vde_core.db import (
+    _table_column_names,
+    current_db_path,
+    ensure_db,
+    prepare_canonical_vde_insert,
+    table_columns,
+)
 from src.vde_core.services import autoresolve_test_mass
 from src.vde_core.vde_request_contract import VDE_REQUEST_SCHEMA_VERSION, is_blank
 
@@ -289,6 +296,15 @@ def _proposal_row_payload(
         "cycle_name": snapshot.get("cycle_name") or baseline_ref.get("cycle_name"),
         "cycle_source": snapshot.get("cycle_source") or baseline_ref.get("cycle_source") or "request_preview",
         "vde_id_parent": baseline_ref.get("selected_baseline_vde_id"),
+        "provenance_json": json.dumps(
+            {
+                "lineage_relation": "ENGINEERING_SCENARIO",
+                "parent_vde_id": baseline_ref.get("selected_baseline_vde_id"),
+                "created_by": "VDE_SETUP_REQUEST",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
         "baseline_A_N": dict(baseline_ref.get("initial_abc_total") or {}).get("A") or baseline_ref.get("A"),
         "baseline_B_N_per_kph": dict(baseline_ref.get("initial_abc_total") or {}).get("B") or baseline_ref.get("B"),
         "baseline_C_N_per_kph2": dict(baseline_ref.get("initial_abc_total") or {}).get("C") or baseline_ref.get("C"),
@@ -732,29 +748,40 @@ def build_vde_request_save_plan(
     return plan
 
 
-def _insert_row_in_transaction(con, row: dict) -> int:
+def _insert_row_in_transaction(con, row: dict, *, target: str | None = None) -> int:
     payload = autoresolve_test_mass(dict(row or {}))
+    target = target or db_module.VDE_WRITE_TABLE
+    if target == "vde":
+        payload = prepare_canonical_vde_insert(con, payload)
+    unknown = sorted(set(payload) - _table_column_names(con, target))
+    if unknown:
+        raise ValueError(f"Unsupported columns for {target}: {', '.join(unknown)}")
     columns = list(payload.keys())
     values = [payload[column] for column in columns]
     placeholders = ",".join("?" for _ in columns)
     cur = con.cursor()
-    cur.execute(f"INSERT INTO vde_db ({','.join(columns)}) VALUES ({placeholders})", values)
+    quoted_columns = ",".join(f'"{column}"' for column in columns)
+    cur.execute(f'INSERT INTO "{target}" ({quoted_columns}) VALUES ({placeholders})', values)
     return int(cur.lastrowid)
 
 
-def _update_row_in_transaction(con, row_id: int, updates: dict) -> None:
+def _update_row_in_transaction(con, row_id: int, updates: dict, *, target: str | None = None) -> None:
     payload = autoresolve_test_mass(dict(updates or {}))
     payload["updated_at"] = payload.get("updated_at") or None
+    target = target or db_module.VDE_WRITE_TABLE
+    unknown = sorted(set(payload) - _table_column_names(con, target))
+    if unknown:
+        raise ValueError(f"Unsupported columns for {target}: {', '.join(unknown)}")
     columns = [column for column in payload.keys()]
     values = [payload[column] for column in columns]
-    set_clause = ", ".join(f"{column}=?" for column in columns)
-    con.execute(f"UPDATE vde_db SET {set_clause} WHERE id=?", [*values, int(row_id)])
+    set_clause = ", ".join(f'"{column}"=?' for column in columns)
+    con.execute(f'UPDATE "{target}" SET {set_clause} WHERE id=?', [*values, int(row_id)])
 
 
 def _default_services() -> dict:
     return {
         "ensure_db": ensure_db,
-        "connect_db": lambda: sqlite3.connect(str(DB_PATH), timeout=30),
+        "connect_db": lambda: sqlite3.connect(str(current_db_path()), timeout=30),
         "create_component": create_component,
         "table_columns": table_columns,
     }
@@ -779,6 +806,12 @@ def execute_vde_request_save_plan(save_plan, repositories=None, services=None) -
     service_map = _default_services()
     service_map.update(dict(services or {}))
     service_map.update(dict(repositories or {}))
+    # Injected DB services implement the historical test/integration contract,
+    # whose writable object is vde_db. Normal application execution always uses
+    # the explicit runtime-mode target from db.py.
+    write_target = service_map.get("vde_write_table")
+    if not write_target:
+        write_target = "vde_db" if services and "connect_db" in services else db_module.VDE_WRITE_TABLE
 
     try:
         service_map["ensure_db"]()
@@ -801,7 +834,7 @@ def execute_vde_request_save_plan(save_plan, repositories=None, services=None) -
                     if db_field and db_field in supported_columns:
                         update_payload[db_field] = item.get("correction")
                 if update_payload:
-                    _update_row_in_transaction(con, int(baseline_id), update_payload)
+                    _update_row_in_transaction(con, int(baseline_id), update_payload, target=write_target)
                     result["baseline_updates"].append(
                         {
                             "baseline_id": int(baseline_id),
@@ -812,7 +845,7 @@ def execute_vde_request_save_plan(save_plan, repositories=None, services=None) -
 
             for proposal_row in list(plan.get("proposals_to_save") or []):
                 row_payload = {key: value for key, value in dict(proposal_row.get("row_payload") or {}).items() if key in supported_columns}
-                inserted_id = _insert_row_in_transaction(con, row_payload)
+                inserted_id = _insert_row_in_transaction(con, row_payload, target=write_target)
                 result["saved_proposals"].append(
                     {
                         "proposal_id": proposal_row.get("proposal_id"),

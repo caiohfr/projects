@@ -24,6 +24,8 @@ from .services import autoresolve_test_mass
 # PT: Caminho do arquivo do banco. Garantimos que a pasta "data/db" exista.
 # -----------------------------------------------------------------------------
 DEFAULT_DB_PATH = Path("data/db/eco_drive.db")
+QA_DB_PATH = Path("data/db/eco_drive_qa.db")
+STAGING_DB_PATH = Path("data/db/staging/eco_drive_canonical_candidate.db")
 DB_PATH_ENV_VAR = "ECO_DRIVE_DB_PATH"
 
 
@@ -38,12 +40,24 @@ def _db_path_from_env() -> Path:
 
 
 DB_PATH = _db_path_from_env()
+VDE_WRITE_TABLE = "vde"
+FUELCONS_WRITE_TABLE = "fuelcons"
+LEGACY_FIXTURE_MODE = False
+
+
+def _set_legacy_fixture_mode(enabled: bool) -> None:
+    """Select the historical table contract only for explicit test fixtures."""
+    global VDE_WRITE_TABLE, FUELCONS_WRITE_TABLE, LEGACY_FIXTURE_MODE
+    LEGACY_FIXTURE_MODE = bool(enabled)
+    VDE_WRITE_TABLE = "vde_db" if LEGACY_FIXTURE_MODE else "vde"
+    FUELCONS_WRITE_TABLE = "fuelcons_db" if LEGACY_FIXTURE_MODE else "fuelcons"
 
 
 def configure_db_path(path_like=None) -> Path:
-    """Configure the active SQLite path used by repository helpers."""
+    """Select a canonical SQLite instance without inferring its architecture."""
     global DB_PATH
     DB_PATH = _normalize_db_path(path_like if path_like not in (None, "") else _db_path_from_env())
+    _set_legacy_fixture_mode(False)
     return DB_PATH
 
 
@@ -52,13 +66,22 @@ def current_db_path() -> Path:
 
 
 @contextmanager
-def using_db_path(path_like):
+def using_db_path(path_like, *, legacy_fixture: bool = True):
+    """Temporarily select a DB; legacy mode exists only for old test fixtures.
+
+    Normal application/runtime selection must use ``configure_db_path`` and is
+    always canonical.  The default keeps the long-standing isolated fixture
+    helper compatible while making that exception local to this context.
+    """
     original = Path(DB_PATH)
+    original_legacy_fixture = LEGACY_FIXTURE_MODE
     configure_db_path(path_like)
+    _set_legacy_fixture_mode(legacy_fixture)
     try:
         yield Path(DB_PATH)
     finally:
         configure_db_path(original)
+        _set_legacy_fixture_mode(original_legacy_fixture)
 
 
 def _con():
@@ -71,6 +94,70 @@ def _con():
     # Muito importante para REFERENCES ... ON DELETE CASCADE funcionar no SQLite
     con.execute("PRAGMA foreign_keys = ON")
     return con
+
+
+def _table_column_names(con, table: str) -> set[str]:
+    return {str(row[1]) for row in con.execute(f'PRAGMA table_info("{table}")').fetchall()}
+
+
+def _validated_write_payload(con, table: str, payload: dict) -> dict:
+    allowed = _table_column_names(con, table)
+    unknown = sorted(set(payload) - allowed)
+    if unknown:
+        raise ValueError(f"Unsupported columns for {table}: {', '.join(unknown)}")
+    return dict(payload)
+
+
+def prepare_canonical_vde_insert(con, payload: dict) -> dict:
+    """Attach canonical configuration ownership to a new VDE snapshot.
+
+    Existing VDE Setup create flows derive from a selected baseline.  The
+    baseline's stable Vehicle Configuration is therefore the deterministic
+    owner for the new persisted state.  Brand-new configurations must be
+    created by an explicit configuration workflow rather than guessed here.
+    """
+    row = dict(payload or {})
+    if LEGACY_FIXTURE_MODE:
+        return row
+    parent_id = row.get("vde_id_parent")
+    if row.get("vehicle_configuration_id") not in (None, ""):
+        if row.get("source_semantic_status") in (None, "") and parent_id in (None, ""):
+            raise ValueError(
+                "Canonical VDE insert with an explicit vehicle_configuration_id "
+                "also requires source_semantic_status."
+            )
+        if parent_id in (None, ""):
+            return row
+    if parent_id in (None, ""):
+        raise ValueError(
+            "Canonical VDE insert requires vehicle_configuration_id or a "
+            "deterministic vde_id_parent baseline."
+        )
+    parent = con.execute(
+        "SELECT vehicle_configuration_id,source_semantic_status FROM vde WHERE id=?",
+        (int(parent_id),),
+    ).fetchone()
+    if parent is None or parent[0] in (None, ""):
+        raise ValueError(f"Canonical parent VDE not found: {parent_id}")
+    if row.get("vehicle_configuration_id") in (None, ""):
+        row["vehicle_configuration_id"] = str(parent[0])
+    if row.get("source_semantic_status") in (None, ""):
+        row["source_semantic_status"] = str(parent[1] or "UNRESOLVED")
+    return row
+
+
+def prepare_canonical_fuelcons_write(con, payload: dict) -> dict:
+    """Normalize existing application labels to the frozen canonical enum."""
+    row = dict(payload or {})
+    if LEGACY_FIXTURE_MODE:
+        return row
+    energy_basis = str(row.get("energy_basis") or "").strip().upper()
+    if energy_basis == "MANUAL_VALUE":
+        row["energy_basis"] = "SOURCE_DECLARED"
+    electrification = str(row.get("electrification") or "").strip().upper()
+    if electrification == "NONE":
+        row["electrification"] = "NONE"
+    return row
 
 # --- Lightweight, idempotent migrations -------------------------------------
 def ensure_columns(table: str, spec: dict[str, str]) -> list[str]:
@@ -316,6 +403,10 @@ def ensure_db():
     EN: Create tables and indexes if they do not exist.
     PT: Cria tabelas e Ã­ndices caso nÃ£o existam.
     """
+    # Normal runtime files are canonical and ETL-owned. The historical schema
+    # builder remains available only inside explicit isolated fixture contexts.
+    if not LEGACY_FIXTURE_MODE:
+        return
     with _con() as con:
         cur = con.cursor()
 
@@ -630,13 +721,17 @@ def insert_vde(row: dict) -> int:
         VocÃª pode passar sÃ³ as colunas que tiver; o resto vira NULL/default.
     """
     ensure_db()
-    row = autoresolve_test_mass(row)  # << NEW: autofill mass if needed
-    cols = list(row.keys())
-    vals = [row[c] for c in cols]
-    placeholders = ",".join(["?"] * len(cols))
     with _con() as con:
+        target = VDE_WRITE_TABLE
+        row = autoresolve_test_mass(dict(row))  # << NEW: autofill mass if needed
+        row = prepare_canonical_vde_insert(con, row)
+        row = _validated_write_payload(con, target, row)
+        cols = list(row.keys())
+        vals = [row[c] for c in cols]
+        placeholders = ",".join(["?"] * len(cols))
         cur = con.cursor()
-        cur.execute(f"INSERT INTO vde_db ({','.join(cols)}) VALUES ({placeholders})", vals)
+        quoted_cols = ",".join(f'"{column}"' for column in cols)
+        cur.execute(f'INSERT INTO "{target}" ({quoted_cols}) VALUES ({placeholders})', vals)
         return cur.lastrowid
 
 
@@ -653,14 +748,15 @@ def update_vde(vde_id: int, updates: dict) -> None:
     updates["updated_at"] = datetime.utcnow().isoformat()
     updates = autoresolve_test_mass(updates)  # << NEW: autofill mass if needed
 
-    # Build "SET col1=?, col2=?, ..." and value list
-    # Monta "SET col1=?, col2=?, ..." e lista de valores
-    set_clause = ", ".join([f"{k}=?" for k in updates.keys()])
-    vals = list(updates.values()) + [vde_id]
-
     with _con() as con:
+        target = VDE_WRITE_TABLE
+        updates = _validated_write_payload(con, target, updates)
+        # Build "SET col1=?, col2=?, ..." and value list
+        # Monta "SET col1=?, col2=?, ..." e lista de valores
+        set_clause = ", ".join([f'"{k}"=?' for k in updates.keys()])
+        vals = list(updates.values()) + [vde_id]
         cur = con.cursor()
-        cur.execute(f"UPDATE vde_db SET {set_clause} WHERE id=?", vals)
+        cur.execute(f'UPDATE "{target}" SET {set_clause} WHERE id=?', vals)
 
 
 def insert_fuelcons(row: dict) -> int:
@@ -669,14 +765,16 @@ def insert_fuelcons(row: dict) -> int:
     PT: Insere uma linha em fuelcons_db. Precisa ter vde_id e electrification.
     """
     ensure_db()
-    cols = list(row.keys())
-    print(cols)
-    vals = [row[c] for c in cols]
-    print(vals)
-    placeholders = ",".join(["?"] * len(cols))
     with _con() as con:
+        target = FUELCONS_WRITE_TABLE
+        row = prepare_canonical_fuelcons_write(con, row)
+        row = _validated_write_payload(con, target, row)
+        cols = list(row.keys())
+        vals = [row[c] for c in cols]
+        placeholders = ",".join(["?"] * len(cols))
         cur = con.cursor()
-        cur.execute(f"INSERT INTO fuelcons_db ({','.join(cols)}) VALUES ({placeholders})", vals)
+        quoted_cols = ",".join(f'"{column}"' for column in cols)
+        cur.execute(f'INSERT INTO "{target}" ({quoted_cols}) VALUES ({placeholders})', vals)
         return cur.lastrowid
 
 
@@ -800,11 +898,11 @@ def delete_row(table: str, row_id: int) -> int:
     - row_id: integer id
     """
     ensure_db()
-    if table not in {"vde_db", "fuelcons_db", "tire_roadload_db"}:
+    if table not in {"vde", "vde_db", "fuelcons", "fuelcons_db", "tire_roadload_db"}:
         raise ValueError("Table not allowed.")
     rid = int(row_id)
     with _con() as con:
-        cur = con.execute(f"DELETE FROM {table} WHERE id=?", (rid,))
+        cur = con.execute(f'DELETE FROM "{table}" WHERE id=?', (rid,))
         return int(cur.rowcount or 0)
 
 def update_row(table: str, row_id: int, updates: dict) -> None:
@@ -813,12 +911,16 @@ def update_row(table: str, row_id: int, updates: dict) -> None:
     Exemplo: update_row("vde_db", 5, {"make": "Fiat", "year": 2025})
     """
     ensure_db()
-    if table not in {"vde_db", "fuelcons_db", "tire_roadload_db"}:
+    if table not in {"vde", "vde_db", "fuelcons", "fuelcons_db", "tire_roadload_db"}:
         raise ValueError("Tabela nÃ£o permitida.")
-    set_clause = ", ".join([f"{k}=?" for k in updates.keys()])
-    vals = list(updates.values()) + [row_id]
     with _con() as con:
-        con.execute(f"UPDATE {table} SET {set_clause} WHERE id=?", vals)
+        updates = dict(updates)
+        if table == FUELCONS_WRITE_TABLE:
+            updates = prepare_canonical_fuelcons_write(con, updates)
+        updates = _validated_write_payload(con, table, updates)
+        set_clause = ", ".join([f'"{k}"=?' for k in updates.keys()])
+        vals = list(updates.values()) + [row_id]
+        con.execute(f'UPDATE "{table}" SET {set_clause} WHERE id=?', vals)
 
 # --- Dangerous helpers: truncate or delete the DB file -----------------------
 import os
@@ -829,11 +931,13 @@ from typing import Union
 
 PathLike = Union[str, os.PathLike]
 
-def truncate_db(db_path: PathLike) -> None:
+def truncate_db(db_path: PathLike, *, legacy_fixture: bool = False) -> None:
     """
     Apaga TODAS as linhas das tabelas (mantÃ©m o arquivo .db), zera AUTOINCREMENT
     e executa VACUUM. Requer que o schema jÃ¡ exista.
     """
+    if not legacy_fixture:
+        raise RuntimeError("Legacy truncate is not supported for a canonical runtime database.")
     db_path = Path(db_path)
     with sqlite3.connect(str(db_path), timeout=30) as con:
         cur = con.cursor()

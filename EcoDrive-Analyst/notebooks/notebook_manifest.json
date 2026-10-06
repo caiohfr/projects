@@ -1,0 +1,193 @@
+{
+  "program": "Sprint 12F Engineering Notebook Program",
+  "version": "12F-mvp-v1",
+  "repo_root_resolution": "Search Path.cwd() and its parents for AGENTS.md plus etl/",
+  "production_etl_authoritative": true,
+  "runtime_database_writable": false,
+  "notebooks": [
+    {
+      "order": 1,
+      "id": "12F-01",
+      "path": "notebooks/12F_01_epa_ingest_and_grain.ipynb",
+      "question": "What exactly is in the EPA source, and what does one row represent?",
+      "status": "MVP_EXECUTABLE",
+      "inputs": [
+        "etl/data/raw/epa_testcar/epa_testcar_2026_raw.xlsx"
+      ],
+      "outputs": [],
+      "depends_on": [],
+      "live_coding_slice": "Load the EPA workbook, inspect shape and years, then compare source-row, Make+Model+Year, test, and configuration counts with pandas."
+    },
+    {
+      "order": 2,
+      "id": "12F-02",
+      "path": "notebooks/12F_02_epa_nonbev_eda.ipynb",
+      "question": "What patterns and quality issues exist in conventional EPA results?",
+      "status": "MVP_EXECUTABLE",
+      "inputs": [
+        "etl/data/raw/epa_testcar/epa_testcar_2026_raw.xlsx"
+      ],
+      "outputs": [],
+      "depends_on": [
+        "12F-01"
+      ],
+      "live_coding_slice": "Filter non-BEV rows, group fuel and CO2 results by model year, and plot mass against consumption."
+    },
+    {
+      "order": 3,
+      "id": "12F-03",
+      "path": "notebooks/12F_03_epa_bev_energy_eda.ipynb",
+      "question": "Can I trust the electric-consumption values?",
+      "status": "MVP_EXECUTABLE",
+      "inputs": [
+        "etl/data/processed/sprint_12e3_electric_unit_audit/electric_energy_sanity_dataset.csv"
+      ],
+      "outputs": [],
+      "depends_on": [
+        "12F-01",
+        "Sprint 12E.3A"
+      ],
+      "live_coding_slice": "Filter resolved Electricity records and visibly convert kWh/100mi to Wh/km before inspecting outliers."
+    },
+    {
+      "order": 4,
+      "id": "12F-04",
+      "path": "notebooks/12F_04_wltp_jrc_ingest_and_grain.ipynb",
+      "question": "What does the WLTP/JRC source represent?",
+      "status": "MVP_EXECUTABLE",
+      "inputs": [
+        "etl/data/raw/wltp_jrc/Data_PV_fleet_2021_EU_PYCSIS.xlsx"
+      ],
+      "outputs": [],
+      "depends_on": [],
+      "live_coding_slice": "Load JRC, count BEV/non-BEV records, and inspect mass, f0/f1/f2, gearbox, tire, and declared-result coverage."
+    },
+    {
+      "order": 5,
+      "id": "12F-05",
+      "path": "notebooks/12F_05_wltp_jrc_nonbev_eda.ipynb",
+      "question": "What can the conventional JRC population teach us?",
+      "status": "MVP_EXECUTABLE",
+      "inputs": [
+        "etl/data/raw/wltp_jrc/Data_PV_fleet_2021_EU_PYCSIS.xlsx"
+      ],
+      "outputs": [],
+      "depends_on": [
+        "12F-04"
+      ],
+      "live_coding_slice": "Filter non-BEV rows and compare mass and roadload coefficients against declared CO2."
+    },
+    {
+      "order": 6,
+      "id": "12F-06",
+      "path": "notebooks/12F_06_wltp_jrc_bev_eda.ipynb",
+      "question": "How does the electric JRC population behave?",
+      "status": "MVP_EXECUTABLE",
+      "inputs": [
+        "etl/data/raw/wltp_jrc/Data_PV_fleet_2021_EU_PYCSIS.xlsx"
+      ],
+      "outputs": [],
+      "depends_on": [
+        "12F-04"
+      ],
+      "live_coding_slice": "Filter electric JRC records and compare explicit Wh/km against mass and f0/f1/f2."
+    },
+    {
+      "order": 7,
+      "id": "12F-07",
+      "path": "notebooks/12F_07_vehicle_demand_model.ipynb",
+      "question": "How do mass and roadload create Vehicle Demanded Energy?",
+      "status": "MVP_EXECUTABLE",
+      "inputs": [
+        "etl/data/staging/sprint_12e2_epa_fuelcons/eco_drive_canonical_epa_fuelcons.db"
+      ],
+      "outputs": [],
+      "depends_on": [
+        "12F-02",
+        "12F-05"
+      ],
+      "live_coding_slice": "Calculate roadload force over a small speed series, integrate energy, and compare with persisted VDE."
+    },
+    {
+      "order": 8,
+      "id": "12F-08",
+      "path": "notebooks/12F_08_fuelcons_modelling.ipynb",
+      "question": "How does test evidence become a comparable FuelCons record?",
+      "status": "MVP_EXECUTABLE",
+      "inputs": [
+        "etl/data/staging/sprint_12e2_epa_fuelcons/eco_drive_canonical_epa_fuelcons.db"
+      ],
+      "outputs": [],
+      "depends_on": [
+        "12F-07"
+      ],
+      "live_coding_slice": "Join RUN adoption, calculate an eligible EPA 55/45 result, and compare it with canonical FuelCons."
+    },
+    {
+      "order": 9,
+      "id": "12F-09",
+      "path": "notebooks/12F_09_cross_legislation_benchmark.ipynb",
+      "question": "What can EPA and WLTP compare without hiding method differences?",
+      "status": "MVP_EXECUTABLE",
+      "inputs": [
+        "etl/data/processed/sprint_12e3_electric_unit_audit/electric_energy_sanity_dataset.csv",
+        "etl/data/raw/wltp_jrc/Data_PV_fleet_2021_EU_PYCSIS.xlsx"
+      ],
+      "outputs": [],
+      "depends_on": [
+        "12F-03",
+        "12F-06",
+        "12F-08"
+      ],
+      "live_coding_slice": "Build a program-aware grouped comparison while keeping EPA and WLTP bases explicit."
+    },
+    {
+      "order": 10,
+      "id": "12F-10",
+      "path": "notebooks/12F_10_canonical_dataset_build.ipynb",
+      "question": "How do cleaned analytical tables become canonical records?",
+      "status": "MVP_EXECUTABLE",
+      "inputs": [
+        "etl/data/staging/sprint_12e2_epa_fuelcons/eco_drive_canonical_epa_fuelcons.db"
+      ],
+      "outputs": [
+        "notebooks/_data/12f10_program.csv",
+        "notebooks/_data/12f10_vehicle_configuration.csv",
+        "notebooks/_data/12f10_vde.csv",
+        "notebooks/_data/12f10_run.csv",
+        "notebooks/_data/12f10_fuelcons.csv",
+        "notebooks/_data/12f10_fuelcons_run_adoption.csv"
+      ],
+      "depends_on": [
+        "12F-01",
+        "12F-04",
+        "12F-07",
+        "12F-08"
+      ],
+      "live_coding_slice": "Create one canonical table with stable identifiers, provenance, duplicate checks, and explicit NULLs."
+    },
+    {
+      "order": 11,
+      "id": "12F-11",
+      "path": "notebooks/12F_11_database_ingestion.ipynb",
+      "question": "How is the canonical dataset loaded safely into a relational database?",
+      "status": "MVP_EXECUTABLE",
+      "inputs": [
+        "etl/schema/canonical_schema_v1.sql",
+        "notebooks/_data/12f10_program.csv",
+        "notebooks/_data/12f10_vehicle_configuration.csv",
+        "notebooks/_data/12f10_vde.csv",
+        "notebooks/_data/12f10_run.csv",
+        "notebooks/_data/12f10_fuelcons.csv",
+        "notebooks/_data/12f10_fuelcons_run_adoption.csv"
+      ],
+      "outputs": [
+        "notebooks/_data/12f11_canonical_notebook_demo.db"
+      ],
+      "depends_on": [
+        "12F-10"
+      ],
+      "live_coding_slice": "Create a disposable SQLite database, insert one FK-safe table sequence, run foreign-key checks, and inspect a join."
+    }
+  ]
+}

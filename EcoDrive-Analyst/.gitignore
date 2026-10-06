@@ -36,3 +36,28 @@ Thumbs.db
 *.rar
 *.tar
 *.tar.gz
+
+# ============================================================
+# Sprint 12 — Engineering ETL local datasets
+# ============================================================
+
+# Public/raw datasets are reproducible and must remain local
+etl/data/raw/**
+
+# Large/reference source documents
+etl/data/reference/**/*.xlsx
+etl/data/reference/**/*.xls
+etl/data/reference/**/*.pdf
+etl/data/reference/**/*.zip
+
+# Certification/source PDFs and generated retrieval corpus
+etl/data/evidence/certification_pdfs/**
+etl/data/evidence/markdown/**
+
+# Generated ETL outputs
+etl/data/processed/**
+etl/data/staging/**
+
+# Allow lightweight documentation/placeholders
+!etl/data/**/README.md
+!etl/data/**/.gitkeep

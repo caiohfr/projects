@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.vde_core import db as db_module
 from src.vde_core.db import delete_row, fetchall, insert_fuelcons, update_row
 
 
@@ -151,8 +152,8 @@ def insert_fuelcons_row(payload: dict) -> int:
 
 
 def update_fuelcons_by_id(row_id: int, payload: dict) -> None:
-    update_row("fuelcons_db", int(row_id), dict(payload))
+    update_row(db_module.FUELCONS_WRITE_TABLE, int(row_id), dict(payload))
 
 
 def delete_fuelcons_by_id(row_id: int) -> int:
-    return int(delete_row("fuelcons_db", int(row_id)))
+    return int(delete_row(db_module.FUELCONS_WRITE_TABLE, int(row_id)))

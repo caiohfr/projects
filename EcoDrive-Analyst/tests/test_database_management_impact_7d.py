@@ -383,6 +383,7 @@ class DatabaseManagementImpact7DTests(unittest.TestCase):
                     "trans_B_coef_Npkph": component["trans_B"],
                     "trans_C_coef_Npkph2": component["trans_C"],
                     "transmission_loss_pct": component["loss_pct"],
+                    "recalculate_total_abc": "Yes",
                 }
         state = apply_v22_proposal_matrix(state, matrix)
         state = apply_v22_domain_inputs(state, "transmission", inputs)

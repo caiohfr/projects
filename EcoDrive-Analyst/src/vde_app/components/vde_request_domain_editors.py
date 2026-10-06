@@ -19,6 +19,7 @@ EPA_INERTIA_CLASSES = [
 TWC_SHIFT_OPTIONS = ["-3", "-2", "-1", "+1", "+2", "+3", "Select target"]
 CURB_POSITION_OPTIONS = ["Top", "Mid", "Bottom"]
 TRANSMISSION_APPLICATION_MODE_OPTIONS = ["APPLY_DELTA_TO_TOTAL", "KEEP_TOTAL_FIXED"]
+RECALCULATE_TOTAL_ABC_OPTIONS = ["No", "Yes"]
 NOT_USED_PROPOSAL_TYPES = set(EXPLICIT_NOT_USED_PROPOSAL_TYPES)
 
 
@@ -74,6 +75,10 @@ FIELD_META = {
     "tire_improvement_pct": {"label": "Tire improvement", "unit": "%", "kind": "number", "widget": "number", "step": 0.1, "format": "%.1f"},
     "tire_review_status": {"label": "Tire status", "unit": "-", "kind": "text", "widget": "readonly"},
     "change_mode": {"label": "Change mode", "unit": "-", "kind": "select", "widget": "select", "options": ["Absolute ABC", "Delta ABC"]},
+    "recalculate_total_abc": {"label": "Recalculate TOTAL ABC?", "unit": "-", "kind": "select", "widget": "select", "options": RECALCULATE_TOTAL_ABC_OPTIONS},
+    "baseline_component_A": {"label": "Baseline component A", "unit": "N", "kind": "number", "widget": "number", "step": 0.1, "format": "%.3f"},
+    "baseline_component_B": {"label": "Baseline component B", "unit": "N/kph", "kind": "number", "widget": "number", "step": 0.0001, "format": "%.5f"},
+    "baseline_component_C": {"label": "Baseline component C", "unit": "N/kph2", "kind": "number", "widget": "number", "step": 0.000001, "format": "%.6f"},
     "transmission_component_db_id": {"label": "Transmission ID", "unit": "-", "kind": "text", "widget": "lookup"},
     "transmission_vde_db_id": {"label": "Transmission VDE ID", "unit": "-", "kind": "text", "widget": "readonly"},
     "trans_A_coef_N": {"label": "A", "unit": "N", "kind": "number", "widget": "number", "step": 0.1, "format": "%.3f"},
@@ -135,17 +140,17 @@ PROPOSAL_FIELDS = {
     ("tire", "TIRE_IMPROVEMENT_PCT"): ["tire_improvement_pct", "rrc_N_per_kN", "front_pressure_psi", "rear_pressure_psi", "tire_load_mass_used_kg", "tire_load_mass_basis", "tire_review_status"],
     ("tire", "TIRE_SMERF_RRC_CHANGE"): ["target_rrc_N_per_kN", "front_pressure_psi", "rear_pressure_psi", "rrc_N_per_kN", "tire_load_mass_used_kg", "tire_load_mass_basis", "tire_review_status"],
     ("tire", "TIRE_METADATA_ONLY"): ["tire_db_id", "tire_source_vde_id", "tire_code", "rrc_N_per_kN", "front_pressure_psi", "rear_pressure_psi"],
-    ("transmission", "TRANS_METADATA_ONLY"): ["transmission_application_mode", "transmission_component_db_id", "transmission_vde_db_id", "trans_A_coef_N", "trans_B_coef_Npkph", "trans_C_coef_Npkph2"],
+    ("transmission", "TRANS_METADATA_ONLY"): ["recalculate_total_abc", "baseline_component_A", "baseline_component_B", "baseline_component_C", "transmission_component_db_id", "transmission_vde_db_id", "trans_A_coef_N", "trans_B_coef_Npkph", "trans_C_coef_Npkph2"],
     ("transmission", "UPDATE_TRANS_DRAG_ABC"): ["transmission_application_mode", "trans_A_coef_N", "trans_B_coef_Npkph", "trans_C_coef_Npkph2", "delta_A", "delta_B", "delta_C", "new_trans_A", "new_trans_B", "new_trans_C"],
     ("transmission", "TRANS_LOSS_PCT"): ["transmission_loss_pct", "trans_A_coef_N", "trans_B_coef_Npkph", "trans_C_coef_Npkph2"],
     ("transmission", "TRANS_LOSS_NOT_AVAILABLE"): ["transmission_application_mode", "trans_A_coef_N", "trans_B_coef_Npkph", "trans_C_coef_Npkph2"],
-    ("brake", "BRAKE_METADATA_ONLY"): ["brake_component_db_id", "brake_vde_db_id", "brake_A_coef_N", "brake_B_Npkph", "brake_C_coef_Npkph2"],
+    ("brake", "BRAKE_METADATA_ONLY"): ["recalculate_total_abc", "baseline_component_A", "baseline_component_B", "baseline_component_C", "brake_component_db_id", "brake_vde_db_id", "brake_A_coef_N", "brake_B_Npkph", "brake_C_coef_Npkph2"],
     ("brake", "BRAKE_DRAG_CHANGE"): ["brake_A_coef_N", "brake_B_Npkph", "brake_C_coef_Npkph2", "delta_A", "delta_B", "delta_C", "residual_torque_front_Nm", "residual_torque_rear_Nm", "residual_torque_total_Nm", "wheel_radius_m", "brake_drag_force_N"],
     ("brake", "BRAKE_NOT_USED"): ["brake_A_coef_N", "brake_B_Npkph", "brake_C_coef_Npkph2"],
-    ("axle_hubs", "AXLE_HUB_METADATA_ONLY"): ["axle_hubs_component_db_id", "axle_hubs_vde_db_id", "axle_hub_A", "axle_hub_B", "axle_hub_C"],
+    ("axle_hubs", "AXLE_HUB_METADATA_ONLY"): ["recalculate_total_abc", "baseline_component_A", "baseline_component_B", "baseline_component_C", "axle_hubs_component_db_id", "axle_hubs_vde_db_id", "axle_hub_A", "axle_hub_B", "axle_hub_C"],
     ("axle_hubs", "AXLE_HUB_DRAG_CHANGE"): ["axle_hub_A", "axle_hub_B", "axle_hub_C", "delta_A", "delta_B", "delta_C"],
     ("axle_hubs", "AXLE_HUB_NOT_USED"): ["axle_hub_A", "axle_hub_B", "axle_hub_C"],
-    ("parasitic", "PARASITIC_METADATA_ONLY"): ["parasitic_component_db_id", "parasitic_vde_db_id", "parasitic_A_coef_N", "parasitic_B_Npkph", "parasitic_C_coef_Npkph2"],
+    ("parasitic", "PARASITIC_METADATA_ONLY"): ["recalculate_total_abc", "baseline_component_A", "baseline_component_B", "baseline_component_C", "parasitic_component_db_id", "parasitic_vde_db_id", "parasitic_A_coef_N", "parasitic_B_Npkph", "parasitic_C_coef_Npkph2"],
     ("parasitic", "PARASITIC_LOSS_CHANGE"): ["parasitic_A_coef_N", "parasitic_B_Npkph", "parasitic_C_coef_Npkph2", "delta_A", "delta_B", "delta_C"],
     ("parasitic", "PARASITIC_NOT_USED"): ["parasitic_A_coef_N", "parasitic_B_Npkph", "parasitic_C_coef_Npkph2"],
 }
@@ -271,10 +276,13 @@ def sanitize_domain_inputs(domain: str, proposal_type: str, selection_mode: str,
             cleaned["transmission_application_mode"] = "KEEP_TOTAL_FIXED"
             cleaned["percent_basis"] = "SOURCE_ABC_TOTAL"
             cleaned["rule_version"] = "COASTDOWN_SHARE_V1"
-        else:
+        elif proposal_type != "TRANS_METADATA_ONLY":
             cleaned["transmission_application_mode"] = _normalize_transmission_application_mode(
                 cleaned.get("transmission_application_mode") or dict(inputs or {}).get("transmission_application_mode")
             )
+    if proposal_type in {"TRANS_METADATA_ONLY", "BRAKE_METADATA_ONLY", "AXLE_HUB_METADATA_ONLY", "PARASITIC_METADATA_ONLY"}:
+        requested = str(cleaned.get("recalculate_total_abc") or dict(inputs or {}).get("recalculate_total_abc") or "No").strip().lower()
+        cleaned["recalculate_total_abc"] = "Yes" if requested in {"yes", "true", "1"} else "No"
     return cleaned
 
 

@@ -49,6 +49,9 @@ def compact_baseline_context(state: dict) -> dict:
     return {
         "baseline_source_type": effective.get("baseline_source_type"),
         "selected_baseline_vde_id": effective.get("selected_baseline_vde_id"),
+        "associated_component_resolutions": deepcopy(
+            list(effective.get("associated_component_resolutions") or [])
+        ),
         "legislation": effective.get("legislation"),
         "category": effective.get("category"),
         "electrification": effective.get("electrification"),

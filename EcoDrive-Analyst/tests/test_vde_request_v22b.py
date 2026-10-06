@@ -534,6 +534,18 @@ class VdeRequestV22BTests(unittest.TestCase):
         self.assertEqual(trans_inputs["transmission_component_db_id"], "TRANS-MOCK-001")
         self.assertEqual(trans_inputs["transmission_loss_pct"], 2.5)
 
+    def test_component_lookup_sheet_asks_recalculation_and_baseline_question(self):
+        rows = vde_request_compact._component_simple_sheet_rows(
+            "transmission",
+            [{"proposal_type": "TRANS_METADATA_ONLY", "component_mode": "LOOKUP"}],
+        )
+
+        self.assertIn("recalculate_total_abc", rows)
+        self.assertIn("baseline_component_A", rows)
+        self.assertIn("baseline_component_B", rows)
+        self.assertIn("baseline_component_C", rows)
+        self.assertNotIn("transmission_application_mode", rows)
+
     def test_lookup_use_selected_row_only_populates_widgets_without_apply(self):
         state = self._state()
         state = apply_v22_proposal_matrix(state, [{"proposal_id": "requested_1", "walk_from": "baseline", "transmission": "Lookup from DB"}])

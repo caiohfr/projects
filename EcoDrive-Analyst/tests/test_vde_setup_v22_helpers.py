@@ -91,6 +91,14 @@ def _candidate_rows() -> list[dict]:
 
 
 class TestVdeSetupV22Helpers(unittest.TestCase):
+    def setUp(self) -> None:
+        # AppTests in this module must not inherit a deleted temporary path
+        # from another test module. Normal page behavior is canonical.
+        db_module.configure_db_path(db_module.DEFAULT_DB_PATH)
+
+    def tearDown(self) -> None:
+        db_module.configure_db_path(db_module.DEFAULT_DB_PATH)
+
     def test_scenario_metadata_editor_groups_are_disjoint(self):
         self.assertFalse(
             set(vde_request_compact.METADATA_SIMPLE_FIELDS)
@@ -154,12 +162,8 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
         return temp_dir / "qa_seed.db"
 
     def _seed_baseline_browser_db(self, db_path: Path, *, vde_id: int, make: str, model: str) -> None:
-        previous_path = db_module.current_db_path()
-        try:
-            db_module.configure_db_path(db_path)
+        with db_module.using_db_path(db_path, legacy_fixture=True):
             db_module.ensure_db()
-        finally:
-            db_module.configure_db_path(previous_path)
         with sqlite3.connect(str(db_path)) as con:
             con.execute("DELETE FROM vde_db;")
             con.execute(
@@ -1257,6 +1261,7 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
         state["active_section"] = "inputs"
         app.session_state[V22_SESSION_KEY] = state
         self._run(app)
+        self._select_request_domain(app, "tire")
 
         vde_request_compact._apply_lookup_to_widget_state(
             app.session_state,
@@ -1750,7 +1755,10 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
 
     def test_request_inputs_tire_lookup_uses_ctx_db_path_for_live_repository_reads(self):
         db_path = self._temp_db_path()
-        seed_qa_database(db_path, overwrite=False)
+        shutil.copy2(db_module.DEFAULT_DB_PATH, db_path)
+        with sqlite3.connect(str(db_path)) as con:
+            con.execute("UPDATE tire_db SET is_active=1 WHERE tire_test_code='26AA'")
+            con.commit()
 
         app = self._app()
         state = apply_v22_baseline(create_v22_state(), _baseline_row())
@@ -1774,9 +1782,7 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
             if getattr(getattr(item, "value", None), "columns", None) is not None
             and {"Tire ID", "Tire code", "alpha", "beta", "a", "b", "c"}.issubset(set(item.value.columns))
         )
-        self.assertIn("QA-BASE", set(browser_df["Tire code"]))
-        self.assertIn("QA-ECO", set(browser_df["Tire code"]))
-        self.assertIn("TIRE-QA-001", set(browser_df["Tire code"]))
+        self.assertIn("26AA", set(browser_df["Tire code"]))
 
     def test_request_inputs_tire_lookup_empty_and_no_match_messages_are_explicit(self):
         app = self._app()

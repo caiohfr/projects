@@ -809,6 +809,10 @@ def _build_rich_save_row(preview_result: dict, ctx: dict | None, defaults_df=Non
         row["trans_B_coef_Npkph"] = float(to_float(transmission_abc.get("B"), 0.0) or 0.0)
         row["trans_C_coef_Npkph2"] = float(to_float(transmission_abc.get("C"), 0.0) or 0.0)
 
+    parent_id = data.get("vde_id_parent") or request.get("baseline_id")
+    if parent_id not in (None, ""):
+        row["vde_id_parent"] = int(parent_id)
+
     return row
 
 

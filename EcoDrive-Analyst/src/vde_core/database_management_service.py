@@ -8,6 +8,7 @@ from uuid import uuid4
 from src.vde_core import db as db_module
 from src.vde_core.component_repositories import (
     _CANONICAL_STORAGE_FIELDS,
+    _canonical_db_row_to_component,
     _component_to_storage,
     _db_row_to_component,
     _normalize_domain_key,
@@ -28,7 +29,12 @@ from src.vde_core.database_management_contract import (
     normalize_entity_type,
     normalize_record_origin,
 )
-from src.vde_core.database_management_policy import FieldAccess, field_access_for, field_policy_for
+from src.vde_core.database_management_policy import (
+    FieldAccess,
+    field_access_for,
+    field_policy_for,
+    is_record_origin_protected,
+)
 from src.vde_core.test_mass import autoresolve_test_mass
 from src.vde_core.tire_roadload_service import _normalize_tire_payload
 
@@ -80,6 +86,16 @@ def preview_change(command: ChangeCommand, actor_context: ActorContext | None = 
     except ValueError as exc:
         issues.append(ValidationIssue("ERROR", "record_origin_invalid", str(exc), "record_origin"))
         origin = "LEGACY"
+
+    if is_record_origin_protected(entity, origin):
+        issues.append(
+            ValidationIssue(
+                "ERROR",
+                "source_managed_read_only",
+                f"{origin} records are source-managed and read-only in Database Management.",
+                "record_origin",
+            )
+        )
 
     if action is ChangeAction.CREATE and record_id is not None:
         issues.append(ValidationIssue("ERROR", "create_has_record_id", "CREATE must not target an existing record."))
@@ -183,18 +199,48 @@ def _invalid_contract_preview(command: ChangeCommand, code: str, message: str, e
     )
 
 
-_MANAGEMENT_TABLES = {
+_LEGACY_FIXTURE_TABLES = {
     EntityType.VDE: "vde_db",
     EntityType.FUEL_CONSUMPTION: "fuelcons_db",
     EntityType.TIRE: "tire_roadload_db",
     EntityType.COMPONENT: "component_db",
 }
-_TEXT_SEARCH_FIELDS = {
+_CANONICAL_READ_TABLES = {
+    EntityType.VDE: "vde_db",
+    EntityType.FUEL_CONSUMPTION: "fuelcons_db",
+    EntityType.TIRE: "tire_db",
+    EntityType.COMPONENT: "component_db",
+}
+_CANONICAL_WRITE_TABLES = {
+    EntityType.VDE: "vde",
+    EntityType.FUEL_CONSUMPTION: "fuelcons",
+    EntityType.TIRE: "tire_db",
+    EntityType.COMPONENT: "component_db",
+}
+_LEGACY_TEXT_SEARCH_FIELDS = {
     EntityType.VDE: ("make", "model", "category", "legislation", "source_name", "source_record_id"),
     EntityType.FUEL_CONSUMPTION: ("electrification", "fuel_type", "method_note", "source_name", "source_record_id"),
     EntityType.TIRE: ("tire_test_code", "manufacturer", "model", "size_code", "source_name", "source_record_id"),
     EntityType.COMPONENT: ("component_code", "component_name", "source_name", "source_record_id", "hardware_reference"),
 }
+_CANONICAL_TEXT_SEARCH_FIELDS = {
+    **_LEGACY_TEXT_SEARCH_FIELDS,
+    EntityType.COMPONENT: ("component_id", "manufacturer", "model", "source_name", "source_record_id", "hardware_reference"),
+}
+
+
+def _management_read_table(entity: EntityType) -> str:
+    return (_LEGACY_FIXTURE_TABLES if db_module.LEGACY_FIXTURE_MODE else _CANONICAL_READ_TABLES)[entity]
+
+
+def _management_write_table(entity: EntityType) -> str:
+    return (_LEGACY_FIXTURE_TABLES if db_module.LEGACY_FIXTURE_MODE else _CANONICAL_WRITE_TABLES)[entity]
+
+
+def _management_id_field(entity: EntityType) -> str:
+    if db_module.LEGACY_FIXTURE_MODE or entity in {EntityType.VDE, EntityType.FUEL_CONSUMPTION}:
+        return "id"
+    return "tire_id" if entity is EntityType.TIRE else "component_id"
 
 
 def browse_records(
@@ -219,20 +265,27 @@ def browse_records(
     if entity is EntityType.COMPONENT:
         if not component_domain:
             raise ValueError("Components browsing requires a domain filter.")
-        clauses.append("domain=?")
-        params.append(_normalize_domain_key(component_domain))
+        domain_field = "domain" if db_module.LEGACY_FIXTURE_MODE else "component_domain"
+        clauses.append(f"{domain_field}=?")
+        normalized_domain = _normalize_domain_key(component_domain)
+        params.append(normalized_domain if db_module.LEGACY_FIXTURE_MODE else normalized_domain.upper())
     needle = str(query or "").strip()
     if needle:
-        search = " OR ".join(f"COALESCE(CAST({field} AS TEXT), '') LIKE ?" for field in _TEXT_SEARCH_FIELDS[entity])
+        search_fields = (_LEGACY_TEXT_SEARCH_FIELDS if db_module.LEGACY_FIXTURE_MODE else _CANONICAL_TEXT_SEARCH_FIELDS)[entity]
+        search = " OR ".join(f"COALESCE(CAST({field} AS TEXT), '') LIKE ?" for field in search_fields)
         clauses.append(f"({search})")
-        params.extend([f"%{needle}%"] * len(_TEXT_SEARCH_FIELDS[entity]))
+        params.extend([f"%{needle}%"] * len(search_fields))
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
-    order_field = "tire_test_code" if entity is EntityType.TIRE else "id"
+    order_field = "tire_test_code" if entity is EntityType.TIRE else _management_id_field(entity)
     rows = db_module.fetchall(
-        f"SELECT * FROM {_MANAGEMENT_TABLES[entity]}{where} ORDER BY {order_field} DESC LIMIT ?",
+        f"SELECT * FROM {_management_read_table(entity)}{where} ORDER BY {order_field} DESC LIMIT ?",
         tuple([*params, max(1, min(int(limit), 1000))]),
     )
-    return [_adapt_component_row(row) if entity is EntityType.COMPONENT else row for row in rows]
+    if entity is EntityType.COMPONENT:
+        return [_adapt_component_row(row) for row in rows]
+    if entity is EntityType.TIRE and not db_module.LEGACY_FIXTURE_MODE:
+        return [{**row, "id": row.get("tire_id")} for row in rows]
+    return rows
 
 
 def get_record(
@@ -245,7 +298,11 @@ def get_record(
     db_module.ensure_db()
     with db_module._con() as con:
         row = _fetch_record(con, entity, record_id, component_domain=component_domain)
-    return _adapt_component_row(row) if entity is EntityType.COMPONENT and row else row
+    if entity is EntityType.COMPONENT and row:
+        return _adapt_component_row(row)
+    if entity is EntityType.TIRE and row and not db_module.LEGACY_FIXTURE_MODE:
+        return {**row, "id": row.get("tire_id")}
+    return row
 
 
 def editable_fields_for_record(entity_type: EntityType | str, record: dict) -> tuple[str, ...]:
@@ -345,7 +402,9 @@ def _apply_preview(
         _set_archived(con, entity, int(before["id"]), archived=False)
         return int(before["id"])
     if action is ChangeAction.DELETE:
-        con.execute(f"DELETE FROM {_MANAGEMENT_TABLES[entity]} WHERE id=?", (int(before["id"]),))
+        table = _management_write_table(entity)
+        id_field = _management_id_field(entity)
+        con.execute(f"DELETE FROM {table} WHERE {id_field}=?", (before["id"],))
         return int(before["id"])
     raise ValueError(f"Action {action.value} is not available in Database Management 7C.")
 
@@ -365,11 +424,11 @@ def _create_record(
         data = autoresolve_test_mass(data)
     elif entity is EntityType.TIRE:
         if duplicate:
-            data["tire_test_code"] = _next_code(con, "tire_roadload_db", "tire_test_code", data.get("tire_test_code"))
+            data["tire_test_code"] = _next_code(con, _management_write_table(entity), "tire_test_code", data.get("tire_test_code"))
         data = _normalize_tire_payload(data)
     elif entity is EntityType.COMPONENT:
         return _create_component(con, data, duplicate=duplicate)
-    return _insert_row(con, _MANAGEMENT_TABLES[entity], data)
+    return _insert_row(con, _management_write_table(entity), data)
 
 
 def _update_record(con: sqlite3.Connection, entity: EntityType, record_id: int, payload: dict, before: dict) -> None:
@@ -386,14 +445,26 @@ def _update_record(con: sqlite3.Connection, entity: EntityType, record_id: int, 
         _update_component(con, record_id, data, before)
         return
     data["updated_at"] = _utc_now_iso()
-    _update_row(con, _MANAGEMENT_TABLES[entity], record_id, data)
+    _update_row(con, _management_write_table(entity), record_id, data, id_field=_management_id_field(entity))
 
 
 def _set_archived(con: sqlite3.Connection, entity: EntityType, record_id: int, *, archived: bool) -> None:
     if entity is EntityType.TIRE:
-        _update_row(con, "tire_roadload_db", record_id, {"is_active": 0 if archived else 1, "updated_at": _utc_now_iso()})
+        _update_row(
+            con,
+            _management_write_table(entity),
+            record_id,
+            {"is_active": 0 if archived else 1, "updated_at": _utc_now_iso()},
+            id_field=_management_id_field(entity),
+        )
         return
-    _update_row(con, _MANAGEMENT_TABLES[entity], record_id, {"record_status": "ARCHIVED" if archived else "ACTIVE", "updated_at": _utc_now_iso()})
+    _update_row(
+        con,
+        _management_write_table(entity),
+        record_id,
+        {"record_status": "ARCHIVED" if archived else "ACTIVE", "updated_at": _utc_now_iso()},
+        id_field=_management_id_field(entity),
+    )
 
 
 def _create_component(con: sqlite3.Connection, payload: dict, *, duplicate: bool) -> int:
@@ -442,7 +513,7 @@ def _insert_row(con: sqlite3.Connection, table: str, payload: dict) -> int:
     return int(cursor.lastrowid)
 
 
-def _update_row(con: sqlite3.Connection, table: str, record_id: int, payload: dict) -> None:
+def _update_row(con: sqlite3.Connection, table: str, record_id: int | str, payload: dict, *, id_field: str = "id") -> None:
     columns = set(db_module.table_columns(table))
     data = {field: value for field, value in dict(payload).items() if field in columns and field not in {"id", "created_at"}}
     if not data:
@@ -450,7 +521,7 @@ def _update_row(con: sqlite3.Connection, table: str, record_id: int, payload: di
     names = list(data)
     try:
         con.execute(
-            f"UPDATE {table} SET {', '.join(f'{name}=?' for name in names)} WHERE id=?",
+            f"UPDATE {table} SET {', '.join(f'{name}=?' for name in names)} WHERE {id_field}=?",
             [data[name] for name in names] + [record_id],
         )
     except sqlite3.IntegrityError as exc:
@@ -467,11 +538,14 @@ def _fetch_record(
     if record_id is None:
         return None
     con.row_factory = sqlite3.Row
-    sql = f"SELECT * FROM {_MANAGEMENT_TABLES[entity]} WHERE id=?"
-    params: list[object] = [int(record_id)]
+    id_field = _management_id_field(entity)
+    sql = f"SELECT * FROM {_management_read_table(entity)} WHERE {id_field}=?"
+    params: list[object] = [int(record_id) if id_field != "component_id" else str(record_id)]
     if entity is EntityType.COMPONENT and component_domain:
-        sql += " AND domain=?"
-        params.append(_normalize_domain_key(component_domain))
+        domain_field = "domain" if db_module.LEGACY_FIXTURE_MODE else "component_domain"
+        sql += f" AND {domain_field}=?"
+        normalized_domain = _normalize_domain_key(component_domain)
+        params.append(normalized_domain if db_module.LEGACY_FIXTURE_MODE else normalized_domain.upper())
     row = con.execute(sql, tuple(params)).fetchone()
     return dict(row) if row else None
 
@@ -506,7 +580,11 @@ def _next_code(con: sqlite3.Connection, table: str, field: str, proposed: object
 
 
 def _adapt_component_row(row: dict | None) -> dict:
-    return _db_row_to_component(row) if row else {}
+    if not row:
+        return {}
+    if db_module.LEGACY_FIXTURE_MODE:
+        return _db_row_to_component(row)
+    return _canonical_db_row_to_component(row)
 
 
 def _utc_now_iso() -> str:

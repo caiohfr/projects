@@ -647,7 +647,13 @@ class VdeRequestResolverTests(unittest.TestCase):
 
     def test_transmission_lookup_applies_component_delta_to_total(self):
         workbook = _workbook_with_domains(
-            {"transmission": _proposal("transmission", "TRANS_METADATA_ONLY", {"transmission_component_db_id": "TRANS_TARGET"})}
+            {
+                "transmission": _proposal(
+                    "transmission",
+                    "TRANS_METADATA_ONLY",
+                    {"transmission_component_db_id": "TRANS_TARGET", "recalculate_total_abc": "Yes"},
+                )
+            }
         )
 
         result = resolve_vde_request(
@@ -680,6 +686,7 @@ class VdeRequestResolverTests(unittest.TestCase):
                         "brake_A_coef_N": 2.0,
                         "brake_B_Npkph": 0.0003,
                         "brake_C_coef_Npkph2": 0.00004,
+                        "recalculate_total_abc": "Yes",
                     },
                 )
             }
@@ -707,9 +714,107 @@ class VdeRequestResolverTests(unittest.TestCase):
         self.assertEqual(action["component_snapshot"]["component_type"], "OTHER_RESIDUAL_COMPONENT_LOSSES")
         self.assertIn("excluding explicit transmission brake axle and hub", action["component_snapshot"]["physical_boundary"])
 
+    def test_lookup_without_recalculation_needs_no_baseline_and_preserves_total(self):
+        context = _baseline_context()
+        context.pop("brake_A")
+        context.pop("brake_B")
+        context.pop("brake_C")
+        workbook = _workbook_with_domains(
+            {
+                "brake": _proposal(
+                    "brake",
+                    "BRAKE_METADATA_ONLY",
+                    {
+                        "brake_vde_db_id": 9901,
+                        "brake_A_coef_N": 7.0,
+                        "brake_B_Npkph": 0.002,
+                        "brake_C_coef_Npkph2": 0.0003,
+                        "recalculate_total_abc": "No",
+                    },
+                )
+            }
+        )
+
+        result = resolve_vde_request(workbook, context)["proposal_results"][0]
+
+        self.assertEqual(result["domain_results"]["brake"]["status"], "OK")
+        self.assertEqual(result["abc_total"], {"A": 120.0, "B": 0.02, "C": 0.01})
+        self.assertEqual(result["resolved_snapshot"]["brake_A"], 7.0)
+
+    def test_lookup_recalculation_without_baseline_requires_user_input(self):
+        context = _baseline_context()
+        context.pop("brake_A")
+        context.pop("brake_B")
+        context.pop("brake_C")
+        workbook = _workbook_with_domains(
+            {
+                "brake": _proposal(
+                    "brake",
+                    "BRAKE_METADATA_ONLY",
+                    {
+                        "brake_vde_db_id": 9901,
+                        "brake_A_coef_N": 7.0,
+                        "brake_B_Npkph": 0.002,
+                        "brake_C_coef_Npkph2": 0.0003,
+                        "recalculate_total_abc": "Yes",
+                    },
+                )
+            }
+        )
+
+        result = resolve_vde_request(workbook, context)["proposal_results"][0]
+
+        domain = result["domain_results"]["brake"]
+        self.assertEqual(domain["status"], "Missing")
+        self.assertIn("REQUIRES_USER_BASELINE_INPUT", [issue["code"] for issue in domain["issues"]])
+        self.assertEqual(result["abc_total"], {"A": 120.0, "B": 0.02, "C": 0.01})
+
+    def test_lookup_recalculation_can_use_associated_resolution_baseline(self):
+        context = _baseline_context()
+        context.pop("brake_A")
+        context.pop("brake_B")
+        context.pop("brake_C")
+        context["associated_component_resolutions"] = [
+            {
+                "component_resolution_id": "CR_BASE_BRAKE",
+                "boundary": "BRAKE",
+                "resolved_A_N": 4.0,
+                "resolved_B_N_per_kph": 0.0008,
+                "resolved_C_N_per_kph2": 0.0001,
+                "record_status": "ACTIVE",
+            }
+        ]
+        workbook = _workbook_with_domains(
+            {
+                "brake": _proposal(
+                    "brake",
+                    "BRAKE_METADATA_ONLY",
+                    {
+                        "brake_vde_db_id": 9901,
+                        "brake_A_coef_N": 7.0,
+                        "brake_B_Npkph": 0.002,
+                        "brake_C_coef_Npkph2": 0.0003,
+                        "recalculate_total_abc": "Yes",
+                    },
+                )
+            }
+        )
+
+        result = resolve_vde_request(workbook, context)["proposal_results"][0]
+        resolved = result["domain_results"]["brake"]["resolved_values"]
+
+        self.assertAlmostEqual(result["abc_total"]["A"], 123.0)
+        self.assertEqual(resolved["baseline_component_source"], "associated_resolution:CR_BASE_BRAKE")
+
     def test_axle_hubs_lookup_snapshot_preserves_boundary_metadata(self):
         workbook = _workbook_with_domains(
-            {"axle_hubs": _proposal("axle_hubs", "AXLE_HUB_METADATA_ONLY", {"axle_hubs_component_db_id": "AXLE-MOCK-001"})}
+            {
+                "axle_hubs": _proposal(
+                    "axle_hubs",
+                    "AXLE_HUB_METADATA_ONLY",
+                    {"axle_hubs_component_db_id": "AXLE-MOCK-001", "recalculate_total_abc": "Yes"},
+                )
+            }
         )
 
         result = resolve_vde_request(workbook, _baseline_context())["proposal_results"][0]

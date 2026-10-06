@@ -103,7 +103,10 @@ def detail_key_for_domain_field(domain_key: str, proposal_type: str, field_key: 
     if domain == "transmission":
         if field_key in {"trans_A_coef_N", "trans_B_coef_Npkph", "trans_C_coef_Npkph2"}:
             suffix = {"trans_A_coef_N": "A", "trans_B_coef_Npkph": "B", "trans_C_coef_Npkph2": "C"}[field_key]
-            if canonical_component_mode(domain, proposal_type, seed.get("selection_mode"), seed) == "ABSOLUTE_ABC":
+            mode = canonical_component_mode(domain, proposal_type, seed.get("selection_mode"), seed)
+            if mode == "LOOKUP":
+                return field_key
+            if mode == "ABSOLUTE_ABC":
                 return f"new_trans_{suffix}"
             return f"delta_{suffix}"
         if field_key == "transmission_loss_pct":
@@ -116,6 +119,8 @@ def detail_key_for_domain_field(domain_key: str, proposal_type: str, field_key: 
         if field_key in {"brake_A_coef_N", "brake_B_Npkph", "brake_C_coef_Npkph2"}:
             suffix = {"brake_A_coef_N": "A", "brake_B_Npkph": "B", "brake_C_coef_Npkph2": "C"}[field_key]
             mode = canonical_component_mode(domain, proposal_type, seed.get("selection_mode"), seed)
+            if mode == "LOOKUP":
+                return field_key
             if mode == "RESIDUAL_TORQUE":
                 return f"brake_{suffix}"
             if mode == "ABSOLUTE_ABC":
@@ -126,7 +131,10 @@ def detail_key_for_domain_field(domain_key: str, proposal_type: str, field_key: 
     if domain == "axle_hubs":
         if field_key in {"axle_hub_A", "axle_hub_B", "axle_hub_C"}:
             suffix = field_key.rsplit("_", 1)[-1]
-            if canonical_component_mode(domain, proposal_type, seed.get("selection_mode"), seed) == "ABSOLUTE_ABC":
+            mode = canonical_component_mode(domain, proposal_type, seed.get("selection_mode"), seed)
+            if mode == "LOOKUP":
+                return field_key
+            if mode == "ABSOLUTE_ABC":
                 return f"axle_hub_{suffix}"
             return f"delta_{suffix}"
         return preferred_detail_alias(field_key)
@@ -134,7 +142,10 @@ def detail_key_for_domain_field(domain_key: str, proposal_type: str, field_key: 
     if domain == "parasitic":
         if field_key in {"parasitic_A_coef_N", "parasitic_B_Npkph", "parasitic_C_coef_Npkph2"}:
             suffix = {"parasitic_A_coef_N": "A", "parasitic_B_Npkph": "B", "parasitic_C_coef_Npkph2": "C"}[field_key]
-            if canonical_component_mode(domain, proposal_type, seed.get("selection_mode"), seed) == "ABSOLUTE_ABC":
+            mode = canonical_component_mode(domain, proposal_type, seed.get("selection_mode"), seed)
+            if mode == "LOOKUP":
+                return field_key
+            if mode == "ABSOLUTE_ABC":
                 return f"parasitic_{suffix}"
             return f"delta_{suffix}"
         return preferred_detail_alias(field_key)

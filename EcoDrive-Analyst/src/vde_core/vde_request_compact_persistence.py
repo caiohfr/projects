@@ -120,14 +120,228 @@ def _default_services() -> dict:
 def _insert_vde_row(con: sqlite3.Connection, row_payload: dict, supported_columns: set[str]) -> int:
     filtered = {key: value for key, value in dict(row_payload or {}).items() if key in supported_columns}
     payload = autoresolve_test_mass(filtered)
+    if not db_module.LEGACY_FIXTURE_MODE:
+        payload = db_module.prepare_canonical_vde_insert(con, payload)
     columns = list(payload.keys())
     placeholders = ",".join("?" for _ in columns)
     cur = con.cursor()
     cur.execute(
-        f"INSERT INTO vde_db ({','.join(columns)}) VALUES ({placeholders})",
+        f"INSERT INTO {db_module.VDE_WRITE_TABLE} ({','.join(columns)}) VALUES ({placeholders})",
         [payload[column] for column in columns],
     )
     return int(cur.lastrowid)
+
+
+_LINEAGE_BOUNDARIES = {
+    "transmission": {"TRANSMISSION"},
+    "brake": {"BRAKE"},
+    "axle_hubs": {"AXLE", "HUB_BEARING", "AXLE_HUBS"},
+    "parasitic": {"PARASITIC"},
+}
+_SCENARIO_BOUNDARY = {
+    "transmission": "TRANSMISSION",
+    "brake": "BRAKE",
+    "axle_hubs": "AXLE_HUBS",
+    "parasitic": "PARASITIC",
+}
+_ROW_TRIPLETS = {
+    "transmission": ("trans_A_coef_N", "trans_B_coef_Npkph", "trans_C_coef_Npkph2"),
+    "brake": ("brake_A_coef_N", "brake_B_coef_Npkph", "brake_C_coef_Npkph2"),
+    "axle_hubs": ("axle_hub_A", "axle_hub_B", "axle_hub_C"),
+    "parasitic": ("parasitic_A_coef_N", "parasitic_B_coef_Npkph", "parasitic_C_coef_Npkph2"),
+}
+
+
+def _connection_table_exists(con: sqlite3.Connection, table: str) -> bool:
+    return con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone() is not None
+
+
+def _connection_columns(con: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in con.execute(f"PRAGMA table_info({table})")}
+
+
+def _resolution_triplet(domain: str, row_payload: dict, proposal_result: dict) -> tuple[object, object, object]:
+    fields = _ROW_TRIPLETS[domain]
+    snapshot = dict(proposal_result.get("resolved_snapshot") or {})
+    values = tuple(row_payload.get(field) for field in fields)
+    if all(value is not None for value in values):
+        return values
+    if domain == "transmission":
+        losses = dict(snapshot.get("transmission_losses") or {})
+        return (
+            snapshot.get(fields[0], losses.get("A_TRANS")),
+            snapshot.get(fields[1], losses.get("B_TRANS")),
+            snapshot.get(fields[2], losses.get("C_TRANS")),
+        )
+    snapshot_fields = {
+        "brake": ("brake_A", "brake_B", "brake_C"),
+        "axle_hubs": ("axle_hub_A", "axle_hub_B", "axle_hub_C"),
+        "parasitic": ("parasitic_A", "parasitic_B", "parasitic_C"),
+    }[domain]
+    return tuple(snapshot.get(field) for field in snapshot_fields)
+
+
+def _parent_reference_resolution_id(con: sqlite3.Connection, domain_result: dict) -> str | None:
+    requested = dict(domain_result.get("requested_values") or {})
+    component_id = next(
+        (
+            requested.get(field)
+            for field in (
+                "component_db_id",
+                "transmission_component_db_id",
+                "brake_component_db_id",
+                "axle_hubs_component_db_id",
+                "parasitic_component_db_id",
+            )
+            if requested.get(field) not in (None, "")
+        ),
+        None,
+    )
+    if component_id is None or not _connection_table_exists(con, "component_db"):
+        return None
+    row = con.execute(
+        "SELECT custom_properties_json FROM component_db WHERE component_id=?",
+        (str(component_id),),
+    ).fetchone()
+    if row is None or row[0] in (None, ""):
+        return None
+    try:
+        properties = json.loads(str(row[0]))
+    except (TypeError, ValueError):
+        return None
+    resolution_ids = properties.get("synthetic_reference_resolution_ids") or []
+    if isinstance(resolution_ids, str):
+        resolution_ids = [resolution_ids]
+    return str(resolution_ids[0]) if resolution_ids else None
+
+
+def _assert_resolution_adoptable(
+    con: sqlite3.Connection,
+    resolution_id: str,
+    domain: str,
+) -> str:
+    columns = _connection_columns(con, "component_resolution")
+    selected = "boundary"
+    if "estimate_status" in columns:
+        selected += ",estimate_status"
+    row = con.execute(
+        f"SELECT {selected} FROM component_resolution WHERE component_resolution_id=?",
+        (resolution_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Component resolution not found: {resolution_id}")
+    boundary = str(row[0] or "").strip().upper()
+    if boundary not in _LINEAGE_BOUNDARIES[domain]:
+        raise ValueError(
+            f"Resolution boundary {boundary!r} is incompatible with domain {domain!r}."
+        )
+    estimate_status = str(row[1] or "").strip().upper() if len(row) > 1 else ""
+    if estimate_status in {"REJECTED_PRIMARY_MODEL", "NOT_IDENTIFIABLE", "REJECTED_MODEL"}:
+        raise ValueError(
+            f"Resolution {resolution_id} cannot be adopted with estimate_status={estimate_status}."
+        )
+    return boundary
+
+
+def _persist_component_resolution_lineage(
+    con: sqlite3.Connection,
+    *,
+    vde_id: int,
+    request_history_id: int,
+    proposal_result: dict,
+    row_payload: dict,
+) -> list[dict]:
+    if db_module.LEGACY_FIXTURE_MODE:
+        return []
+    required_tables = {"component_resolution", "vde_component_resolution"}
+    if not all(_connection_table_exists(con, table) for table in required_tables):
+        return []
+
+    proposal_id = str(proposal_result.get("proposal_id") or "")
+    domain_results = dict(proposal_result.get("domain_results") or {})
+    adopted: list[dict] = []
+    ordinal = 0
+    for action in list(proposal_result.get("component_actions") or []):
+        domain = str(action.get("domain") or "").strip()
+        if domain not in _LINEAGE_BOUNDARIES:
+            continue
+        domain_result = dict(domain_results.get(domain) or {})
+        if str(domain_result.get("status") or "").strip().upper() != "OK":
+            continue
+        snapshot = dict(action.get("component_snapshot") or {})
+        if snapshot.get("used") is False:
+            continue
+        resolution_id = str(snapshot.get("component_resolution_id") or "").strip()
+        created = False
+        if resolution_id:
+            boundary = _assert_resolution_adoptable(con, resolution_id, domain)
+        else:
+            values = _resolution_triplet(domain, row_payload, proposal_result)
+            if not all(value is not None for value in values):
+                continue
+            parent_resolution_id = _parent_reference_resolution_id(con, domain_result)
+            boundary = _SCENARIO_BOUNDARY[domain]
+            resolution_id = f"CR_VDE_{int(vde_id)}_{boundary}"
+            provenance = {
+                "source": "VDE_SETUP",
+                "request_history_id": int(request_history_id),
+                "proposal_id": proposal_id,
+                "domain": domain,
+                "proposal_type": domain_result.get("proposal_type"),
+            }
+            if parent_resolution_id:
+                provenance["parent_reference_resolution_id"] = parent_resolution_id
+            method = "DERIVED_FROM_REFERENCE" if parent_resolution_id else "USER_INPUT"
+            resolution_columns = _connection_columns(con, "component_resolution")
+            resolution_payload = {
+                "component_resolution_id": resolution_id,
+                "boundary": boundary,
+                "method": method,
+                "confidence": None,
+                "fidelity_level": None,
+                "resolved_A_N": values[0],
+                "resolved_B_N_per_kph": values[1],
+                "resolved_C_N_per_kph2": values[2],
+                "conditions_json": _json_dumps({"proposal_id": proposal_id}),
+                "input_component_instance_ids_json": "[]",
+                "source_run_ids_json": "[]",
+                "provenance_json": _json_dumps(provenance),
+                "record_status": "ACTIVE",
+                "review_status": "CURRENT",
+            }
+            if "vehicle_configuration_id" in resolution_columns:
+                vde_columns = _connection_columns(con, db_module.VDE_WRITE_TABLE)
+                if "vehicle_configuration_id" in vde_columns:
+                    owner = con.execute(
+                        f"SELECT vehicle_configuration_id FROM {db_module.VDE_WRITE_TABLE} WHERE id=?",
+                        (int(vde_id),),
+                    ).fetchone()
+                    resolution_payload["vehicle_configuration_id"] = owner[0] if owner else None
+            names = [name for name in resolution_payload if name in resolution_columns]
+            con.execute(
+                f"INSERT INTO component_resolution ({','.join(names)}) "
+                f"VALUES ({','.join('?' for _ in names)})",
+                [resolution_payload[name] for name in names],
+            )
+            created = True
+        con.execute(
+            "INSERT OR IGNORE INTO vde_component_resolution "
+            "(vde_id,component_resolution_id,boundary,adoption_role,ordinal) "
+            "VALUES (?,?,?,?,?)",
+            (int(vde_id), resolution_id, boundary, "ADOPTED", ordinal),
+        )
+        adopted.append(
+            {
+                "vde_id": int(vde_id),
+                "component_resolution_id": resolution_id,
+                "boundary": boundary,
+                "created": created,
+            }
+        )
+        ordinal += 1
+    return adopted
 
 
 def _fingerprint_from_state(state: dict, bundle: dict) -> str | None:
@@ -369,6 +583,11 @@ def save_v22_request(state: dict, *, services: dict | None = None) -> dict:
 
     resolution = deepcopy(dict(bundle.get("resolution_result") or {}))
     proposal_ids = [str(item.get("proposal_id") or "") for item in list(resolution.get("proposal_results") or []) if _clean_text(item.get("proposal_id"))]
+    proposal_results_by_id = {
+        str(item.get("proposal_id") or ""): dict(item)
+        for item in list(resolution.get("proposal_results") or [])
+        if _clean_text(item.get("proposal_id"))
+    }
     fingerprint = _fingerprint_from_state(normalized, bundle)
     baseline_effective = deepcopy(dict(dict(normalized.get("baseline") or {}).get("effective") or {}))
     save_plan = build_v22_save_plan(normalized)
@@ -388,7 +607,7 @@ def save_v22_request(state: dict, *, services: dict | None = None) -> dict:
 
     try:
         service_map["ensure_db"]()
-        supported_columns = set(service_map["table_columns"]("vde_db"))
+        supported_columns = set(service_map["table_columns"](db_module.VDE_WRITE_TABLE))
         con = service_map["connect_db"]()
         con.execute("PRAGMA foreign_keys = ON")
         _ensure_request_history_tables(con)
@@ -439,6 +658,7 @@ def save_v22_request(state: dict, *, services: dict | None = None) -> dict:
 
             saved_vde_row_ids: dict[str, int] = {}
             history_only_proposal_ids: set[str] = set()
+            adopted_component_resolutions: list[dict] = []
             for proposal_row in list(save_plan.get("proposals_to_save") or []):
                 proposal_id = str(proposal_row.get("proposal_id") or "")
                 row_payload = dict(proposal_row.get("row_payload") or {})
@@ -450,6 +670,15 @@ def save_v22_request(state: dict, *, services: dict | None = None) -> dict:
                         con,
                         row_payload,
                         supported_columns,
+                    )
+                )
+                adopted_component_resolutions.extend(
+                    _persist_component_resolution_lineage(
+                        con,
+                        vde_id=saved_vde_row_ids[proposal_id],
+                        request_history_id=record_id,
+                        proposal_result=proposal_results_by_id.get(proposal_id, {}),
+                        row_payload=row_payload,
                     )
                 )
 
@@ -515,6 +744,7 @@ def save_v22_request(state: dict, *, services: dict | None = None) -> dict:
                     }
                     for proposal_row in list(save_plan.get("proposals_to_save") or [])
                 ],
+                "adopted_component_resolutions": adopted_component_resolutions,
                 "issues": [],
             }
             con.execute(
@@ -717,7 +947,10 @@ def persist_v22_maintenance_recalculation(
     ]
     record_key = _build_record_key(fingerprint, proposal_ids)
     _ensure_request_history_tables(con)
-    supported_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(vde_db)").fetchall()}
+    supported_columns = {
+        str(row[1])
+        for row in con.execute(f"PRAGMA table_info({db_module.VDE_WRITE_TABLE})").fetchall()
+    }
 
     cursor = con.execute(
         f"""
@@ -758,7 +991,9 @@ def persist_v22_maintenance_recalculation(
             target_id = old_vde_ids.get(proposal_id)
             if target_id is None:
                 raise ValueError(f"Saved VDE link is missing for {proposal_id}.")
-            before_row = con.execute("SELECT * FROM vde_db WHERE id=?", (target_id,)).fetchone()
+            before_row = con.execute(
+                f"SELECT * FROM {db_module.VDE_WRITE_TABLE} WHERE id=?", (target_id,)
+            ).fetchone()
             if before_row is None:
                 raise ValueError(f"Saved VDE {target_id} no longer exists.")
             _update_vde_row_for_maintenance(con, target_id, row_payload, supported_columns)
@@ -960,7 +1195,7 @@ def _update_vde_row_for_maintenance(
         raise ValueError(f"No VDE values were resolved for row {row_id}.")
     columns = list(payload)
     con.execute(
-        f"UPDATE vde_db SET {', '.join(f'{column}=?' for column in columns)} WHERE id=?",
+        f"UPDATE {db_module.VDE_WRITE_TABLE} SET {', '.join(f'{column}=?' for column in columns)} WHERE id=?",
         [payload[column] for column in columns] + [int(row_id)],
     )
 
@@ -971,7 +1206,7 @@ def _mark_fuel_rows_stale(con: sqlite3.Connection, vde_ids: tuple[int, ...]) -> 
     placeholders = ",".join("?" for _ in vde_ids)
     con.row_factory = sqlite3.Row
     rows = con.execute(
-        f"SELECT id, record_origin FROM fuelcons_db WHERE vde_id IN ({placeholders}) ORDER BY id",
+        f"SELECT id, record_origin FROM {db_module.FUELCONS_WRITE_TABLE} WHERE vde_id IN ({placeholders}) ORDER BY id",
         tuple(vde_ids),
     ).fetchall()
     updated_at = _utc_now_iso()
@@ -979,7 +1214,7 @@ def _mark_fuel_rows_stale(con: sqlite3.Connection, vde_ids: tuple[int, ...]) -> 
         origin = str(row["record_origin"] or "LEGACY").strip().upper()
         status = "STALE_VDE" if origin in {"ESTIMATED", "POWERTRAIN_L0"} else "REVIEW_REQUIRED"
         con.execute(
-            "UPDATE fuelcons_db SET review_status=?, updated_at=? WHERE id=?",
+            f"UPDATE {db_module.FUELCONS_WRITE_TABLE} SET review_status=?, updated_at=? WHERE id=?",
             (status, updated_at, int(row["id"])),
         )
     return [int(row["id"]) for row in rows]

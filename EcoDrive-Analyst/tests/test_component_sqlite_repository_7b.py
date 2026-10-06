@@ -89,6 +89,17 @@ class ComponentSqliteRepository7BTests(unittest.TestCase):
         self.assertEqual(browser_rows[0]["lookup_id"], "BRAKE-MOCK-001")
         self.assertEqual(browser_rows[0]["A"], 4.0)
 
+    def test_repository_detects_legacy_component_columns_for_configured_qa_db(self):
+        original_path = db_module.current_db_path()
+        try:
+            db_module.configure_db_path(self.db_path)
+            repository = load_component_repository("transmission")
+        finally:
+            db_module.configure_db_path(original_path)
+
+        self.assertEqual(repository.source, "sqlite_component_db")
+        self.assertIsNotNone(repository.get_by_id("TRANS-MOCK-001"))
+
     def test_create_update_and_source_identity_preserve_explicit_zero(self):
         with db_module.using_db_path(self.db_path):
             created = create_component(

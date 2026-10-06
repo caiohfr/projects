@@ -2,6 +2,10 @@
 
 EcoDrive Analyzer is a Streamlit application for roadload engineering, VDE workflow management, powertrain consumption estimation, and engineering comparison reporting.
 
+Normal runtime databases use one canonical architecture across STAGING, QA,
+and PROD. See [Canonical database environments](docs/DATABASE_ENVIRONMENTS.md)
+for the role of each file and the exact command for launching against QA.
+
 The current product is organized around four main blocks:
 
 1. `Database Management`

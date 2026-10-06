@@ -5,10 +5,10 @@ import sys
 
 import streamlit as st
 import pages.home_page as home
-from src.vde_core.db import configure_db_path
+from src.vde_core.db import configure_db_path, current_db_path
 
 APP_NAME, APP_ICON, APP_VER = "EcoDrive Analyzer", "⚡", "0.7.2"
-DB_DEFAULT = "data/db/eco_drive.db"
+DB_DEFAULT = str(current_db_path())
 
 st.set_page_config(page_title=f"{APP_NAME} {APP_VER}", page_icon=APP_ICON, layout="wide")
 

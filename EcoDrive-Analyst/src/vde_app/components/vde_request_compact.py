@@ -87,6 +87,7 @@ from src.vde_app.components.vde_request_compact_units import (
 )
 from src.vde_app.components.vde_request_metadata_options import metadata_field_spec, metadata_override_value
 from src.vde_app.units import PRESSURE_UNIT_OPTIONS, normalize_pressure_unit, normalize_unit_system
+from src.vde_core import db as db_module
 from src.vde_core.cycles import default_cycle_for_legislation
 from src.vde_core.db import current_db_path
 from src.vde_core.repositories import fetch_vde_all_rows, fetch_vde_browser_runtime_snapshot, fetch_vde_by_id
@@ -556,14 +557,15 @@ def _tire_browser_runtime_snapshot(all_rows: list[dict], filtered_rows: list[dic
     try:
         with sqlite3.connect(str(path), timeout=30) as con:
             cur = con.cursor()
-            cur.execute("select count(*) from sqlite_master where type='table' and name='tire_roadload_db'")
+            table = "tire_roadload_db" if db_module.LEGACY_FIXTURE_MODE else "tire_db"
+            cur.execute("select count(*) from sqlite_master where type='table' and name=?", (table,))
             if int(cur.fetchone()[0] or 0):
-                cur.execute("select count(*) from tire_roadload_db")
+                cur.execute(f"select count(*) from {table}")
                 table_total = int(cur.fetchone()[0] or 0)
-                cur.execute("select count(*) from tire_roadload_db where coalesce(is_active, 1)=1")
+                cur.execute(f"select count(*) from {table} where coalesce(is_active, 1)=1")
                 active_total = int(cur.fetchone()[0] or 0)
                 cur.execute(
-                    "select tire_test_code from tire_roadload_db "
+                    f"select tire_test_code from {table} "
                     "where tire_test_code in ('QA-BASE','QA-ECO','QA-HIGH-RRC','QA-LOAD','QA-NEUTRAL','QA-SAME-RRC-DIFF-SAE','QA-LOW-PRESSURE','QA-HIGH-PRESSURE') "
                     "order by tire_test_code"
                 )
@@ -2015,7 +2017,14 @@ def _component_simple_sheet_rows(domain: str, proposal_specs: list[dict]) -> lis
     }
     if "DELTA_ABC" in component_modes:
         rows.extend(["delta_A", "delta_B", "delta_C"])
-    if domain == "transmission" and proposal_types - {"TRANS_LOSS_PCT"}:
+    if "LOOKUP" in component_modes:
+        rows[2:2] = [
+            "recalculate_total_abc",
+            "baseline_component_A",
+            "baseline_component_B",
+            "baseline_component_C",
+        ]
+    if domain == "transmission" and proposal_types - {"TRANS_LOSS_PCT", "TRANS_METADATA_ONLY"}:
         rows.insert(2, "transmission_application_mode")
     if domain == "transmission" and "TRANS_LOSS_PCT" in proposal_types:
         rows.append("transmission_loss_pct")
@@ -2109,6 +2118,35 @@ def _render_component_simple_sheet_cell(
 
     if row_key == vde_id_field:
         cell.write(_display_domain_cell(resolved_display.get(row_key) or source_display.get(row_key), row_key))
+        return
+
+    if row_key == "recalculate_total_abc":
+        if component_mode != "LOOKUP":
+            cell.write(EM_DASH)
+            return
+        editable_inputs[row_key] = _render_simple_select_input(
+            _simple_widget_domain_scope(domain),
+            proposal_id,
+            row_key,
+            editable_inputs.get(row_key) or "No",
+            container=cell,
+            debug_widget_keys=debug_widget_keys,
+        )
+        return
+
+    if row_key in {"baseline_component_A", "baseline_component_B", "baseline_component_C"}:
+        recalculate = str(editable_inputs.get("recalculate_total_abc") or "No").strip().lower() == "yes"
+        if component_mode != "LOOKUP" or not recalculate:
+            cell.write(EM_DASH)
+            return
+        editable_inputs[row_key] = _render_simple_number_input(
+            _simple_widget_domain_scope(domain),
+            proposal_id,
+            row_key,
+            editable_inputs.get(row_key),
+            container=cell,
+            debug_widget_keys=debug_widget_keys,
+        )
         return
 
     if row_key == "transmission_application_mode":

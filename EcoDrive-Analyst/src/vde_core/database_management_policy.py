@@ -26,6 +26,20 @@ class EntityFieldPolicy:
         return self.editable | self.advanced_correction | self.derived | self.immutable
 
 
+PROTECTED_ORIGINS_BY_ENTITY = {
+    EntityType.VDE: frozenset({"SOURCE_REFRESHED", "NEW_SOURCE"}),
+    EntityType.FUEL_CONSUMPTION: frozenset({"EPA_RECONSTRUCTED", "NEW_SOURCE", "ML_PREDICTION"}),
+    EntityType.TIRE: frozenset({"OTHER_IRREPRODUCIBLE_STATE"}),
+    EntityType.COMPONENT: frozenset(),
+}
+
+
+def is_record_origin_protected(entity_type: EntityType | str, record_origin: str | None) -> bool:
+    entity = normalize_entity_type(entity_type)
+    origin = normalize_record_origin(entity, record_origin)
+    return origin in PROTECTED_ORIGINS_BY_ENTITY[entity]
+
+
 COMMON_IMMUTABLE = frozenset({"id", "created_at", "updated_at", "record_status"})
 COMMON_SOURCE = frozenset({"source_name", "source_record_id", "notes"})
 
@@ -250,6 +264,17 @@ def field_policy_for(entity_type: EntityType | str, record_origin: str | None) -
     entity = normalize_entity_type(entity_type)
     origin = normalize_record_origin(entity, record_origin)
     immutable = COMMON_IMMUTABLE | frozenset({"record_origin"})
+
+    if origin in PROTECTED_ORIGINS_BY_ENTITY[entity]:
+        if entity is EntityType.VDE:
+            protected_fields = VDE_METADATA | VDE_PHYSICAL | VDE_DERIVED
+        elif entity is EntityType.FUEL_CONSUMPTION:
+            protected_fields = FUEL_METADATA | FUEL_INPUTS | FUEL_DERIVED
+        elif entity is EntityType.TIRE:
+            protected_fields = TIRE_EDITABLE | TIRE_DERIVED | frozenset({"is_active"})
+        else:
+            protected_fields = COMPONENT_EDITABLE
+        return EntityFieldPolicy(frozenset(), frozenset(), frozenset(), immutable | protected_fields)
 
     if entity is EntityType.VDE:
         advanced = VDE_PHYSICAL

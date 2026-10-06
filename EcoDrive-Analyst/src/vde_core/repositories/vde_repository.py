@@ -2,11 +2,69 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.vde_core import db as db_module
 from src.vde_core.db import current_db_path, delete_row, fetchall, fetchone, insert_vde, update_vde
 
 
 def fetch_vde_by_id(vde_id: int) -> dict:
-    return fetchone("SELECT * FROM vde_db WHERE id=?;", (int(vde_id),)) or {}
+    row = fetchone("SELECT * FROM vde_db WHERE id=?;", (int(vde_id),)) or {}
+    if row:
+        row["associated_component_resolutions"] = fetch_vde_component_resolutions(vde_id)
+    return row
+
+
+def fetch_vde_component_resolutions(vde_id: int) -> list[dict]:
+    """Return canonical resolution lineage already adopted by a VDE.
+
+    Legacy fixtures may not contain the canonical lineage tables, so absence of
+    those tables means that no reusable baseline resolution is available.
+    """
+    link_columns = {
+        str(row.get("name") or "")
+        for row in fetchall('PRAGMA table_info("vde_component_resolution");')
+    }
+    resolution_columns = {
+        str(row.get("name") or "")
+        for row in fetchall('PRAGMA table_info("component_resolution");')
+    }
+    if not {"vde_id", "component_resolution_id", "boundary"}.issubset(link_columns):
+        return []
+    if "component_resolution_id" not in resolution_columns:
+        return []
+
+    link_optional = ("adoption_role", "ordinal")
+    resolution_fields = (
+        "method",
+        "confidence",
+        "fidelity_level",
+        "resolved_A_N",
+        "resolved_B_N_per_kph",
+        "resolved_C_N_per_kph2",
+        "provenance_json",
+        "record_status",
+        "review_status",
+    )
+    selected = [
+        "link.component_resolution_id AS component_resolution_id",
+        "link.boundary AS boundary",
+        *[
+            f'link."{name}" AS "{name}"' if name in link_columns else f'NULL AS "{name}"'
+            for name in link_optional
+        ],
+        *[
+            f'resolution."{name}" AS "{name}"' if name in resolution_columns else f'NULL AS "{name}"'
+            for name in resolution_fields
+        ],
+    ]
+    return fetchall(
+        f"SELECT {','.join(selected)} "
+        "FROM vde_component_resolution AS link "
+        "JOIN component_resolution AS resolution "
+        "ON resolution.component_resolution_id = link.component_resolution_id "
+        "WHERE link.vde_id = ? "
+        "ORDER BY link.boundary, link.component_resolution_id",
+        (int(vde_id),),
+    )
 
 
 def fetch_vde_by_ids(vde_ids) -> list[dict]:
@@ -122,4 +180,4 @@ def update_vde_by_id(vde_id: int, payload: dict) -> None:
 
 
 def delete_vde_by_id(vde_id: int) -> int:
-    return int(delete_row("vde_db", int(vde_id)))
+    return int(delete_row(db_module.VDE_WRITE_TABLE, int(vde_id)))

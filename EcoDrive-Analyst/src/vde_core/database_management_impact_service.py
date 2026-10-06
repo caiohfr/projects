@@ -26,19 +26,28 @@ from src.vde_core.database_management_service import (
     _adapt_component_row,
     _apply_preview,
     _fetch_record,
-    _MANAGEMENT_TABLES,
 )
 from src.vde_core.tire_roadload_service import _normalize_tire_payload
 from src.vde_core.vde_request_compact_persistence import (
     REQUEST_HISTORY_PROPOSAL_TABLE,
     REQUEST_HISTORY_TABLE,
-    _ensure_request_history_tables,
     persist_v22_maintenance_recalculation,
     prepare_v22_maintenance_recalculation,
 )
 
 
 _IMPACT_ENTITIES = {EntityType.TIRE, EntityType.COMPONENT}
+
+
+def _request_history_available(con: sqlite3.Connection) -> bool:
+    names = {
+        str(row[0])
+        for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?)",
+            (REQUEST_HISTORY_TABLE, REQUEST_HISTORY_PROPOSAL_TABLE),
+        )
+    }
+    return names == {REQUEST_HISTORY_TABLE, REQUEST_HISTORY_PROPOSAL_TABLE}
 
 
 def discover_catalog_usage(
@@ -54,19 +63,22 @@ def discover_catalog_usage(
     db_module.ensure_db()
     with db_module._con() as con:
         con.row_factory = sqlite3.Row
-        _ensure_request_history_tables(con)
         target = _fetch_record(con, entity, record_id, component_domain=component_domain)
         if not target:
             raise ValueError(f"{entity.value} record {record_id!r} does not exist.")
         target_view = _adapt_component_row(target) if entity is EntityType.COMPONENT else dict(target)
-        proposal_rows = con.execute(
-            f"""
-            SELECT p.*, h.record_key, h.created_at AS request_created_at, h.save_result_json
-            FROM {REQUEST_HISTORY_PROPOSAL_TABLE} p
-            JOIN {REQUEST_HISTORY_TABLE} h ON h.id=p.request_history_id
-            ORDER BY p.request_history_id, p.display_index, p.id
-            """
-        ).fetchall()
+        proposal_rows = (
+            con.execute(
+                f"""
+                SELECT p.*, h.record_key, h.created_at AS request_created_at, h.save_result_json
+                FROM {REQUEST_HISTORY_PROPOSAL_TABLE} p
+                JOIN {REQUEST_HISTORY_TABLE} h ON h.id=p.request_history_id
+                ORDER BY p.request_history_id, p.display_index, p.id
+                """
+            ).fetchall()
+            if _request_history_available(con)
+            else []
+        )
         rows = [dict(row) for row in proposal_rows]
         superseded_request_ids = {
             int(save_result["source_request_history_id"])
@@ -190,7 +202,6 @@ def discover_vde_dependencies(vde_id: int | str) -> dict:
     db_module.ensure_db()
     with db_module._con() as con:
         con.row_factory = sqlite3.Row
-        _ensure_request_history_tables(con)
         vde = con.execute("SELECT * FROM vde_db WHERE id=?", (int(vde_id),)).fetchone()
         if not vde:
             raise ValueError(f"VDE {vde_id!r} does not exist.")
@@ -198,20 +209,29 @@ def discover_vde_dependencies(vde_id: int | str) -> dict:
             "SELECT id, vde_id, electrification, fuel_type, record_origin, review_status FROM fuelcons_db WHERE vde_id=? ORDER BY id",
             (int(vde_id),),
         ).fetchall()
-        saved_proposals = con.execute(
-            f"""
-            SELECT p.id, p.request_history_id, p.proposal_id, p.saved_vde_row_id, h.record_key
-            FROM {REQUEST_HISTORY_PROPOSAL_TABLE} p
-            JOIN {REQUEST_HISTORY_TABLE} h ON h.id=p.request_history_id
-            WHERE p.saved_vde_row_id=?
-            ORDER BY p.request_history_id DESC, p.display_index
-            """,
-            (int(vde_id),),
-        ).fetchall()
-        baseline_requests = con.execute(
-            f"SELECT id, record_key, created_at FROM {REQUEST_HISTORY_TABLE} WHERE baseline_vde_id=? ORDER BY id DESC",
-            (int(vde_id),),
-        ).fetchall()
+        history_available = _request_history_available(con)
+        saved_proposals = (
+            con.execute(
+                f"""
+                SELECT p.id, p.request_history_id, p.proposal_id, p.saved_vde_row_id, h.record_key
+                FROM {REQUEST_HISTORY_PROPOSAL_TABLE} p
+                JOIN {REQUEST_HISTORY_TABLE} h ON h.id=p.request_history_id
+                WHERE p.saved_vde_row_id=?
+                ORDER BY p.request_history_id DESC, p.display_index
+                """,
+                (int(vde_id),),
+            ).fetchall()
+            if history_available
+            else []
+        )
+        baseline_requests = (
+            con.execute(
+                f"SELECT id, record_key, created_at FROM {REQUEST_HISTORY_TABLE} WHERE baseline_vde_id=? ORDER BY id DESC",
+                (int(vde_id),),
+            ).fetchall()
+            if history_available
+            else []
+        )
     return {
         "vde": dict(vde),
         "fuel_rows": tuple(dict(row) for row in fuel_rows),

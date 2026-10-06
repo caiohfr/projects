@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass, field
 from enum import Enum
@@ -738,6 +739,7 @@ class LineageChainNode:
     label: str
     parent_vde_id: int | None
     vde_row: Mapping[str, Any]
+    lineage_relation: str | None = None
 
 
 @dataclass(frozen=True)
@@ -770,9 +772,24 @@ def resolve_lineage_chain(vde_id: int, *, vde_row: Mapping[str, Any] | None = No
     while True:
         parent_raw = current_row.get("vde_id_parent")
         parent_id = int(parent_raw) if parent_raw is not None else None
+        provenance_text = current_row.get("provenance_json")
+        if provenance_text is None:
+            try:
+                physical = db_module.fetchone("SELECT provenance_json FROM vde WHERE id=?", (current_id,))
+                provenance_text = physical.get("provenance_json") if physical else None
+            except sqlite3.OperationalError:
+                provenance_text = None
+        try:
+            provenance = json.loads(provenance_text or "{}")
+        except (TypeError, json.JSONDecodeError):
+            provenance = {}
         chain.append(
             LineageChainNode(
-                vde_id=current_id, label=build_vehicle_label(current_row), parent_vde_id=parent_id, vde_row=current_row
+                vde_id=current_id,
+                label=build_vehicle_label(current_row),
+                parent_vde_id=parent_id,
+                vde_row=current_row,
+                lineage_relation=provenance.get("lineage_relation") if parent_id is not None else None,
             )
         )
         visited.add(current_id)

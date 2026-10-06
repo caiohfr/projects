@@ -354,10 +354,16 @@ def apply_v22_baseline(state: dict, baseline_row: dict | None) -> dict:
     printed = {}
     for field_key in V22_BASELINE_FIELDS:
         printed[field_key] = _value_from_aliases(row, field_key)
+    printed["associated_component_resolutions"] = deepcopy(
+        list(row.get("associated_component_resolutions") or [])
+    )
     if row and is_blank(printed.get("abc_total_source_ui")):
         printed["abc_total_source_ui"] = "Baseline ABC"
     selected_id = printed.get("selected_baseline_vde_id")
     source_snapshot = {field_key: printed.get(field_key) for field_key in V22_BASELINE_FIELDS if not is_blank(printed.get(field_key))}
+    source_snapshot["associated_component_resolutions"] = deepcopy(
+        printed["associated_component_resolutions"]
+    )
     source_snapshot["baseline_source_type"] = "EXISTING_VDE"
     next_state["baseline"]["selected_vde_id"] = selected_id
     next_state["baseline"]["source_type"] = "EXISTING_VDE"

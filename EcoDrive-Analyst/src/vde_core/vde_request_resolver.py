@@ -6,6 +6,10 @@ import math
 from typing import Any
 
 from src.vde_core.component_repositories import COMPONENT_PROVENANCE_FIELDS, load_component_repository, lookup_component
+from src.vde_core.component_lookup_application import (
+    REQUIRES_USER_BASELINE_INPUT,
+    apply_absolute_component_lookup,
+)
 from src.vde_core.vde_component_modes import canonical_component_mode
 from src.vde_core.cycles import use_standard_cycle
 from src.vde_core.vde_not_used_modes import is_not_used_proposal
@@ -234,6 +238,11 @@ def _build_baseline_snapshot(workbook_state: dict, baseline_context: dict | None
         cycle_df = use_standard_cycle(legislation)
     snapshot = {
         "selected_baseline_vde_id": effective.get("selected_baseline_vde_id") or context.get("selected_baseline_vde_id"),
+        "associated_component_resolutions": deepcopy(
+            effective.get("associated_component_resolutions")
+            or context.get("associated_component_resolutions")
+            or []
+        ),
         "legislation": legislation,
         "category": effective.get("category") or context.get("category"),
         "electrification": effective.get("electrification") or context.get("electrification"),
@@ -344,8 +353,52 @@ def _proposal_columns(workbook_state: dict) -> list[dict]:
 
 def _reference_triplet_from_details(details: dict, domain_key: str) -> dict[str, float | None]:
     if domain_key == "transmission":
-        return _abc_from_sequence((details.get("baseline_trans_A"), details.get("baseline_trans_B"), details.get("baseline_trans_C")))
+        return _abc_from_sequence(
+            (
+                _first_nonblank(details.get("baseline_component_A"), details.get("baseline_trans_A")),
+                _first_nonblank(details.get("baseline_component_B"), details.get("baseline_trans_B")),
+                _first_nonblank(details.get("baseline_component_C"), details.get("baseline_trans_C")),
+            )
+        )
     return _abc_from_sequence((details.get("baseline_component_A"), details.get("baseline_component_B"), details.get("baseline_component_C")))
+
+
+def _lookup_recalculate_requested(details: dict) -> bool:
+    value = details.get("recalculate_total_abc")
+    if isinstance(value, bool):
+        return value
+    return str(value or "No").strip().upper() in {"YES", "TRUE", "1"}
+
+
+def _associated_component_reference(snapshot: dict, domain_key: str) -> tuple[dict[str, float | None], str | None]:
+    compatible = {
+        "transmission": {"TRANSMISSION"},
+        "brake": {"BRAKE"},
+        "axle_hubs": {"AXLE", "HUB_BEARING", "AXLE_HUBS"},
+        "parasitic": {"PARASITIC"},
+    }.get(domain_key, set())
+    rows = list(dict(snapshot or {}).get("associated_component_resolutions") or [])
+    matches = [
+        dict(row)
+        for row in rows
+        if str(dict(row).get("boundary") or "").strip().upper() in compatible
+        and str(dict(row).get("record_status") or "ACTIVE").strip().upper() == "ACTIVE"
+    ]
+    # More than one compatible physical contribution is not silently collapsed
+    # into a single baseline component.
+    if len(matches) != 1:
+        return _abc_from_sequence((None, None, None)), None
+    row = matches[0]
+    return (
+        _abc_from_sequence(
+            (
+                row.get("resolved_A_N"),
+                row.get("resolved_B_N_per_kph"),
+                row.get("resolved_C_N_per_kph2"),
+            )
+        ),
+        f"associated_resolution:{row.get('component_resolution_id')}",
+    )
 
 
 def _current_component_triplet(snapshot: dict, domain_key: str) -> dict[str, float | None]:
@@ -781,16 +834,75 @@ def _resolve_component_delta_or_absolute(
                     )
                 ),
             }
-        current = _current_component_triplet(source_snapshot, domain_key)
-        if not _abc_complete(current) and not (domain_key == "transmission" and transmission_mode == TRANSMISSION_APPLICATION_MODE_KEEP_TOTAL_FIXED):
-            issues = result_issues + [_issue("missing_component_reference", "review", f"{domain_key} lookup could not adjust ABC_TOTAL because the inherited component reference is missing.", domain=domain_key, proposal_id=proposal_id, source_column=source_label)]
-            return _domain_result(domain_key, proposal, status="Review", issues=issues, source_label=source_label), issues, action
-        _apply_component_delta_to_total(
-            working_snapshot,
-            domain_key,
-            _abc_subtract(new_triplet, current),
-            transmission_application_mode=transmission_mode,
+        if not _abc_complete(new_triplet):
+            issue = _issue(
+                "missing_absolute_component_abc",
+                "missing",
+                "The selected component resolution does not contain complete absolute A/B/C values.",
+                domain=domain_key,
+                proposal_id=proposal_id,
+                source_column=source_label,
+            )
+            return _domain_result(domain_key, proposal, status="Missing", issues=[*result_issues, issue], source_label=source_label), [*result_issues, issue], action
+
+        recalculate_total = _lookup_recalculate_requested(details)
+        manual_reference = _reference_triplet_from_details(details, domain_key)
+        inherited_reference = _current_component_triplet(source_snapshot, domain_key)
+        associated_reference, associated_source = _associated_component_reference(source_snapshot, domain_key)
+        if _abc_complete(manual_reference):
+            baseline_reference = manual_reference
+            baseline_source = "user_input"
+        elif _abc_complete(inherited_reference):
+            baseline_reference = inherited_reference
+            baseline_source = "inherited_component_abc"
+        else:
+            baseline_reference = associated_reference
+            baseline_source = associated_source
+
+        application = apply_absolute_component_lookup(
+            old_total_abc=working_snapshot.get("initial_abc_total") or {},
+            new_component_abc=new_triplet,
+            recalculate_total_abc=recalculate_total,
+            baseline_component_abc=baseline_reference,
+            baseline_source=baseline_source,
         )
+        action["recalculate_total_abc"] = recalculate_total
+        action["baseline_component_abc"] = application.baseline_component_abc
+        action["baseline_component_source"] = application.baseline_source
+        action["delta_component_abc"] = application.delta_component_abc
+        if application.status == REQUIRES_USER_BASELINE_INPUT:
+            issue = _issue(
+                REQUIRES_USER_BASELINE_INPUT,
+                "missing",
+                "Recalculating TOTAL ABC requires baseline component A/B/C; it is never inferred from TOTAL.",
+                domain=domain_key,
+                field_key="baseline_component_A",
+                proposal_id=proposal_id,
+                source_column=source_label,
+            )
+            issues = [*result_issues, issue]
+            return _domain_result(
+                domain_key,
+                proposal,
+                status="Missing",
+                issues=issues,
+                source_label=source_label,
+                requested_values=details,
+                resolved_values={
+                    "lookup_application_status": REQUIRES_USER_BASELINE_INPUT,
+                    "recalculate_total_abc": True,
+                    "new_component_abc": dict(new_triplet),
+                },
+                component_action=action,
+            ), issues, action
+
+        transmission_mode = (
+            TRANSMISSION_APPLICATION_MODE_DEFAULT
+            if recalculate_total
+            else TRANSMISSION_APPLICATION_MODE_KEEP_TOTAL_FIXED
+        ) if domain_key == "transmission" else transmission_mode
+        if recalculate_total:
+            _apply_total_delta(working_snapshot, application.delta_component_abc or {})
         _set_component_triplet(
             working_snapshot,
             domain_key,
@@ -800,14 +912,29 @@ def _resolve_component_delta_or_absolute(
         )
         if domain_key == "transmission" and component.get("loss_pct") not in (None, ""):
             working_snapshot["transmission_loss_pct"] = _to_float(component.get("loss_pct"))
-        resolved_values = dict(new_triplet)
+        resolved_values = {
+            **dict(new_triplet),
+            "lookup_application_status": "OK",
+            "recalculate_total_abc": recalculate_total,
+            "new_component_abc": dict(new_triplet),
+            "baseline_component_abc": application.baseline_component_abc,
+            "baseline_component_source": application.baseline_source,
+            "delta_component_abc": application.delta_component_abc,
+            "old_total_abc": application.old_total_abc,
+            "new_total_abc": application.new_total_abc,
+        }
         if domain_key == "transmission":
             resolved_values["transmission_application_mode"] = transmission_mode
             resolved_values["transmission_mode"] = _transmission_mode_label(transmission_mode)
         provenance = _component_provenance(component)
         if provenance:
             resolved_values["component_provenance"] = provenance
-        return _domain_result(domain_key, proposal, status="OK", source_label=source_label, resolved_values=resolved_values, component_action=action), [], action
+        notes.append(
+            "Component resolution registered without changing TOTAL ABC."
+            if not recalculate_total
+            else "TOTAL ABC recalculated from absolute new component minus explicit baseline component."
+        )
+        return _domain_result(domain_key, proposal, status="OK", issues=result_issues, notes=notes, source_label=source_label, requested_values=details, resolved_values=resolved_values, component_action=action), result_issues, action
 
     if proposal_type == "TRANS_LOSS_PCT":
         pct = _to_float(details.get("loss_pct"))

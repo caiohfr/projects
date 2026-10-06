@@ -1734,7 +1734,12 @@ def _render_lineage_tab(dataset: ComparisonDataset, temp_by_vde: dict, unit_syst
         st.info("No explicit parent-child lineage is available for this scenario.")
         return
 
+    relations = {node.lineage_relation for node in context.chain.nodes if node.lineage_relation}
     caption = "Physical VDE Lineage"
+    if relations == {"EPA_MODEL_YEAR_CARRYOVER"}:
+        caption = "EPA Model-Year Carryover Lineage"
+    elif relations:
+        caption += " -- relation types are shown per step"
     if context.is_fuelcons_scenario:
         caption += f" -- resolved from FuelCons scenario '{context.originating_label}'"
     st.caption(caption)
@@ -1746,7 +1751,7 @@ def _render_lineage_tab(dataset: ComparisonDataset, temp_by_vde: dict, unit_syst
         st.info("No explicit parent-child lineage is available for this scenario.")
         return
     if len(chain.nodes) == 1 and chain.status == LineageChainStatus.ROOT:
-        st.info(f"'{chain.nodes[0].label}' is a lineage root -- no explicit parent scenario is recorded.")
+        st.info(f"'{chain.nodes[0].label}' is a lineage root -- no explicit parent is recorded.")
     for warning in chain.warnings:
         st.warning(_LINEAGE_WARNING_MESSAGES.get(warning.split(":")[0], warning))
 
@@ -1772,6 +1777,7 @@ def _render_lineage_tab(dataset: ComparisonDataset, temp_by_vde: dict, unit_syst
                 "Step": i,
                 "Scenario": step.label,
                 "Parent": step.parent_vde_id if step.parent_vde_id is not None else "-",
+                "Relation": step.lineage_relation or "ROOT/UNSPECIFIED",
                 "Provenance": step.provenance or "UNKNOWN",
                 "Metric value": step.formatted_value,
                 "Δ vs Parent": step.formatted_delta or "-",

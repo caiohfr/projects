@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
 import hashlib
+import json
 from pathlib import Path
 import sqlite3
 
@@ -25,6 +26,13 @@ _DB_METADATA_FIELDS = (
     "record_origin",
     "record_status",
     "source_record_id",
+    "component_resolution_id",
+    "resolution_boundary",
+    "resolution_method",
+    "resolution_confidence",
+    "resolution_fidelity_level",
+    "component_provenance_json",
+    "resolution_provenance_json",
 )
 _PROVENANCE_FIELDS = (
     "component_type",
@@ -164,7 +172,8 @@ def _validate_component(domain: str, component: dict) -> list[dict]:
                     field_key=field_name,
                 )
             )
-    for field_name in _DOMAIN_FIELD_MAP.get(domain_key, ()):
+    technical_fields = _DOMAIN_FIELD_MAP.get(domain_key, ())
+    for index, field_name in enumerate(technical_fields):
         try:
             value = _to_float(payload.get(field_name))
         except Exception:
@@ -179,7 +188,7 @@ def _validate_component(domain: str, component: dict) -> list[dict]:
                 )
             )
             continue
-        if value is None:
+        if value is None and index < 3:
             issues.append(
                 _issue(
                     "missing_technical_field",
@@ -287,6 +296,105 @@ def _db_row_to_component(row: dict) -> dict:
     return component
 
 
+_CANONICAL_COMPONENT_DOMAINS = {
+    "transmission": ("TRANSMISSION",),
+    "brake": ("BRAKE",),
+    "axle_hubs": ("AXLE_HUBS",),
+    "parasitic": ("PARASITIC",),
+}
+
+
+def _json_object(value) -> dict:
+    if value in (None, ""):
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _canonical_resolution_for_component(row: dict) -> dict | None:
+    properties = _json_object(row.get("custom_properties_json"))
+    resolution_ids = properties.get("synthetic_reference_resolution_ids") or []
+    if isinstance(resolution_ids, str):
+        resolution_ids = [resolution_ids]
+    for resolution_id in resolution_ids:
+        resolved = db_module.fetchone(
+            "SELECT * FROM component_resolution "
+            "WHERE component_resolution_id=? AND record_status='ACTIVE' LIMIT 1",
+            (str(resolution_id),),
+        )
+        if resolved:
+            return resolved
+    return None
+
+
+def _canonical_db_row_to_component(row: dict, resolution: dict | None = None) -> dict:
+    payload = dict(row or {})
+    canonical_domain = _clean_text(payload.get("component_domain")).upper()
+    domain_key = {
+        "TRANSMISSION": "transmission",
+        "BRAKE": "brake",
+        "AXLE_HUBS": "axle_hubs",
+        "PARASITIC": "parasitic",
+    }.get(canonical_domain)
+    if not domain_key:
+        raise ValueError(f"Unsupported canonical component domain '{canonical_domain}'.")
+    properties = _json_object(payload.get("custom_properties_json"))
+    provenance = _json_object(payload.get("provenance_json"))
+    resolved = dict(resolution or _canonical_resolution_for_component(payload) or {})
+    original_domain = _clean_text(provenance.get("seed_component_domain_original")) or canonical_domain
+    component_id = _clean_text(payload.get("component_id"))
+    source_name = _clean_text(payload.get("source_name"))
+    component = {
+        "id": component_id,
+        "created_at": payload.get("created_at"),
+        "updated_at": payload.get("updated_at"),
+        "record_origin": "IMPORTED" if source_name else "MANUAL",
+        "record_status": payload.get("record_status"),
+        "review_status": payload.get("review_status"),
+        "source_record_id": payload.get("source_record_id"),
+        "domain": domain_key,
+        "component_code": component_id,
+        "component_id": component_id,
+        "component_name": payload.get("model") or payload.get("hardware_reference") or component_id,
+        "source_name": source_name,
+        "status": payload.get("record_status") or "ACTIVE",
+        "source": source_name or "canonical_component_db",
+        "notes": "Synthetic/reference component definition." if provenance.get("synthetic_reference") else "Canonical component definition.",
+        "component_type": original_domain,
+        "component_position": properties.get("position") or "",
+        "driveline_architecture": properties.get("drive_architecture") or "",
+        "physical_boundary": resolved.get("boundary") or original_domain,
+        "configuration_from": "",
+        "configuration_to": "",
+        "test_condition_type": "REFERENCE" if provenance.get("synthetic_reference") else "",
+        "test_method": resolved.get("method") or "",
+        "hardware_reference": payload.get("hardware_reference") or "",
+        "source_reference": payload.get("source_file_version") or "",
+        "net_bridge_eligible": "UNKNOWN",
+        "component_resolution_id": resolved.get("component_resolution_id"),
+        "resolution_boundary": resolved.get("boundary"),
+        "resolution_method": resolved.get("method"),
+        "resolution_confidence": resolved.get("confidence"),
+        "resolution_fidelity_level": resolved.get("fidelity_level"),
+        "component_provenance_json": payload.get("provenance_json"),
+        "resolution_provenance_json": resolved.get("provenance_json"),
+        "custom_properties_json": payload.get("custom_properties_json"),
+        "equivalent_A_N": resolved.get("resolved_A_N"),
+        "equivalent_B_N_per_kph": resolved.get("resolved_B_N_per_kph"),
+        "equivalent_C_N_per_kph2": resolved.get("resolved_C_N_per_kph2"),
+    }
+    domain_fields = _DOMAIN_FIELD_MAP[domain_key]
+    component[domain_fields[0]] = resolved.get("resolved_A_N")
+    component[domain_fields[1]] = resolved.get("resolved_B_N_per_kph")
+    component[domain_fields[2]] = resolved.get("resolved_C_N_per_kph2")
+    for optional_field in domain_fields[3:]:
+        component[optional_field] = None
+    return component
+
+
 def _component_to_storage(domain: str, component: dict, *, default_origin: str) -> dict:
     domain_key = _normalize_domain_key(domain)
     payload = dict(component or {})
@@ -374,7 +482,27 @@ def list_mock_component_domains() -> list[str]:
 def load_component_repository(domain: str, *, include_archived: bool = False) -> ComponentRepository:
     """Load the operational component repository from the active SQLite DB."""
     domain_key = _normalize_domain_key(domain)
-    db_module.ensure_db()
+    component_columns = set(db_module.table_columns("component_db"))
+    if "component_domain" in component_columns:
+        status_clause = "" if include_archived else " AND record_status='ACTIVE'"
+        canonical_domains = _CANONICAL_COMPONENT_DOMAINS[domain_key]
+        placeholders = ",".join("?" for _ in canonical_domains)
+        rows = db_module.fetchall(
+            "SELECT * FROM component_db "
+            f"WHERE component_domain IN ({placeholders}){status_clause} "
+            "ORDER BY component_id ASC",
+            canonical_domains,
+        )
+        if rows:
+            adapter_rows = [_canonical_db_row_to_component(row) for row in rows]
+            return _build_repository(domain_key, adapter_rows, source="sqlite_component_db")
+        return load_mock_component_repository(domain_key)
+    if "domain" not in component_columns:
+        if db_module.LEGACY_FIXTURE_MODE:
+            db_module.ensure_db()
+            component_columns = set(db_module.table_columns("component_db"))
+        if "domain" not in component_columns:
+            return load_mock_component_repository(domain_key)
     where = "domain=?" if include_archived else "domain=? AND record_status='ACTIVE'"
     rows = db_module.fetchall(
         f"SELECT * FROM component_db WHERE {where} ORDER BY component_code ASC",
@@ -396,6 +524,17 @@ def find_component_by_source_identity(
     source_id = _clean_text(source_record_id)
     if not source or not source_id:
         return None
+    if not db_module.LEGACY_FIXTURE_MODE:
+        canonical_domains = _CANONICAL_COMPONENT_DOMAINS[domain_key]
+        placeholders = ",".join("?" for _ in canonical_domains)
+        status_clause = "" if include_archived else " AND record_status='ACTIVE'"
+        row = db_module.fetchone(
+            "SELECT * FROM component_db "
+            f"WHERE component_domain IN ({placeholders}) AND source_name=? "
+            f"AND source_record_id=?{status_clause} ORDER BY component_id ASC LIMIT 1",
+            (*canonical_domains, source, source_id),
+        )
+        return _canonical_db_row_to_component(row) if row else None
     status_clause = "" if include_archived else " AND record_status='ACTIVE'"
     row = db_module.fetchone(
         "SELECT * FROM component_db "
@@ -409,6 +548,13 @@ def find_component_by_source_identity(
 def component_repository_signature(domain: str) -> str:
     """Return a small cache signature that changes after repository mutations."""
     domain_key = _normalize_domain_key(domain)
+    if not db_module.LEGACY_FIXTURE_MODE:
+        components = load_component_repository(domain_key, include_archived=True).list_components()
+        seed = "|".join(
+            f"{_clean_text(row.get('component_id'))}:{_clean_text(row.get('updated_at'))}"
+            for row in components
+        )
+        return f"canonical:{len(components)}:{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:12]}"
     row = db_module.fetchone(
         "SELECT COUNT(*) AS row_count, MAX(id) AS max_id, "
         "MAX(COALESCE(updated_at, created_at, '')) AS last_change "

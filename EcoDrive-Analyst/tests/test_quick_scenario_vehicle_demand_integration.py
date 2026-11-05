@@ -143,6 +143,11 @@ class CurbMassChangeParityTests(unittest.TestCase):
         expected_row = dict(row)
         expected_row["mass_kg"] = outcome["resolved_snapshot"]["curb_mass_kg"]
         expected_row["test_mass_kg"] = outcome["resolved_snapshot"]["vde_calculation_mass_kg"]
+        # Keep the independently assembled expected row semantically complete:
+        # the shared Vehicle Demand/Comparison mass resolver now honors these
+        # canonical fields instead of treating test_mass_kg as an untyped value.
+        expected_row["inertia_class"] = outcome["resolved_snapshot"]["inertia_class"]
+        expected_row["vde_mass_basis"] = outcome["resolved_snapshot"]["vde_mass_basis"]
 
         self.assertEqual(result.resolved_curb_mass_kg, expected_row["mass_kg"])
         self.assertEqual(result.resolved_vde_calculation_mass_kg, expected_row["test_mass_kg"])

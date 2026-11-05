@@ -331,13 +331,12 @@ def compute_vde_for_boundary(
 
 
 def _resolve_mass_for_cycle(vde_row: Mapping[str, Any]) -> tuple[float | None, bool]:
-    test_mass = vde_row.get("test_mass_kg")
-    if test_mass is not None:
-        return float(test_mass), True
-    mass_kg = vde_row.get("mass_kg")
-    if mass_kg is not None:
-        return float(mass_kg), False
-    return None, False
+    # Local import avoids changing the module's established import graph while
+    # keeping Comparison and Vehicle Demand on one physical mass contract.
+    from src.vde_core.vde_calculation_mass import resolve_vde_calculation_mass
+
+    resolved = resolve_vde_calculation_mass(vde_row)
+    return resolved.mass_kg, resolved.epa_mass_is_resolved_twc
 
 
 def _boundary_result(

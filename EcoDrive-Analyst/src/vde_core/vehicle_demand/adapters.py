@@ -32,6 +32,7 @@ from src.vde_core.comparison_report_service import (
     resolve_transmission_boundary,
 )
 from src.vde_core.cycles import default_cycle_for_legislation, use_standard_cycle
+from src.vde_core.vde_calculation_mass import resolve_vde_calculation_mass
 
 from .contracts import AmbientState, Provenance, RoadloadCoefficients, VehicleDemandRequest
 
@@ -42,21 +43,6 @@ def _roadload_coefficients(boundary: RoadloadBoundary) -> RoadloadCoefficients |
     if not boundary.available:
         return None
     return RoadloadCoefficients(A_N=boundary.A, B_N_per_kph=boundary.B, C_N_per_kph2=boundary.C)
-
-
-def _resolve_test_mass_kg(vde_row: Mapping[str, Any]) -> float | None:
-    """test_mass_kg if stored, else mass_kg -- the same fallback
-    comparison_report_service's own on-demand VDE calculation applies
-    (_resolve_mass_for_cycle). Reimplemented locally (two lines) rather than
-    importing that leading-underscore helper across modules: this adapter is
-    meant to be a stable, frozen surface and should not depend on another
-    module's private name.
-    """
-    test_mass = vde_row.get("test_mass_kg")
-    if test_mass is not None:
-        return float(test_mass)
-    mass_kg = vde_row.get("mass_kg")
-    return float(mass_kg) if mass_kg is not None else None
 
 
 def build_vehicle_demand_request(
@@ -104,12 +90,15 @@ def build_vehicle_demand_request(
     transmission = resolve_transmission_boundary(vde_row, temporary_transmission)
     rrc = vde_row.get("rrc_N_per_kN")
     cda = vde_row.get("cda_m2")
+    calculation_mass = resolve_vde_calculation_mass(vde_row)
     provenance = {
         "roadload_total": Provenance.SOURCE.value,
         "roadload_net": (Provenance.CALCULATED.value if roadload_net is not None else Provenance.UNAVAILABLE.value),
         "transmission": transmission.status.value,
         "rrc": Provenance.SOURCE.value if rrc is not None else Provenance.UNAVAILABLE.value,
         "cda": Provenance.SOURCE.value if cda is not None else Provenance.UNAVAILABLE.value,
+        "mass_basis": calculation_mass.basis or Provenance.UNAVAILABLE.value,
+        "mass_source_field": calculation_mass.source_field or Provenance.UNAVAILABLE.value,
     }
 
     legislation = vde_row.get("legislation")
@@ -124,7 +113,7 @@ def build_vehicle_demand_request(
         cycle_name=cycle_name,
         cycle_source="STANDARD" if cycle_name else None,
         cycle_version=None,
-        test_mass_kg=_resolve_test_mass_kg(vde_row),
+        test_mass_kg=calculation_mass.mass_kg,
         roadload_total=roadload_total,
         roadload_net=roadload_net,
         rrc_n_per_kn=float(rrc) if rrc is not None else None,

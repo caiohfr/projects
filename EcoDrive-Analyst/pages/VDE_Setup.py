@@ -61,6 +61,11 @@ def main() -> None:
 
     st.title("VDE Setup")
     st.caption("Baseline, request, scenario, and engineering review workflow.")
+    selected_vde_id = state.get("baseline", {}).get("selected_vde_id")
+    if selected_vde_id:
+        if st.button("Open in Load Case Lab", key="open_selected_vde_in_load_case_lab"):
+            st.session_state["roadload_load_case_vde_id"] = int(selected_vde_id)
+            st.switch_page("pages/Roadload_Load_Case_Lab.py")
     render_vde_request_compact()
 
 

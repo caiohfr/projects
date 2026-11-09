@@ -42,3 +42,15 @@ A reviewer can identify **why RoadLoadModel exists, which functions and requirem
 ## Change policy
 
 `CURRENT` changes with source inspection of a specific commit; `TARGET` changes via ADR/spec; tests change with a recorded test execution. Keep these artifacts intentionally lightweight and review them only when contracts or flows change. Do not update every document for unrelated UI changes.
+
+## Execution update — Sprint 14A-04 (2026-11-09)
+
+Evidence was executed at `fca9a9ad189fe7e6930e987e29fee5717c0d532e`; see [`../architecture/roadload_14a04_execution_report_v0.1.md`](../architecture/roadload_14a04_execution_report_v0.1.md).
+
+- Caller inventory: **EXECUTED / STATIC**, 168 AST records and 0 parse errors, supplemented by manual review. Runtime tracing remains absent.
+- Synthetic golden: **EXECUTED_PASS**, with analytical checks and zero compare differences at `1e-9`.
+- Selected suite: **EXECUTED_FAIL**, 298 passed and 2 pre-existing fixture/repository-selection failures.
+- Full suite: **GAP**, 2,190 passed, 38 failed and 242 errors; the clean checkout lacks historical generated artifacts/ETL databases.
+- Pure-path performance: **PARTIAL BASELINE CAPTURED**. SQL, browser/UI, RSS and n×k breakdown remain unmeasured/unavailable.
+
+The gate remains **NOT READY FOR CODE REFACTOR** until selected failures and clean-checkout reproducibility are resolved and remaining measurement/contract gaps are reviewed.

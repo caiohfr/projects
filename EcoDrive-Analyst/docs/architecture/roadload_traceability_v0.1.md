@@ -59,3 +59,21 @@ Lista fundamentada na revisão e navegação do repositório; **teste existente 
 ## 5. Evidência e atualização da matriz
 
 Usar estados: `NOT_SPECIFIED`, `SPECIFIED`, `TEST_EXISTS_NOT_RUN`, `INSPECTION_ONLY`, `EXECUTED_PASS`, `EXECUTED_FAIL`, `GAP`. Cada `EXECUTED_PASS` deve apontar a comando, commit, ambiente e log de execução; uma claim de verificação por inspeção não é 'pass'. Registrar mudanças no contrato e no ADR na mesma PR.
+
+## 6. Evidência executada em 2026-11-09
+
+Execução em `fca9a9ad189fe7e6930e987e29fee5717c0d532e`, documentada em [`roadload_14a04_execution_report_v0.1.md`](roadload_14a04_execution_report_v0.1.md):
+
+| IDs | Estado após execução | Evidência |
+|---|---|---|
+| `RL-FR-01`, `RL-FR-02` | `EXECUTED_PASS` | golden analítico F/P e testes selecionados de Roadload |
+| `RL-FR-03`, `RL-FR-05` | `GAP` parcial | residual assinado passa, mas a API TARGET de breakdown/reconcile não existe |
+| `RL-FR-06`, `RL-FR-07` | `GAP` | contrato TARGET especificado, não implementado |
+| `RL-FR-08` | `EXECUTED_PASS` nos caminhos atuais | TOTAL/NET e NET ausente nos testes selecionados e golden |
+| `RL-FR-09` | `EXECUTED_PASS` | canonical VDE series, engine e integração selecionados |
+| `RL-FR-10` | `EXECUTED_PASS` | Load Case sem write, determinístico e mass-only dynamic profile |
+| `RL-NFR-02` | `GAP` | contagem SQL não medida |
+| `RL-NFR-03`, `RL-NFR-04` | `GAP` parcial | microbenchmark capturado; n×k, RSS e UI não medidos |
+| `RL-NFR-06` | `EXECUTED_PASS` | mudança limitada a docs e scripts de evidência |
+
+A suíte selecionada terminou com 298 passes e 2 falhas preexistentes de seleção de repositório/fixture mock. A suíte completa não é reproduzível no checkout limpo sem artefatos históricos e bancos ETL não versionados. Portanto, a evidência acima não fecha o gate geral.

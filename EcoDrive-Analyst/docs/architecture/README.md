@@ -2,6 +2,11 @@
 
 **Documentation index (proposed for Sprint 14A, 2026-11-07).** This index supplements existing architecture documentation; it does not replace or silently rename previous files.
 
+## Integrated engineering architecture — TARGET
+
+- [`ECODRIVE_ENGINEERING_ARCHITECTURE_TARGET_v0.2.md`](ECODRIVE_ENGINEERING_ARCHITECTURE_TARGET_v0.2.md): integrated MBSE-lite system map across vehicle physics, Roadload, Vehicle Demand, Powertrain, FuelCons, ML, data governance and Comparison. **TARGET/design proposal; not an as-built claim.**
+- [`ecodrive_engineering_master_v0.2.mmd`](ecodrive_engineering_master_v0.2.mmd): editable Mermaid source for the master architecture diagram.
+
 ## System-wide baseline (already in repository)
 
 - [`project_structure.md`](project_structure.md): repository boundaries and module responsibilities.
@@ -36,4 +41,4 @@
 - Prefer a short update to the existing capability doc rather than creating duplicate documents.
 - Keep confidential engineering data and internal test programs out of publicly shared examples.
 
-**Scope note:** This v0.1 index covers Roadload first; it does not claim the complete EcoDrive MBSE model exists. Other capabilities should reuse the same structure when their architecture is under review.
+**Scope note:** The master TARGET document provides a system-wide map, while capability-specific documents remain authoritative for their currently implemented contracts. This index and roadmap do not claim the complete EcoDrive MBSE model is implemented.

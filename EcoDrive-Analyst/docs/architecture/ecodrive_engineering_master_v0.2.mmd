@@ -1,0 +1,78 @@
+flowchart TB
+    UI["UI / Notebook / API"] --> APP["Application Services<br/>Setup · Scenario · Comparison · Save"]
+    DB[("Canonical DB<br/>VDE · FuelCons · Tires · Components · References")] --> REPO["Repositories / Adapters"]
+    REPO --> APP
+
+    subgraph UP["A · Vehicle Resistance & Demand"]
+      direction TB
+      MASS["Mass / Inertia<br/>vehicle + axle loads"] --> TIRE["Tire / Rolling Model"]
+      ENV["Environment<br/>air density / conditions"] --> AERO["Aerodynamics Model"]
+      LOSS["Drivetrain / Brake / Parasitic<br/>resolved contributions"] --> RL["RoadLoadModel<br/>ABC + build-up + breakdown + residual"]
+      TIRE -->|"Rolling contribution"| RL
+      AERO -->|"Aero contribution"| RL
+      COAST["Authoritative coastdown<br/>TOTAL + source"] --> RL
+      RL -->|"Resolved TOTAL / NET ABC"| VD["Vehicle Demand Core<br/>canonical time-series physics"]
+      MASS -->|"Inertial mass"| VD
+      CYCLE["Drive Cycle<br/>time + speed"] --> VD
+      CASE["Load Case conditions<br/>grade / trailer / pressure"] -.-> VD
+      VD --> DEMAND["VehicleDemandProfile<br/>wheel force / power / energy / phases"]
+    end
+
+    APP -->|"Vehicle + physical scenario"| COAST
+    APP -->|"Resolved inputs"| MASS
+    APP -->|"Cycle selection"| CYCLE
+    APP -->|"Operating scenario"| CASE
+    APP -->|"Source data"| LOSS
+
+    subgraph PT["B · Powertrain / Fuel & Energy Paths"]
+      direction TB
+      ROUTE{"Choose operation / fidelity"}
+      MANPAR["Manual parameters<br/>engine / motor / battery / PSE"] --> RESOLVE["Powertrain Scenario Resolver<br/>effective inputs + provenance"]
+      BENCH["Benchmark / sourced parameters"] --> RESOLVE
+      MLPAR["ML parameter estimates<br/>optional; explicitly tagged"] -.-> RESOLVE
+      RESOLVE --> FULL["PowertrainModel — future L1–L3<br/>engine · e-machine · transmission<br/>battery · control · thermal"]
+      RESOLVE --> L0["System Scenario L0 — existing<br/>energy balance / efficiency deltas"]
+      REF["Saved FuelCons reference<br/>required by current L0"] --> L0
+      ML["Direct regression / ML<br/>FuelCons prediction from curated features"]
+      MANRES["Manual / imported FuelCons<br/>observed or external result"] --> CHECK["Input + source validation"]
+    end
+
+    APP --> ROUTE
+    APP -->|"Parameter sources"| MANPAR
+    REPO -->|"Reference / maps"| BENCH
+    REPO -->|"Persisted reference"| REF
+    REPO -->|"Curated training data / model artifacts"| ML
+    ROUTE -->|"Physical simulation"| RESOLVE
+    ROUTE -->|"L0 what-if"| L0
+    ROUTE -->|"Direct prediction"| ML
+    ROUTE -->|"Manual registration"| MANRES
+    DEMAND -->|"Time-resolved wheel demand"| FULL
+    DEMAND -->|"Demand / VDE basis"| L0
+    DEMAND -->|"Engineering features"| ML
+
+    subgraph RESULTS["C · Result Governance & Product Outputs"]
+      direction TB
+      FULL --> POUT["Simulated energy / fuel / CO2<br/>SOC · regen · performance (when available)"]
+      L0 --> LOUT["L0 ScenarioResult<br/>temporary by default"]
+      ML --> MOUT["Predicted FuelCons<br/>model version + uncertainty"]
+      CHECK --> OOUT["Registered external FuelCons<br/>method + source"]
+      POUT --> ENVELOPE["Canonical Result / Provenance Envelope<br/>kind · basis · status · fidelity · source"]
+      LOUT --> ENVELOPE
+      MOUT --> ENVELOPE
+      OOUT --> ENVELOPE
+      ENVELOPE --> REPORT["Comparison / Energy Drivers / Reports"]
+      ENVELOPE --> SAVE{"Explicit save requested<br/>and result eligible?"}
+    end
+
+    REPORT --> APP
+    SAVE -->|"Validated write"| REPO
+    SAVE -->|"No / ineligible"| PREVIEW["Temporary result / preview only"]
+    PREVIEW --> APP
+
+    classDef current fill:#e4f5ee,stroke:#17815d,color:#193f34,stroke-width:1.3px;
+    classDef proposal fill:#e6efff,stroke:#336ba8,color:#17375e,stroke-width:1.3px;
+    classDef future fill:#f2ecfb,stroke:#8366ac,color:#42315c,stroke-width:1.3px,stroke-dasharray: 5 4;
+    classDef decision fill:#fff1d6,stroke:#ac711d,color:#563a19,stroke-width:1.5px;
+    class APP,DB,REPO,CYCLE,TIRE,VD,DEMAND,L0,REF,ML,MANRES,CHECK,LOUT,OOUT,REPORT current;
+    class RL,ROUTE,RESOLVE,MASS,ENV,AERO,LOSS,COAST,CASE,MANPAR,BENCH,ENVELOPE,SAVE,MLPAR proposal;
+    class FULL,POUT,MOUT future;

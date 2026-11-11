@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from src.vde_core import db as db_module
-from src.vde_core.component_repositories import ComponentRepository
+from src.vde_core.component_repositories import ComponentRepository, load_mock_component_repository
 from src.vde_core.qa_mock_data import QA_DATA_DIR, seed_qa_database
 from src.vde_core.repositories.vde_repository import fetch_vde_by_id
 from src.vde_core.roadload_analysis import roadload_force_N
@@ -705,7 +705,11 @@ class VdeRequestResolverTests(unittest.TestCase):
             {"parasitic": _proposal("parasitic", "PARASITIC_METADATA_ONLY", {"parasitic_component_db_id": "PARA-MOCK-001"})}
         )
 
-        result = resolve_vde_request(workbook, _baseline_context())["proposal_results"][0]
+        result = resolve_vde_request(
+            workbook,
+            _baseline_context(),
+            component_repositories={"parasitic": load_mock_component_repository("parasitic")},
+        )["proposal_results"][0]
         action = result["domain_results"]["parasitic"]["component_action"]
 
         self.assertAlmostEqual(result["abc_total"]["A"], 120.0)
@@ -817,7 +821,11 @@ class VdeRequestResolverTests(unittest.TestCase):
             }
         )
 
-        result = resolve_vde_request(workbook, _baseline_context())["proposal_results"][0]
+        result = resolve_vde_request(
+            workbook,
+            _baseline_context(),
+            component_repositories={"axle_hubs": load_mock_component_repository("axle_hubs")},
+        )["proposal_results"][0]
         action = result["domain_results"]["axle_hubs"]["component_action"]
 
         self.assertAlmostEqual(result["abc_total"]["A"], 120.5)

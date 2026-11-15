@@ -54,3 +54,11 @@ Evidence was executed at `fca9a9ad189fe7e6930e987e29fee5717c0d532e`; see [`../ar
 - Pure-path performance: **PARTIAL BASELINE CAPTURED**. SQL, browser/UI, RSS and n×k breakdown remain unmeasured/unavailable.
 
 The gate remains **NOT READY FOR CODE REFACTOR** until selected failures and clean-checkout reproducibility are resolved and remaining measurement/contract gaps are reviewed.
+
+## Atualização de fechamento · 14C (2026-11-15)
+
+A [14C](SPRINT_14_CLOSURE_2026_11_15.md#evidência-executada-em-2026-11-15) reexecutou o golden sintético e a suíte direcionada em `3f0f00d4`. Os dois testes de fixture que falharam na 14A-04 passaram com o isolamento de mocks do [PR #14](https://github.com/caiohfr/projects/pull/14): `test_component_lookup_provenance_does_not_change_parasitic_math` e `test_axle_hubs_lookup_snapshot_preserves_boundary_metadata`.
+
+O gate de refatoração física continua aberto. Permanecem a validação da disponibilidade e sobreposição dos componentes, a revisão dos contratos de decomposição e reconciliação, a reprodutibilidade da suíte completa e as medições de SQL, RSS, UI e escala. A execução histórica de ETL continuou bloqueada pela ausência de `rehearsal_summary.json`.
+
+A decisão histórica de readiness refere-se à implementação do refactor de Roadload. A próxima etapa aprovada é **Sprint 15 · Visual Identity & UX Consistency**, que usa os resultados e contratos atuais. O teste visual em navegador é parte desse handoff de UX.

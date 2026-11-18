@@ -1,9 +1,13 @@
-import streamlit as st
+from html import escape
 from pathlib import Path
 
-from src.vde_app.components.shared import render_inline_image
+import streamlit as st
 
-def page_home():
+from src.vde_app.components.shared import render_inline_image
+from src.vde_app.home_context import VDE_SETUP_STATE_KEY, resolve_home_context
+
+
+def page_methodology():
     st.title("🏠 EcoDrive Analyzer – Scientific Home Page")
     st.markdown("---")
     
@@ -213,6 +217,127 @@ def page_home():
     as part of the **CS50 Final Project** and ongoing research in automotive energy benchmarking.  
     Built with **Python**, **Streamlit**, and **SQLite**, using open-access regulatory data.
         """)
+
+def _home_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        .ed-hero {padding: 1.4rem 1.55rem; border: 1px solid #d8e5ec; border-radius: 18px;
+          background: linear-gradient(135deg, #f4fbf8 0%, #eef6fb 100%); margin-bottom: 1rem;}
+        .ed-eyebrow {font-size:.76rem; letter-spacing:.12em; font-weight:700; color:#16765f;}
+        .ed-hero h1 {font-size:2.05rem; margin:.25rem 0 .4rem; color:#173342;}
+        .ed-hero p {font-size:1.02rem; color:#516875; margin:0; max-width:760px;}
+        .ed-section {font-size:1.1rem; font-weight:700; color:#173342; margin:.9rem 0 .45rem;}
+        .ed-context {min-height:132px; padding:1rem; border:1px solid #dbe6ec; border-radius:14px; background:#fff;}
+        .ed-context .kind {font-size:.7rem; letter-spacing:.09em; color:#16765f; font-weight:700; text-transform:uppercase;}
+        .ed-context h3 {font-size:1rem; margin:.35rem 0 .2rem; color:#173342;}
+        .ed-context p {font-size:.82rem; color:#60727c; margin:.15rem 0;}
+        .ed-empty {padding:1rem; border:1px dashed #b9cad3; border-radius:14px; color:#60727c;}
+        div[data-testid="stPageLink"] a {border-radius:10px;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _context_card(kind: str, title: str, detail: str, source: str) -> None:
+    st.markdown(
+        f"""<div class="ed-context"><div class="kind">{escape(kind)}</div><h3>{escape(title)}</h3>
+        <p>{escape(detail)}</p><p><strong>Source:</strong> {escape(source)}</p></div>""",
+        unsafe_allow_html=True,
+    )
+
+
+def page_home():
+    _home_styles()
+    context = resolve_home_context(st.session_state)
+
+    st.markdown(
+        """<section class="ed-hero"><div class="ed-eyebrow">ECODRIVE / ENGINEERING WORKSPACE</div>
+        <h1>Engineering Workspace</h1>
+        <p>Keep the same vehicle context across demand setup, load-case exploration,
+        powertrain analysis and persisted comparisons.</p></section>""",
+        unsafe_allow_html=True,
+    )
+
+    action_left, action_right, _ = st.columns([1.25, 1.25, 4.5])
+    if context.has_active_analysis:
+        with action_left:
+            if st.button("Continue analysis", type="primary", width="stretch", key="home_continue"):
+                st.switch_page("pages/VDE_Setup.py")
+        with action_right:
+            with st.popover("Start another proposal", width="stretch"):
+                st.warning("This clears only the temporary VDE Setup session. Persisted records are not deleted.")
+                confirmed = st.checkbox("Discard the current temporary setup", key="home_confirm_new_proposal")
+                if st.button("Discard and start", disabled=not confirmed, key="home_start_another"):
+                    st.session_state.pop(VDE_SETUP_STATE_KEY, None)
+                    st.switch_page("pages/VDE_Setup.py")
+    else:
+        with action_left:
+            if st.button("New VDE proposal", type="primary", width="stretch", key="home_new_proposal"):
+                st.switch_page("pages/VDE_Setup.py")
+
+    for warning in context.warnings:
+        st.warning(warning)
+
+    st.markdown('<div class="ed-section">Active Context</div>', unsafe_allow_html=True)
+    baseline_col, proposal_col, fuel_col = st.columns(3)
+    with baseline_col:
+        if context.baseline:
+            _context_card("Baseline", context.baseline.title, context.baseline.detail, context.baseline.source)
+        else:
+            st.markdown('<div class="ed-empty"><strong>Baseline</strong><br>No recoverable VDE selected.</div>', unsafe_allow_html=True)
+    with proposal_col:
+        if context.proposal:
+            _context_card("Proposal", context.proposal.title, context.proposal.detail, context.proposal.source)
+        else:
+            st.markdown('<div class="ed-empty"><strong>Proposal</strong><br>No configured temporary proposal.</div>', unsafe_allow_html=True)
+    with fuel_col:
+        if context.fuelcons:
+            _context_card("FuelCons reference", context.fuelcons.title, context.fuelcons.detail, context.fuelcons.source)
+        else:
+            st.markdown('<div class="ed-empty"><strong>FuelCons reference</strong><br>No persisted L0 reference selected.</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="ed-section">Start an engineering task</div>', unsafe_allow_html=True)
+    first, second, third = st.columns(3)
+    with first:
+        st.page_link("pages/VDE_Setup.py", label="VDE Setup")
+        st.caption("Resolve a baseline and configure proposals by engineering domain.")
+        st.page_link("pages/Comparison_Report.py", label="Comparison Report")
+        st.caption("Compare persisted FuelCons records or inspect persisted physical VDEs.")
+    with second:
+        if context.baseline:
+            if st.button("Roadload & Load Case Lab", width="stretch", key="home_open_lab"):
+                st.session_state["roadload_load_case_vde_id"] = int(context.baseline.vde_id)
+                st.switch_page("pages/Roadload_Load_Case_Lab.py")
+            st.caption(f"Open persisted baseline VDE #{context.baseline.vde_id}; Lab remains in-memory and does not save.")
+        else:
+            st.button("Roadload & Load Case Lab", disabled=True, width="stretch", key="home_open_lab_disabled")
+            st.caption("Select a persisted VDE baseline first. Temporary preview handoff is not supported yet.")
+        st.page_link("pages/Powertrain_Scenario.py", label="Powertrain Scenario")
+        st.caption("Select a saved FuelCons reference before running the L0 workflow.")
+    with third:
+        st.page_link("pages/Database_Management.py", label="Database Management")
+        st.caption("Review persisted engineering records and their provenance.")
+
+    st.markdown('<div class="ed-section">Recent Analysis</div>', unsafe_allow_html=True)
+    if not context.recent:
+        st.info("No recoverable recent analysis in this session. Start from a persisted baseline or FuelCons record.")
+    else:
+        for item in context.recent:
+            left, right = st.columns([5, 1.4], vertical_alignment="center")
+            left.markdown(f"**{item.title}**  \n{item.detail} · {item.source}")
+            right.page_link(item.destination, label="Open")
+
+    st.markdown('<div class="ed-section">Reference & Tools</div>', unsafe_allow_html=True)
+    docs_col, tools_col = st.columns(2)
+    with docs_col:
+        st.page_link("pages/Methodology_Models.py", label="Methodology & Models")
+        st.caption("Browse the existing scientific explanation independently from the working context.")
+    with tools_col:
+        st.page_link("pages/Legacy_Engineering_Tools.py", label="Engineering Tools / Legacy")
+        st.caption("Advanced, diagnostic and compatibility surfaces outside the primary workflow.")
+
 
 if __name__ == "__main__":
     page_home()

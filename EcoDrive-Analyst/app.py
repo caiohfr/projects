@@ -1,5 +1,4 @@
 # app.py
-import os
 import platform
 import sys
 
@@ -7,7 +6,7 @@ import streamlit as st
 import pages.home_page as home
 from src.vde_core.db import configure_db_path, current_db_path
 
-APP_NAME, APP_ICON, APP_VER = "EcoDrive Analyzer", "⚡", "0.7.2"
+APP_NAME, APP_ICON, APP_VER = "EcoDrive Analyst", "⚡", "0.7.2"
 DB_DEFAULT = str(current_db_path())
 
 st.set_page_config(page_title=f"{APP_NAME} {APP_VER}", page_icon=APP_ICON, layout="wide")
@@ -24,44 +23,26 @@ def get_ctx():
     return _bootstrap_ctx()
 
 
-def _quick_checks(db_path: str):
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("App", f"{APP_NAME}", delta=f"v{APP_VER}")
-    with c2:
-        st.metric("Python", sys.version.split()[0], delta=platform.system())
-    with c3:
-        try:
-            st.metric("Database", "OK" if os.path.exists(db_path) else "Missing", delta=os.path.basename(db_path))
-        except Exception as e:
-            st.metric("Database", "Error", delta=str(e)[:18])
-    with c4:
-        try:
-            import pandas as pd  # noqa: F401
-
-            st.metric("Core libs", "Loaded", delta="pandas OK")
-        except Exception:
-            st.metric("Core libs", "Check", delta="pandas ?")
-
-
 def _sidebar(ctx):
     st.sidebar.title(f"{APP_ICON} {APP_NAME}")
-    st.sidebar.caption("Vehicle Demanded Energy - scientific analyzer")
-    st.sidebar.subheader("Navigation")
+    st.sidebar.caption("Engineering workspace")
+    st.sidebar.subheader("Workspace")
 
-    st.page_link("app.py", label="Home", icon="🏠")
-    st.sidebar.subheader("Analysis")
-    st.page_link("pages/VDE_Setup.py", label="VDE Setup", icon="📥")
-    st.page_link("pages/Powertrain_Scenario.py", label="Powertrain System Scenarios", icon="⚙️")
-    st.page_link("pages/Comparison_Report.py", label="Comparison Report", icon="📊")
-    st.sidebar.subheader("Engineering / Support")
-    st.page_link("pages/Legacy_Engineering_Tools.py", label="Legacy & Engineering Tools", icon="🧰")
+    st.page_link("app.py", label="Home")
+    st.page_link("pages/VDE_Setup.py", label="VDE Setup")
+    st.page_link("pages/Roadload_Load_Case_Lab.py", label="Roadload & Load Case Lab")
+    st.page_link("pages/Powertrain_Scenario.py", label="Powertrain Scenario")
+    st.page_link("pages/Comparison_Report.py", label="Comparison Report")
     st.page_link("pages/Database_Management.py", label="Database Management")
+    st.sidebar.subheader("Reference & Tools")
+    st.page_link("pages/Methodology_Models.py", label="Methodology & Models")
+    st.page_link("pages/Legacy_Engineering_Tools.py", label="Engineering Tools / Legacy")
     st.sidebar.divider()
-    ctx["db_path"] = st.sidebar.text_input("DB path", value=ctx.get("db_path", DB_DEFAULT))
-    st.sidebar.caption("Tip: keep a stable path under /data/db for reproducibility.")
+    with st.sidebar.expander("Runtime database"):
+        ctx["db_path"] = st.text_input("DB path", value=ctx.get("db_path", DB_DEFAULT))
+        st.caption("Use a stable path under data/db for reproducibility.")
     st.sidebar.divider()
-    st.sidebar.caption("© 2025 - EcoDrive Analyzer | CS50 project")
+    st.sidebar.caption(f"EcoDrive Analyst · v{APP_VER}")
 
 
 def main():
@@ -69,21 +50,6 @@ def main():
     _sidebar(ctx)
     ctx["db_path"] = str(configure_db_path(ctx.get("db_path") or DB_DEFAULT))
 
-    st.title(f"{APP_ICON} EcoDrive Analyzer")
-    st.caption("Transparent, physics-based, and reproducible benchmarking")
-
-    _quick_checks(ctx["db_path"])
-
-    st.markdown(
-        """
-> **Start here:**  
-> 1) **📥 VDE Setup** - resolve a baseline, requested scenarios, and roadload demand.
-> 2) **⚙️ Powertrain Scenario** - estimate fuel / energy / CO2 from resolved VDE.  
-> 3) **📊 Powertrain Comparison** - compare saved scenarios, methods, and peer outlook.
-        """
-    )
-
-    st.divider()
     try:
         home.page_home()
     except Exception as e:

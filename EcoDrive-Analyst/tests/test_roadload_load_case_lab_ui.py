@@ -52,6 +52,9 @@ class RoadloadLoadCaseLabAppTests(unittest.TestCase):
         self.assertTrue(app.checkbox(key="load_case_use_estimated_rrc_prior").value)
         self.assertFalse(any("save" in button.label.lower() for button in app.button))
         self.assertTrue(any("no Save action" in info.value for info in app.info))
+        markdown_values = [getattr(item, "value", "") for item in app.markdown]
+        self.assertTrue(any("ed-workflow-hero" in value for value in markdown_values))
+        self.assertTrue(any("ed-lab-context" in value for value in markdown_values))
 
     def test_vde_setup_handoff_preselects_baseline(self):
         app = self._app(selected_vde_id=900004)
@@ -92,6 +95,7 @@ class RoadloadLoadCaseLabAppTests(unittest.TestCase):
         self.assertEqual(result.baseline_mass_source_field, "inertia_class")
         self.assertEqual(next(metric.value for metric in app.metric if metric.label == "Source"), "inertia_class")
         self.assertTrue(any(expander.label == "Roadload Reference Curve" for expander in app.expander))
+        self.assertTrue(any("ed-result-banner" in getattr(item, "value", "") for item in app.markdown))
 
     def test_estimated_rrc_diagnostic_uses_linked_fuelcons_context(self):
         db_module.update_row(

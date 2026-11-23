@@ -825,16 +825,19 @@ def render_active_v22_section(section: str, renderers: dict[str, object], *args,
 
 def render_v22_sidebar_navigation(state: dict) -> None:
     flow = build_v22_flow_status_payload(state)
-    st.markdown("**Request Flow**")
-    for step in list(flow.get("steps") or []):
-        if st.button(
-            f"{step.get('icon')} {step.get('index')}. {step.get('label')}",
-            key=f"v22_sidebar_nav__{step.get('key')}",
-            use_container_width=True,
-            type="primary" if step.get("is_active") else "secondary",
-        ):
-            _set_v22_active_section(state, str(step.get("key") or "baseline"))
-        render_v22_sidebar_step_meta(step)
+    steps = list(flow.get("steps") or [])
+    st.markdown('<div class="ed-vde-flow-label">Request flow</div>', unsafe_allow_html=True)
+    columns = st.columns(len(steps) or 1)
+    for column, step in zip(columns, steps):
+        with column:
+            if st.button(
+                f"{step.get('icon')} {step.get('index')}. {step.get('label')}",
+                key=f"v22_sidebar_nav__{step.get('key')}",
+                width="stretch",
+                type="primary" if step.get("is_active") else "secondary",
+            ):
+                _set_v22_active_section(state, str(step.get("key") or "baseline"))
+            render_v22_sidebar_step_meta(step)
 
 
 def render_vde_request_compact() -> None:
@@ -888,9 +891,9 @@ def render_v22_section_pager(state: dict) -> None:
     next_section = SECTION_ORDER[active_index + 1] if active_index < len(SECTION_ORDER) - 1 else None
 
     prev_col, next_col = st.columns(2)
-    if prev_col.button("Previous", key=f"v22_prev__{active_section}", disabled=previous_section is None, use_container_width=True):
+    if prev_col.button("Previous", key=f"v22_prev__{active_section}", disabled=previous_section is None, width="stretch"):
         _set_v22_active_section(state, previous_section)
-    if next_col.button("Next", key=f"v22_next__{active_section}", disabled=next_section is None, use_container_width=True):
+    if next_col.button("Next", key=f"v22_next__{active_section}", disabled=next_section is None, width="stretch"):
         _set_v22_active_section(state, next_section)
     st.caption("Previous / Next changes only the active section. It does not apply inputs or regenerate preview.")
 
@@ -912,21 +915,21 @@ def _render_v22_inputs_domain_pager(state: dict) -> None:
         prev_col.button(
             previous_label,
             key=f"v22_inputs_prev__{selected}",
-            use_container_width=True,
+            width="stretch",
             on_click=_set_v22_active_domain_from_pager,
             args=(selected, previous_domain),
         )
-    elif prev_col.button(previous_label, key=f"v22_inputs_prev__{selected}", use_container_width=True):
+    elif prev_col.button(previous_label, key=f"v22_inputs_prev__{selected}", width="stretch"):
         _set_v22_active_section(state, "matrix")
     if next_domain:
         next_col.button(
             next_label,
             key=f"v22_inputs_next__{selected}",
-            use_container_width=True,
+            width="stretch",
             on_click=_set_v22_active_domain_from_pager,
             args=(selected, next_domain),
         )
-    elif next_col.button(next_label, key=f"v22_inputs_next__{selected}", use_container_width=True):
+    elif next_col.button(next_label, key=f"v22_inputs_next__{selected}", width="stretch"):
         _set_v22_active_section(state, "preview")
     st.caption("Previous / Next changes navigation only. It does not apply inputs or regenerate preview.")
 
@@ -1222,7 +1225,7 @@ def render_baseline_section(state: dict) -> None:
                 disabled=True,
                 key="v22_baseline_selector_empty",
             )
-            load_pressed = selector_cols[1].button("Load baseline", key="v22_load_baseline", disabled=True, use_container_width=True)
+            load_pressed = selector_cols[1].button("Load baseline", key="v22_load_baseline", disabled=True, width="stretch")
         else:
             selector_cols[0].selectbox(
                 "Candidate baseline",
@@ -1231,11 +1234,11 @@ def render_baseline_section(state: dict) -> None:
                 key="v22_baseline_selector",
                 label_visibility="collapsed",
             )
-            load_pressed = selector_cols[1].button("Load baseline", key="v22_load_baseline", use_container_width=True)
+            load_pressed = selector_cols[1].button("Load baseline", key="v22_load_baseline", width="stretch")
     else:
         new_test_payload, new_test_issues = _render_baseline_new_test_form(state)
         st.caption("Measured ABC_TOTAL is authoritative for this baseline. Transmission remains unresolved until explicitly provided elsewhere.")
-        if st.button("Load baseline", key="v22_load_new_test_baseline", use_container_width=False):
+        if st.button("Load baseline", key="v22_load_new_test_baseline", width="content"):
             if new_test_issues:
                 for message in new_test_issues:
                     render_v22_notice_strip(message, tone="warning")
@@ -1297,7 +1300,7 @@ def render_baseline_section(state: dict) -> None:
                         for item in list(corrections_payload.get("entries") or [])
                     ]
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -1318,7 +1321,7 @@ def render_baseline_section(state: dict) -> None:
             if filtered.empty:
                 st.info("No baseline rows match the current filters.")
             else:
-                st.dataframe(filtered.head(200), use_container_width=True, hide_index=True)
+                st.dataframe(filtered.head(200), width="stretch", hide_index=True)
 
 
 def render_proposal_matrix_section(state: dict) -> None:
@@ -1335,7 +1338,7 @@ def render_proposal_matrix_section(state: dict) -> None:
     with st.form("v22_proposal_matrix_form"):
         header = st.columns([0.9, 1.2, 1, 1, 1, 1.15, 1, 1.1, 1.1, 0.7])
         for cell, label in zip(header, ["Proposal", "Walk From", "Mass", "Aero", "Tire", "Transmission", "Brake", "Axle & Hubs", "Parasitics", "Remove"]):
-            cell.caption(label)
+            cell.markdown(f'<div class="ed-vde-matrix-header">{label}</div>', unsafe_allow_html=True)
         for proposal in proposals:
             proposal_id = str(proposal.get("proposal_id") or "")
             row_cols = st.columns([0.9, 1.2, 1, 1, 1, 1.15, 1, 1.1, 1.1, 0.7])
@@ -1496,7 +1499,7 @@ def _render_inactive_domain_summary(overview_payload: dict) -> None:
             summary = "; ".join(list(item.get("inactive_summary") or []))
         rows.append({"Domain": item.get("label"), "Configuration": summary})
     with st.expander(f"Inactive / inherited domains · {len(inactive)}", expanded=False):
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _render_request_inputs_secondary(overview_payload: dict, baseline_payload: dict) -> None:
@@ -2381,7 +2384,7 @@ def _render_mass_resolved_audit(proposal_specs: list[dict]) -> None:
                 value = dict(context.get("resolved_display") or {}).get(field_key)
                 row[proposal_label] = _display_domain_cell(value, field_key)
             rows.append(row)
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _render_tire_resolved_audit(proposal_specs: list[dict]) -> None:
@@ -2411,7 +2414,7 @@ def _render_tire_resolved_audit(proposal_specs: list[dict]) -> None:
                 value = dict(context.get("resolved_display") or {}).get(field_key)
                 row[proposal_label] = _display_domain_cell(value, field_key)
             rows.append(row)
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _render_transmission_coastdown_audit(proposal_specs: list[dict]) -> None:
@@ -2446,7 +2449,7 @@ def _render_transmission_coastdown_audit(proposal_specs: list[dict]) -> None:
                     value = resolved.get(field_key)
                 row[proposal_label] = _display_domain_cell(value, field_key)
             rows.append(row)
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _render_mass_simple_sheet_row(
@@ -2953,7 +2956,7 @@ def _render_domain_technical_details(card_payload: dict) -> None:
                     for item in summaries
                 ]
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     render_v22_chip_list([f"Fields: {', '.join(list(card_payload.get('row_keys') or []))}"])
@@ -2967,7 +2970,7 @@ def _render_vde_cycle_comparison_table(payload: dict) -> None:
             row[str(column.get("label") or column.get("id") or "")] = dict(item.get("display_values") or {}).get(column.get("id"))
         rows.append(row)
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def render_preview_save_section(state: dict) -> None:
@@ -3010,10 +3013,10 @@ def render_preview_save_section(state: dict) -> None:
     if not bundle:
         if status_payload.get("pending_rows"):
             render_v22_group_header("Not applied")
-            st.dataframe(pd.DataFrame(status_payload.get("pending_rows") or []), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(status_payload.get("pending_rows") or []), width="stretch", hide_index=True)
         if status_payload.get("incomplete_rows"):
             render_v22_group_header("Applied but incomplete")
-            st.dataframe(pd.DataFrame(status_payload.get("incomplete_rows") or []), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(status_payload.get("incomplete_rows") or []), width="stretch", hide_index=True)
         st.info(str(status_payload.get("empty_message") or "No preview generated yet."))
         return
 
@@ -3042,7 +3045,7 @@ def render_preview_save_section(state: dict) -> None:
                         for item in list(correction_summary.get("entries") or [])
                     ]
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -3067,7 +3070,7 @@ def render_preview_save_section(state: dict) -> None:
                 for column in list(comparison_payload.get("columns") or []):
                     display_row[str(column.get("label") or column.get("id") or "")] = dict(row.get("display_values") or {}).get(column.get("id"))
                 rows.append(display_row)
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
         if cycle_comparison_payload.get("has_cycle_results"):
             render_v22_group_header("VDE by cycle")
             _render_vde_cycle_comparison_table(cycle_comparison_payload)
@@ -3082,7 +3085,7 @@ def render_preview_save_section(state: dict) -> None:
             st.caption(f"Fingerprint: {audit_payload.get('fingerprint')}")
         if audit_payload.get("audit_rows"):
             render_v22_group_header("Per-domain audit")
-            st.dataframe(pd.DataFrame(audit_payload.get("audit_rows") or []), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(audit_payload.get("audit_rows") or []), width="stretch", hide_index=True)
         resolution_result = dict(bundle.get("resolution_result") or {})
         proposal_results_by_id = {
             str(item.get("proposal_id") or ""): dict(item)
@@ -3096,21 +3099,21 @@ def render_preview_save_section(state: dict) -> None:
                 st.caption(f"Walk From: {header.get('walk_from') or EM_DASH}")
                 st.dataframe(
                     pd.DataFrame(_proposal_engineering_rows_for_display(proposal_result, unit_system)),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
                 mass_resolution_rows = _mass_resolution_rows_for_display(proposal_result, unit_system)
                 if mass_resolution_rows:
                     render_v22_group_header("Mass Resolution")
-                    st.dataframe(pd.DataFrame(mass_resolution_rows), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(mass_resolution_rows), width="stretch", hide_index=True)
                 tire_resolution_rows = _tire_resolution_rows_for_display(proposal_result, unit_system)
                 if tire_resolution_rows:
                     render_v22_group_header("Tire Resolution")
-                    st.dataframe(pd.DataFrame(tire_resolution_rows), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(tire_resolution_rows), width="stretch", hide_index=True)
                 domain_change_rows = _proposal_domain_change_rows_for_display(proposal_result, unit_system)
                 if domain_change_rows:
                     render_v22_group_header("Domain Changes")
-                    st.dataframe(pd.DataFrame(domain_change_rows), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(domain_change_rows), width="stretch", hide_index=True)
                 if model.get("validation_rows"):
                     render_v22_group_header("Warnings & Issues")
                     st.dataframe(
@@ -3125,12 +3128,12 @@ def render_preview_save_section(state: dict) -> None:
                                 for row in list(model.get("validation_rows") or [])
                             ]
                         ),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                     )
                 if model.get("component_action_rows"):
                     render_v22_group_header("Component Actions")
-                    st.dataframe(pd.DataFrame(model.get("component_action_rows") or []), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(model.get("component_action_rows") or []), width="stretch", hide_index=True)
         with st.expander("Effective metadata", expanded=False):
             _render_scenario_metadata_audit(state)
 
@@ -3150,13 +3153,13 @@ def _render_validation_details(validation_payload: dict) -> None:
                 cell.metric(label, value)
         if validation_payload.get("pending_rows"):
             render_v22_group_header("Not applied")
-            st.dataframe(pd.DataFrame(validation_payload.get("pending_rows") or []), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(validation_payload.get("pending_rows") or []), width="stretch", hide_index=True)
         if validation_payload.get("incomplete_rows"):
             render_v22_group_header("Applied but incomplete")
-            st.dataframe(pd.DataFrame(validation_payload.get("incomplete_rows") or []), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(validation_payload.get("incomplete_rows") or []), width="stretch", hide_index=True)
         if validation_payload.get("root_issue_rows"):
             render_v22_group_header("Validation Issues")
-            st.dataframe(pd.DataFrame(validation_payload.get("root_issue_rows") or []), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(validation_payload.get("root_issue_rows") or []), width="stretch", hide_index=True)
         issue_sections = [
             section for section in list(validation_payload.get("scenario_sections") or [])
             if section.get("issue_rows") or str(section.get("status") or "") not in {"OK", "Ready"}
@@ -3164,14 +3167,14 @@ def _render_validation_details(validation_payload: dict) -> None:
         for section in issue_sections:
             with st.expander(f"{section.get('label')} | {section.get('status')}", expanded=False):
                 if section.get("issue_rows"):
-                    st.dataframe(pd.DataFrame(section.get("issue_rows") or []), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(section.get("issue_rows") or []), width="stretch", hide_index=True)
                 if section.get("domain_rows"):
-                    st.dataframe(pd.DataFrame(section.get("domain_rows") or []), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(section.get("domain_rows") or []), width="stretch", hide_index=True)
         with st.expander("All domain statuses", expanded=False):
             for section in list(validation_payload.get("scenario_sections") or []):
                 if section.get("domain_rows"):
                     st.caption(f"{section.get('label')} | {section.get('status')}")
-                    st.dataframe(pd.DataFrame(section.get("domain_rows") or []), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(section.get("domain_rows") or []), width="stretch", hide_index=True)
 
 
 def _render_roadload_analysis_block(state: dict, unit_system: str) -> None:
@@ -3199,13 +3202,13 @@ def _render_roadload_analysis_block(state: dict, unit_system: str) -> None:
         return
     visible_payload = dict(payload)
     visible_payload["series"] = visible_series
-    st.plotly_chart(_build_roadload_analysis_figure(visible_payload), use_container_width=True, key="v22_roadload_curves")
+    st.plotly_chart(_build_roadload_analysis_figure(visible_payload), width="stretch", key="v22_roadload_curves")
     with st.expander("Roadload checkpoints", expanded=False):
         st.caption(
             f"Checkpoint speeds stay canonical in km/h. Force values are displayed in {payload.get('force_unit') or 'N'}."
         )
         checkpoint_rows = [row for row in list(payload.get("checkpoint_rows") or []) if boundary_mode == "Both" or str(row.get("State") or "") == boundary_mode]
-        st.dataframe(pd.DataFrame(checkpoint_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(checkpoint_rows), width="stretch", hide_index=True)
 
 
 def _build_roadload_analysis_figure(payload: dict) -> go.Figure:
@@ -3270,8 +3273,8 @@ def _render_cycle_power_analysis_block(state: dict) -> None:
     if not visible_series:
         st.info(str(payload.get("message") or "No resolved power series is available."))
         return
-    st.plotly_chart(_build_cycle_speed_figure(payload), use_container_width=True, key="v22_cycle_speed")
-    st.plotly_chart(_build_cycle_power_figure(payload, visible_series), use_container_width=True, key="v22_cycle_power")
+    st.plotly_chart(_build_cycle_speed_figure(payload), width="stretch", key="v22_cycle_speed")
+    st.plotly_chart(_build_cycle_power_figure(payload, visible_series), width="stretch", key="v22_cycle_power")
     with st.expander("Component breakdown", expanded=False):
         st.info(str(payload.get("decomposition_note") or "Component attribution is not available for this resolved roadload."))
 
@@ -3382,7 +3385,7 @@ def _render_db_preview_and_save(state: dict) -> None:
         )
     with st.expander("DB row preview", expanded=False):
         if compact_rows:
-            st.dataframe(pd.DataFrame(compact_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(compact_rows), width="stretch", hide_index=True)
     with st.expander("Full DB row", expanded=False):
         full_rows = []
         for proposal_row in proposal_rows:
@@ -3393,7 +3396,7 @@ def _render_db_preview_and_save(state: dict) -> None:
                 }
             )
         if full_rows:
-            st.dataframe(pd.DataFrame(full_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(full_rows), width="stretch", hide_index=True)
 
     _render_save_panel(state, save_plan)
 
@@ -3630,7 +3633,7 @@ def _render_scenario_metadata_audit(state: dict) -> None:
         effective = dict(dict(contexts.get(proposal_id) or {}).get("effective_metadata") or {})
         rows.append({"Proposal": proposal_display_label(state, proposal), **{METADATA_FIELD_LABELS.get(key, key): _display_editor_value(effective.get(key)) for key in V22_PROPOSAL_METADATA_FIELDS}})
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _render_metadata_override_widget(cell, proposal_id: str, field_key: str, *, overrides: dict, effective: dict):
@@ -3709,7 +3712,7 @@ def _render_effective_metadata_table(effective: dict) -> None:
                 "Effective": _display_editor_value(effective.get(field_key)),
             }
         )
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _render_lookup_panel(state: dict, domain: str) -> None:
@@ -3765,7 +3768,7 @@ def _render_lookup_panel(state: dict, domain: str) -> None:
         return
 
     display_rows = _display_lookup_rows(results, unit_system)
-    st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(display_rows), width="stretch", hide_index=True)
     option_ids = [str(dict(row).get("lookup_id") or "") for row in results if str(dict(row).get("lookup_id") or "").strip()]
     if not option_ids:
         st.info("No selectable rows were returned for this query.")
@@ -3798,7 +3801,7 @@ def _render_lookup_panel(state: dict, domain: str) -> None:
         key=target_key,
         disabled=not target_options,
     ) if target_options else ""
-    if action_cols[1].button("Use selected tire" if domain == "tire" else "Use selected row", key=f"v22_lookup_apply__{domain}", use_container_width=True):
+    if action_cols[1].button("Use selected tire" if domain == "tire" else "Use selected row", key=f"v22_lookup_apply__{domain}", width="stretch"):
         source_kind = str(st.session_state.get(f"v22_lookup_results_source__{domain}", st.session_state.get(f"v22_lookup_source__{domain}", "Component DB")))
         target_id = str(st.session_state.get(f"v22_lookup_target__{domain}") or "")
         normalized = normalize_v22_state(state)
@@ -3909,7 +3912,7 @@ def _render_tire_database_browser(state: dict, target_rows: list[dict], target_i
         total = int(page_payload["total"])
         st.caption(f"Showing {start}-{end} of {total} records")
         display_rows = _display_lookup_rows(visible_rows, unit_system)
-        st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(display_rows), width="stretch", hide_index=True)
 
         if int(page_payload["total_pages"]) > 1:
             pager = st.columns([0.8, 1.8, 0.8])
@@ -3917,7 +3920,7 @@ def _render_tire_database_browser(state: dict, target_rows: list[dict], target_i
                 "Previous",
                 key="v22_tire_browser_prev",
                 disabled=int(page_payload["page"]) <= 0,
-                use_container_width=True,
+                width="stretch",
             ):
                 st.session_state["v22_tire_browser_page"] = max(int(page_payload["page"]) - 1, 0)
                 st.rerun()
@@ -3926,7 +3929,7 @@ def _render_tire_database_browser(state: dict, target_rows: list[dict], target_i
                 "Next",
                 key="v22_tire_browser_next",
                 disabled=int(page_payload["page"]) >= int(page_payload["total_pages"]) - 1,
-                use_container_width=True,
+                width="stretch",
             ):
                 st.session_state["v22_tire_browser_page"] = min(
                     int(page_payload["page"]) + 1,
@@ -3983,7 +3986,7 @@ def _render_tire_database_browser(state: dict, target_rows: list[dict], target_i
             format_func=lambda value: _lookup_target_label(target_rows, value),
             key="v22_lookup_target__tire",
         )
-        if action_cols[1].button("Use selected tire", key="v22_lookup_apply__tire", use_container_width=True):
+        if action_cols[1].button("Use selected tire", key="v22_lookup_apply__tire", width="stretch"):
             _apply_selected_lookup_row(state, "tire", target_id, "Tire Database", selected_row, unit_system)
 
 
@@ -3997,7 +4000,7 @@ def _render_existing_vde_tire_lookup(state: dict, target_rows: list[dict], targe
         st.info(message)
         return
 
-    st.dataframe(pd.DataFrame(_display_lookup_rows(results, unit_system)), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(_display_lookup_rows(results, unit_system)), width="stretch", hide_index=True)
     option_ids = [str(dict(row).get("lookup_id") or "") for row in results if str(dict(row).get("lookup_id") or "").strip()]
     if not option_ids:
         st.info("No selectable rows were returned for this query.")
@@ -4016,7 +4019,7 @@ def _render_existing_vde_tire_lookup(state: dict, target_rows: list[dict], targe
         format_func=lambda value: _lookup_target_label(target_rows, value),
         key="v22_lookup_target__tire",
     )
-    if action_cols[1].button("Use selected tire", key="v22_lookup_apply__tire", use_container_width=True):
+    if action_cols[1].button("Use selected tire", key="v22_lookup_apply__tire", width="stretch"):
         _apply_selected_lookup_row(state, "tire", target_id, "Existing VDE", selected_row, unit_system)
 
 
@@ -4473,7 +4476,7 @@ def _render_correction_form(state: dict) -> None:
         )
         edited = st.data_editor(
             pd.DataFrame(rows),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             disabled=["Domain", "Field", "Unit", "Baseline / Printed", "Effective"],
             key="v22_corrections_editor",
@@ -4503,12 +4506,12 @@ def _render_correction_form(state: dict) -> None:
                     {"Field": "Notes", "Value": _display_editor_value(mass_review.get("baseline_mass_review_notes"))},
                 ]
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
     st.markdown("**Effective Baseline**")
-    st.dataframe(_snapshot_frame(dict(state.get("baseline", {}).get("effective") or {})), use_container_width=True, hide_index=True)
+    st.dataframe(_snapshot_frame(dict(state.get("baseline", {}).get("effective") or {})), width="stretch", hide_index=True)
 
 
 def _snapshot_frame(snapshot: dict) -> pd.DataFrame:

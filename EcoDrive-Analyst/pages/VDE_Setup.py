@@ -7,6 +7,7 @@ from src.vde_app.components.vde_request_compact import (
     render_vde_request_compact,
 )
 from src.vde_app.components.vde_request_compact_style import inject_v22_styles
+from src.vde_app.components.sprint15b_style import inject_sprint15b_styles, render_workflow_intro
 from src.vde_app.units import UNIT_SYSTEM_OPTIONS, normalize_unit_system
 from src.vde_core.db import configure_db_path, current_db_path, ensure_db
 
@@ -29,10 +30,11 @@ def _sync_runtime_db_path() -> str:
 
 def main() -> None:
     inject_v22_styles()
+    inject_sprint15b_styles()
     state = ensure_v22_session_state(st.session_state)
     with st.sidebar:
-        st.header("VDE Setup")
-        st.caption("Baseline, request, scenario, and engineering review workflow.")
+        st.header("Workspace controls")
+        st.caption("Runtime database, request reset, and display units.")
         ctx = st.session_state.get("ctx")
         current_db = None
         if isinstance(ctx, dict):
@@ -51,7 +53,6 @@ def main() -> None:
             st.session_state.pop(V22_SESSION_KEY, None)
             st.rerun()
         st.divider()
-        render_v22_sidebar_navigation(state)
         st.selectbox(
             "Display units",
             UNIT_SYSTEM_OPTIONS,
@@ -59,11 +60,19 @@ def main() -> None:
             key="unit_system",
         )
 
-    st.title("VDE Setup")
-    st.caption("Baseline, request, scenario, and engineering review workflow.")
+    render_workflow_intro(
+        kicker="VDE setup workflow",
+        title="Build an auditable vehicle demand proposal",
+        description=(
+            "Load a persisted or measured baseline, configure proposal domains, apply requested inputs, "
+            "then validate and preview before any explicit save."
+        ),
+        status="Preview first · explicit Save",
+    )
+    render_v22_sidebar_navigation(state)
     selected_vde_id = state.get("baseline", {}).get("selected_vde_id")
     if selected_vde_id:
-        if st.button("Open in Load Case Lab", key="open_selected_vde_in_load_case_lab"):
+        if st.button("Open persisted baseline in Load Case Lab", key="open_selected_vde_in_load_case_lab"):
             st.session_state["roadload_load_case_vde_id"] = int(selected_vde_id)
             st.switch_page("pages/Roadload_Load_Case_Lab.py")
     render_vde_request_compact()

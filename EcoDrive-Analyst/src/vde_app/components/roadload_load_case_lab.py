@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from src.vde_app.components.sprint15b_style import render_calculated_result_banner, render_lab_baseline_context
 from src.vde_app.units import KPA_PER_PSI, UNIT_SYSTEM_METRIC, normalize_unit_system
 from src.vde_core.repositories.fuelcons_repository import fetch_fuelcons_by_vde_id
 from src.vde_core.repositories.vde_repository import fetch_vde_all_rows, fetch_vde_by_id
@@ -180,8 +181,9 @@ def _build_request(selected_vde_id: int):
 
 
 def _render_controls() -> bool:
-    with st.container():
-        st.subheader("Analysis")
+    with st.container(border=True):
+        st.subheader("Analysis mode")
+        st.caption("Choose one operating context. Inputs are evaluated only when Calculate load case is pressed.")
         analysis_cols = st.columns(2)
         analysis_cols[0].selectbox("Analysis mode", list(_MODE_LABELS), key="load_case_analysis_mode")
         selected_mode = _MODE_LABELS[st.session_state.get("load_case_analysis_mode", "Drive Cycle")]
@@ -202,6 +204,7 @@ def _render_controls() -> bool:
             sweep_cols[1].number_input("End [km/h]", min_value=0.0, value=120.0, step=5.0, key="load_case_sweep_end_kph")
             sweep_cols[2].number_input("Increment [km/h]", min_value=0.0, value=20.0, step=5.0, key="load_case_sweep_step_kph")
 
+        st.divider()
         env_col, mass_col = st.columns(2)
         with env_col:
             st.subheader("Environment")
@@ -230,6 +233,7 @@ def _render_controls() -> bool:
             elif mass_mode is LoadCaseMassMode.GCWR:
                 st.number_input("GCWR [kg]", min_value=0.0, value=3200.0, step=10.0, key="load_case_gcwr_kg")
 
+        st.divider()
         trailer_col, route_col = st.columns(2)
         with trailer_col:
             st.subheader("Trailer / Towing")
@@ -248,8 +252,16 @@ def _render_controls() -> bool:
             st.subheader("Route")
             st.number_input("Grade [%]", value=0.0, step=0.5, key="load_case_grade_pct")
 
-        st.caption("Temporary calculation only. No VDE or FuelCons row will be inserted or updated.")
-        return st.button("Calculate load case", type="primary", key="calculate_roadload_load_case")
+        st.divider()
+        action_col, note_col = st.columns([1.2, 3.8])
+        submitted = action_col.button(
+            "Calculate load case",
+            type="primary",
+            key="calculate_roadload_load_case",
+            width="stretch",
+        )
+        note_col.caption("Temporary calculation only. No VDE or FuelCons row will be inserted or updated.")
+        return submitted
 
 
 def _render_drive_cycle_result(result) -> None:
@@ -483,14 +495,15 @@ def _render_primary_kpis(result) -> None:
 
 def _render_result(result) -> None:
     _render_primary_kpis(result)
-    summary_cols = st.columns(5)
-    summary_cols[0].metric("Baseline calculation mass", f"{result.baseline_calculation_mass_kg:,.0f} kg")
-    summary_cols[1].metric("Baseline basis", _humanize(result.baseline_mass_basis))
-    summary_cols[2].metric("Source", result.baseline_mass_source_field)
-    summary_cols[3].metric("Scenario calculation mass", f"{result.scenario_calculation_mass_kg:,.0f} kg")
-    summary_cols[4].metric("Scenario basis", _humanize(result.scenario_mass_basis))
-    system_col = st.columns(1)[0]
-    system_col.metric("System mass", f"{result.scenario_system_mass_kg:,.0f} kg")
+    st.subheader("Resolved mass states")
+    baseline_cols = st.columns(3)
+    baseline_cols[0].metric("Baseline calculation mass", f"{result.baseline_calculation_mass_kg:,.0f} kg")
+    baseline_cols[1].metric("Baseline basis", _humanize(result.baseline_mass_basis))
+    baseline_cols[2].metric("Source", result.baseline_mass_source_field)
+    scenario_cols = st.columns(3)
+    scenario_cols[0].metric("Scenario calculation mass", f"{result.scenario_calculation_mass_kg:,.0f} kg")
+    scenario_cols[1].metric("Scenario basis", _humanize(result.scenario_mass_basis))
+    scenario_cols[2].metric("System mass", f"{result.scenario_system_mass_kg:,.0f} kg")
 
     context_cols = st.columns(4)
     context_cols[0].metric("Grade", f"{result.request.route.grade_pct:g} %")
@@ -564,7 +577,7 @@ def _render_result(result) -> None:
             st.dataframe(
                 pd.DataFrame(
                     [
-                        {"Field": label, "Value": value if value not in (None, "") else "—"}
+                        {"Field": label, "Value": str(value) if value not in (None, "") else "—"}
                         for label, value in diagnostic_rows
                     ]
                 ),
@@ -624,6 +637,8 @@ def render_roadload_load_case_lab() -> None:
     rows = fetch_vde_all_rows()
     if not rows:
         st.warning("No persisted VDE baseline is available in the active database.")
+        if st.button("Open VDE Setup", key="load_case_open_vde_setup"):
+            st.switch_page("pages/VDE_Setup.py")
         return
     by_id = {int(row["id"]): row for row in rows if row.get("id") is not None}
     labels = {_row_label(row): int(row["id"]) for row in rows if row.get("id") is not None}
@@ -645,9 +660,7 @@ def render_roadload_load_case_lab() -> None:
     st.session_state[LAB_VDE_SESSION_KEY] = selected_id
     selected_row = fetch_vde_by_id(selected_id)
 
-    st.caption(
-        f"Authoritative persisted baseline: VDE-{selected_id:03d}. The source row remains immutable; all overrides are in memory."
-    )
+    render_lab_baseline_context(selected_row, selected_id)
     submitted = _render_controls()
     if submitted:
         try:
@@ -665,7 +678,15 @@ def render_roadload_load_case_lab() -> None:
     result = st.session_state.get(LAB_RESULT_SESSION_KEY)
     if result is not None and result.request.baseline_vde_id == selected_id:
         st.divider()
+        render_calculated_result_banner(selected_id)
         _render_result(result)
+    elif result is not None:
+        st.info("The persisted baseline changed. Calculate the load case to replace the previous result.")
+    else:
+        st.markdown(
+            '<div class="ed-empty-guidance">No load case has been calculated yet. Configure the temporary conditions above, then run the explicit calculation.</div>',
+            unsafe_allow_html=True,
+        )
 
 
 __all__ = [

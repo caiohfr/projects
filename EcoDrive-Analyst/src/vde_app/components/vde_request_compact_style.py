@@ -413,8 +413,44 @@ def inject_v22_styles() -> None:
         .v22-group-header {
             font-size: 0.92rem;
             font-weight: 700;
-            color: var(--text-color, #111827);
+            color: var(--ed-ink, #0b2742);
             margin: 0.3rem 0 0.45rem 0;
+        }
+        .v22-step-header,
+        .v22-context-item,
+        .v22-summary-card,
+        .v22-progress-strip,
+        .v22-domain-header,
+        .v22-preview-strip,
+        .v22-scenario-card {
+            border-color: var(--ed-border, #dce5ef);
+            background: #fff;
+            box-shadow: 0 3px 12px rgba(11,41,70,.035);
+        }
+        .v22-step-index {
+            background: color-mix(in srgb, var(--ed-blue, #1769a6) 14%, white);
+            color: var(--ed-blue, #1769a6);
+        }
+        .v22-step-title,
+        .v22-context-value,
+        .v22-branding-value,
+        .v22-domain-title,
+        .v22-scenario-title {
+            color: var(--ed-ink, #0b2742);
+        }
+        .v22-branding-label,
+        .v22-context-label,
+        .v22-summary-card-title,
+        .v22-preview-label {
+            color: var(--ed-muted, #6d8298);
+        }
+        @media (max-width: 1024px) {
+            .v22-context-strip,
+            .v22-summary-grid,
+            .v22-preview-grid,
+            .v22-scenario-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
         }
         </style>
         """,

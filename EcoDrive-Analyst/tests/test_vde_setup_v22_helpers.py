@@ -371,8 +371,8 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
     def test_v22_page_static_guard_only_uses_v22_session_root(self):
         text = PAGE_PATH.read_text(encoding="utf-8")
         self.assertIn('page_title="EcoDrive - VDE Setup"', text)
-        self.assertIn('st.header("VDE Setup")', text)
-        self.assertIn("Baseline, request, scenario, and engineering review workflow.", text)
+        self.assertIn('st.header("Workspace controls")', text)
+        self.assertIn("Build an auditable vehicle demand proposal", text)
         self.assertNotIn("vde_setup_workbook_v21", text)
         self.assertNotIn("render_vde_setup_workbook_v21", text)
 
@@ -444,7 +444,7 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
         self.assertIsNone(app.number_input(key="v22_baseline_new_test__C").value)
         self.assertIsNone(app.number_input(key="v22_baseline_new_test__test_mass_kg").value)
 
-    def test_page_with_loaded_baseline_shows_branding_and_sidebar_flow(self):
+    def test_page_with_loaded_baseline_shows_branding_and_local_flow(self):
         app = self._app()
         app.session_state[V22_SESSION_KEY] = self._loaded_state()
         with patch.object(vde_request_compact, "_baseline_summary_rows", return_value=_candidate_rows()):
@@ -453,9 +453,13 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
         self.assertFalse(app.exception)
         sidebar_labels = [item.label for item in app.sidebar.button if getattr(item, "label", None)]
         self.assertIn("Reset VDE Setup request", sidebar_labels)
-        self.assertTrue(any("Baseline & Corrections" in label for label in sidebar_labels))
-        self.assertTrue(any("Request Inputs" in label for label in sidebar_labels))
+        self.assertFalse(any("Baseline & Corrections" in label for label in sidebar_labels))
+        local_labels = [item.label for item in app.button if getattr(item, "label", None)]
+        self.assertTrue(any("Baseline & Corrections" in label for label in local_labels))
+        self.assertTrue(any("Request Inputs" in label for label in local_labels))
         markdown_values = [item.value for item in app.markdown]
+        self.assertTrue(any("ed-workflow-hero" in value for value in markdown_values))
+        self.assertTrue(any("ed-vde-flow-label" in value for value in markdown_values))
         self.assertTrue(any("AUDI" in value for value in markdown_values))
         self.assertTrue(any("EPA" in value for value in markdown_values))
 
@@ -465,7 +469,7 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
         with patch.object(vde_request_compact, "_baseline_summary_rows", return_value=_candidate_rows()):
             self._run(app)
 
-            self._button(app.sidebar.button, key="v22_sidebar_nav__matrix").click()
+            self._button(app.button, key="v22_sidebar_nav__matrix").click()
             self._run(app)
         self.assertIn("Proposal Matrix", [item.value for item in app.subheader])
         self.assertNotIn("Baseline", [item.value for item in app.subheader])
@@ -475,7 +479,7 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
         self.assertIn("Request Inputs", [item.value for item in app.subheader])
         self.assertNotIn("Proposal Matrix", [item.value for item in app.subheader])
 
-        self._button(app.sidebar.button, key="v22_sidebar_nav__preview").click()
+        self._button(app.button, key="v22_sidebar_nav__preview").click()
         self._run(app)
         self.assertIn("Preview & Save", [item.value for item in app.subheader])
         self.assertNotIn("Request Inputs", [item.value for item in app.subheader])
@@ -496,7 +500,7 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
         with patch.object(vde_request_compact, "_baseline_summary_rows", return_value=_candidate_rows()):
             self._run(app)
 
-            self._button(app.sidebar.button, key="v22_sidebar_nav__matrix").click()
+            self._button(app.button, key="v22_sidebar_nav__matrix").click()
             self._run(app)
         app.selectbox(key="v22_matrix_requested_1_mass").select("Custom test mass")
         self._button(app.button, label="Apply Proposal Matrix").click()
@@ -701,13 +705,13 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
         app.session_state[V22_SESSION_KEY] = self._loaded_state()
         self._run(app)
 
-        self._button(app.sidebar.button, key="v22_sidebar_nav__matrix").click()
+        self._button(app.button, key="v22_sidebar_nav__matrix").click()
         self._run(app)
         app.selectbox(key="v22_matrix_requested_1_mass").select("Performance loaded mass")
         self._button(app.button, label="Apply Proposal Matrix").click()
         self._run(app)
 
-        self._button(app.sidebar.button, key="v22_sidebar_nav__inputs").click()
+        self._button(app.button, key="v22_sidebar_nav__inputs").click()
         self._run(app)
 
         captions = [getattr(item, "value", "") for item in list(getattr(app, "caption", []))]
@@ -996,7 +1000,7 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
         app.session_state[V22_SESSION_KEY] = self._loaded_state()
         self._run(app)
 
-        self._button(app.sidebar.button, key="v22_sidebar_nav__matrix").click()
+        self._button(app.button, key="v22_sidebar_nav__matrix").click()
         self._run(app)
         app.selectbox(key="v22_matrix_requested_1_mass").select("Custom test mass")
         self._button(app.button, label="Apply Proposal Matrix").click()
@@ -1033,7 +1037,7 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
         app.session_state[V22_SESSION_KEY] = self._loaded_state()
         self._run(app)
 
-        self._button(app.sidebar.button, key="v22_sidebar_nav__matrix").click()
+        self._button(app.button, key="v22_sidebar_nav__matrix").click()
         self._run(app)
         app.selectbox(key="v22_matrix_requested_1_mass").select("Performance loaded mass")
         self._button(app.button, label="Apply Proposal Matrix").click()
@@ -1078,7 +1082,7 @@ class TestVdeSetupV22Helpers(unittest.TestCase):
         app.session_state[V22_SESSION_KEY] = state
         with patch.object(vde_request_compact, "_baseline_summary_rows", return_value=_candidate_rows()):
             self._run(app)
-            self._button(app.sidebar.button, key="v22_sidebar_nav__inputs").click()
+            self._button(app.button, key="v22_sidebar_nav__inputs").click()
             self._run(app)
 
             app.number_input(key="v22_simple_mass__requested_1__mass_kg").set_value(1200).run()

@@ -45,6 +45,23 @@ class HomePage15AAppTests(unittest.TestCase):
         self.assertTrue(any("No recoverable recent analysis" in item.value for item in app.info))
         self.assertTrue(app.button(key="home_open_lab_disabled").disabled)
 
+    def test_shared_navigation_registers_all_eight_destinations(self):
+        app = self._app().run(timeout=90)
+
+        self.assertEqual(len(app.exception), 0)
+        registered_page_paths = (
+            "pages/VDE_Setup.py",
+            "pages/Roadload_Load_Case_Lab.py",
+            "pages/Powertrain_Scenario.py",
+            "pages/Comparison_Report.py",
+            "pages/Database_Management.py",
+            "pages/Methodology_Models.py",
+            "pages/Legacy_Engineering_Tools.py",
+        )
+        for page_path in registered_page_paths:
+            with self.subTest(page_path=page_path):
+                app.switch_page(page_path)
+
     def test_active_state_distinguishes_baseline_proposal_and_saved_fuelcons(self):
         app = self._app()
         app.session_state["vde_setup_v22"] = {

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from html import escape
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
+from src.vde_app.components.sprint15d_style import inject_sprint15d_styles
 from src.vde_core.database_management_contract import ChangeCommand, EntityType, ORIGINS_BY_ENTITY
 from src.vde_core.database_management_impact_service import (
     apply_change_with_impact,
@@ -32,6 +35,7 @@ from src.vde_core.database_management_spreadsheet import (
     preview_spreadsheet_import,
     stage_commands_from_import,
 )
+from src.vde_core.db import current_db_path
 
 
 STAGE_KEY = "database_management_staged_commands"
@@ -89,15 +93,37 @@ _CREATE_DEFAULTS = {
 
 
 def render_database_management() -> None:
-    st.title("Database Management")
-    st.caption("Browse, stage, validate, review, and confirm changes. Nothing is saved automatically.")
+    inject_sprint15d_styles()
     _ensure_stage()
+    staged_count = len(st.session_state.get(STAGE_KEY) or [])
+    runtime_path = Path(current_db_path())
+    st.markdown('<div class="s15d-kicker">Data governance</div>', unsafe_allow_html=True)
+    st.title("Database Management")
+    st.markdown(
+        '<div class="s15d-lead">Browse, edit or import, stage, review impact, and commit explicitly. '
+        'The catalog is never changed automatically.</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        (
+            '<div class="s15d-status-strip">'
+            '<div class="s15d-status-item is-green"><span>Operation mode</span><strong>Controlled data operations</strong></div>'
+            f'<div class="s15d-status-item"><span>Staged changes</span><strong>{staged_count} pending</strong></div>'
+            f'<div class="s15d-status-item"><span>Runtime database</span><strong>{escape(runtime_path.name)}</strong></div>'
+            '</div>'
+        ),
+        unsafe_allow_html=True,
+    )
     _render_last_import_report()
     tabs = st.tabs([_ENTITY_LABELS[entity] for entity in EntityType])
     for tab, entity in zip(tabs, EntityType):
         with tab:
             _render_entity_tab(entity)
-    st.divider()
+    st.markdown('<div class="s15d-section-label">Review &amp; Commit</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="s15d-note is-green">Stage is a preview boundary, not a write. Review validation and dependency impact before the explicit commit action.</div>',
+        unsafe_allow_html=True,
+    )
     _render_review_changes()
 
 
@@ -120,10 +146,15 @@ def _render_entity_tab(entity: EntityType) -> None:
         else:
             st.caption("Changes stay staged until review.")
     rows = browse_records(entity, query=query, include_archived=include_archived, component_domain=component_domain)
-    st.caption(f"{len(rows)} record(s) shown")
-    _render_grid(entity, rows, component_domain=component_domain)
-    _render_add_form(entity, component_domain=component_domain)
-    _render_selected_record(entity, rows, component_domain=component_domain)
+    catalog_column, record_column = st.columns([1.7, 1], gap="medium")
+    with catalog_column:
+        st.markdown('<div class="s15d-section-label">Catalog records</div>', unsafe_allow_html=True)
+        st.caption(f"{len(rows)} record(s) shown")
+        _render_grid(entity, rows, component_domain=component_domain)
+        _render_add_form(entity, component_domain=component_domain)
+    with record_column:
+        st.markdown('<div class="s15d-section-label">Selected record</div>', unsafe_allow_html=True)
+        _render_selected_record(entity, rows, component_domain=component_domain)
 
 
 def _render_spreadsheet_tools(entity: EntityType) -> None:
@@ -301,6 +332,7 @@ def _render_create_fields(entity: EntityType) -> dict:
 
 def _render_selected_record(entity: EntityType, rows: list[dict], *, component_domain: str | None) -> None:
     if not rows:
+        st.info("No record is available for the current filters. Adjust the search or add a staged row.")
         return
     labels = {str(row["id"]): _record_label(entity, row) for row in rows}
     selected_id = st.selectbox(
@@ -313,7 +345,7 @@ def _render_selected_record(entity: EntityType, rows: list[dict], *, component_d
     if not record:
         st.warning("The selected record is no longer available. Refresh the browser.")
         return
-    st.subheader("Record details")
+    st.markdown("**Record details**")
     _render_detail_editor(entity, record, component_domain=component_domain)
     _render_record_actions(entity, record, component_domain=component_domain)
 

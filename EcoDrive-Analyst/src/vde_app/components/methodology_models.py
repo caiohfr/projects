@@ -44,15 +44,18 @@ def _vehicle_demand() -> None:
     image_path = Path(__file__).resolve().parents[3] / "data" / "images" / "vehicle-longitudinal-dynamics.png"
     render_inline_image(image_path, width=1000)
     st.markdown("#### Core concept")
-    st.latex(r"VDE = \frac{1}{d_{cycle}}\int P_{tractive}(t)\,dt")
+    st.latex(r"VDE = \frac{1}{d_{cycle}}\int_{0}^{T}\max(0, P_{tractive}(t))\,dt")
     st.latex(r"P_{tractive}(t) = [F_{road}(v(t)) + m_{test}a(t)]\,v(t)")
     st.markdown(
         "The Vehicle Demand layer answers what the vehicle requires at the wheels. "
         "It does not model how the powertrain supplies that demand. The canonical result "
-        "keeps roadload, positive inertial work, braking requirement and provenance at their resolved boundaries."
+        "integrates only positive tractive power for VDE while keeping roadload, inertial work, "
+        "braking requirement and provenance at their resolved boundaries. In SI units, force is in N, "
+        "speed in m/s, power in W, time in s and cycle distance in km, producing MJ/km after conversion."
     )
     st.markdown(
         '<div class="s15d-note is-green"><strong>Boundary:</strong> braking energy is a wheel-side requirement, not recovered regenerative energy. '
+        'Negative tractive power is classified as braking demand and receives no regenerative-energy credit in VDE. '
         'A missing quantity remains unavailable; an explicit zero remains a real value.</div>',
         unsafe_allow_html=True,
     )

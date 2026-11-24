@@ -2247,15 +2247,17 @@ def inject_powertrain_scenario_style() -> None:
         """
         <style>
         :root {
-            --pwt-blue: #2563eb;
-            --pwt-blue-soft: #eff6ff;
-            --pwt-green: #168447;
+            --pwt-navy: #0a2b46;
+            --pwt-blue: #1769a6;
+            --pwt-blue-soft: #edf6fb;
+            --pwt-green: #169f73;
             --pwt-green-soft: #f0fdf4;
             --pwt-violet: #6d4bd1;
             --pwt-violet-soft: #f7f3ff;
-            --pwt-ink: #172033;
-            --pwt-muted: #667085;
-            --pwt-line: #dce3ec;
+            --pwt-ink: #0b2742;
+            --pwt-muted: #6d8298;
+            --pwt-line: #dce5ef;
+            --pwt-bg: #f4f7fb;
             --pwt-panel: #ffffff;
         }
         .stMainBlockContainer, .block-container {
@@ -2291,21 +2293,57 @@ def inject_powertrain_scenario_style() -> None:
         }
         .pwt-page-intro {
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             justify-content: space-between;
             gap: 1rem;
-            padding-bottom: 0.7rem;
-            margin-bottom: 0.45rem;
-            border-bottom: 1px solid #e8ecf2;
+            padding: 0.95rem 1.05rem;
+            margin: 0 0 0.7rem;
+            border: 1px solid var(--pwt-line);
+            border-top: 3px solid var(--pwt-blue);
+            border-radius: 8px;
+            background: #fff;
+            box-shadow: 0 3px 12px rgba(11, 41, 70, 0.035);
         }
         .pwt-page-intro strong {
-            color: var(--pwt-ink);
-            font-size: 1.05rem;
+            display: block;
+            color: var(--pwt-navy);
+            font-size: 1.42rem;
+            line-height: 1.15;
         }
-        .pwt-page-intro span {
+        .pwt-page-intro span, .pwt-page-intro small {
+            display: block;
             color: var(--pwt-muted);
             font-size: 0.78rem;
         }
+        .pwt-page-kicker {
+            margin-bottom: 0.14rem;
+            color: var(--pwt-blue) !important;
+            font-size: 0.67rem !important;
+            font-weight: 760;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+        }
+        .pwt-page-pills { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:.35rem; }
+        .pwt-page-pill {
+            min-height:1.65rem; padding:.18rem .55rem; border:1px solid var(--pwt-line);
+            border-radius:999px; background:#f9fbfd; font-size:.67rem !important;
+            font-weight:700; white-space:nowrap;
+        }
+        .pwt-page-pill.is-green { color:#0d7351; border-color:#bde6d6; background:#effaf5; }
+        .pwt-status-strip {
+            display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); margin:.2rem 0 .75rem;
+            border:1px solid var(--pwt-line); border-radius:7px; background:#fff; overflow:hidden;
+        }
+        .pwt-status-item { padding:.58rem .72rem; border-left:1px solid var(--pwt-line); }
+        .pwt-status-item:first-child { border-left:0; }
+        .pwt-status-item span { display:block; color:var(--pwt-muted); font-size:.64rem; text-transform:uppercase; letter-spacing:.05em; }
+        .pwt-status-item strong { display:block; margin-top:.1rem; color:var(--pwt-ink); font-size:.77rem; }
+        .pwt-reference-strip {
+            display:flex; flex-wrap:wrap; gap:.45rem 1.1rem; margin:.15rem 0 .55rem;
+            padding:.5rem .7rem; border-left:3px solid var(--pwt-green); border-radius:0 6px 6px 0;
+            color:#36566f; background:#f2faf7; font-size:.7rem;
+        }
+        .pwt-reference-strip strong { color:var(--pwt-ink); }
         .pwt-stage-header {
             display: flex;
             align-items: center;
@@ -2538,6 +2576,11 @@ def inject_powertrain_scenario_style() -> None:
             font-size: 0.75rem;
         }
         @media (max-width: 1100px) {
+            .pwt-page-intro { flex-direction:column; }
+            .pwt-page-pills { justify-content:flex-start; }
+            .pwt-status-strip { grid-template-columns:1fr; }
+            .pwt-status-item { border-left:0; border-top:1px solid var(--pwt-line); }
+            .pwt-status-item:first-child { border-top:0; }
             .pwt-assumption-strip {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }

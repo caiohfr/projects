@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+from html import escape
 from pathlib import Path
 
 import pandas as pd
@@ -107,6 +108,7 @@ from src.vde_app.comparison_report_viewmodels import (
 from src.vde_app.components.comparison_quick_scenario_tab import render_quick_scenario_tab
 from src.vde_app.plots import roadload_curve_comparison_chart
 from src.vde_app.units import normalize_unit_system, quantity_input, unit_label
+from src.vde_app.visual_theme import BLUE, BORDER, GREEN, INK, MUTED, NAVY, WORKSPACE_BG
 from src.vde_core.comparison_metric_registry import MetricDirection, get_metric
 from src.vde_core.comparison_report_service import (
     ComparisonDataset,
@@ -165,6 +167,142 @@ _LINEAGE_WARNING_MESSAGES = {
     "lineage_chain_truncated_max_depth": "This lineage chain is unusually long and was truncated as a safety guard.",
     "lineage_root_not_found": "The selected VDE record could not be resolved.",
 }
+
+
+def inject_comparison_report_style() -> None:
+    """Apply the shared EcoDrive visual identity without replacing widgets."""
+
+    st.markdown(
+        f"""
+        <style>
+        :root {{
+          --cmp-navy:{NAVY}; --cmp-blue:{BLUE}; --cmp-green:{GREEN};
+          --cmp-bg:{WORKSPACE_BG}; --cmp-border:{BORDER};
+          --cmp-ink:{INK}; --cmp-muted:{MUTED};
+        }}
+        .cmp-hero {{
+          display:flex; align-items:flex-start; justify-content:space-between; gap:1.25rem;
+          padding:1rem 1.1rem; margin:.05rem 0 .85rem; border:1px solid var(--cmp-border);
+          border-top:3px solid var(--cmp-blue); border-radius:8px; background:#fff;
+          box-shadow:0 3px 12px rgba(11,41,70,.035);
+        }}
+        .cmp-kicker {{
+          color:var(--cmp-blue); font-size:.67rem; font-weight:760; letter-spacing:.1em;
+          text-transform:uppercase;
+        }}
+        .cmp-title {{
+          margin:.12rem 0 .16rem; color:var(--cmp-navy); font-size:1.42rem;
+          font-weight:760; line-height:1.15;
+        }}
+        .cmp-subtitle {{color:var(--cmp-muted); font-size:.78rem; line-height:1.4;}}
+        .cmp-state-stack {{display:flex; flex-wrap:wrap; justify-content:flex-end; gap:.35rem;}}
+        .cmp-pill {{
+          display:inline-flex; align-items:center; min-height:1.65rem; padding:.18rem .55rem;
+          border:1px solid var(--cmp-border); border-radius:999px; color:var(--cmp-muted);
+          background:#f9fbfd; font-size:.67rem; font-weight:700; white-space:nowrap;
+        }}
+        .cmp-pill.is-green {{color:#0d7351; border-color:#bde6d6; background:#effaf5;}}
+        .cmp-section {{
+          display:flex; align-items:center; gap:.6rem; margin:.55rem 0 .25rem;
+          color:var(--cmp-ink);
+        }}
+        .cmp-section-number {{
+          display:inline-grid; place-items:center; width:1.45rem; height:1.45rem;
+          border:1px solid var(--cmp-blue); border-radius:999px; color:var(--cmp-blue);
+          background:#f4f9fc; font-size:.72rem; font-weight:760;
+        }}
+        .cmp-section strong {{display:block; font-size:.94rem; line-height:1.15;}}
+        .cmp-section span {{display:block; color:var(--cmp-muted); font-size:.7rem;}}
+        .cmp-context-note {{
+          margin:.25rem 0 .7rem; padding:.55rem .7rem; border-left:3px solid var(--cmp-green);
+          border-radius:0 6px 6px 0; color:#36566f; background:#f2faf7; font-size:.72rem;
+        }}
+        div[data-testid="stTabs"] button[role="tab"] {{font-size:.76rem; font-weight:680;}}
+        div[data-testid="stTabs"] [data-baseweb="tab-highlight"] {{background:var(--cmp-blue);}}
+        [data-testid="stDataFrame"] {{
+          border:1px solid var(--cmp-border); border-radius:7px; overflow:hidden;
+        }}
+        @media (max-width: 1050px) {{
+          .cmp-hero {{flex-direction:column;}}
+          .cmp-state-stack {{justify-content:flex-start;}}
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_comparison_header() -> None:
+    st.markdown(
+        """
+        <div class="cmp-hero">
+          <div>
+            <div class="cmp-kicker">Program analysis workspace</div>
+            <div class="cmp-title">Comparison Report</div>
+            <div class="cmp-subtitle">Compare persisted FuelCons scenarios and their linked physical Vehicle Demand evidence.</div>
+          </div>
+          <div class="cmp-state-stack">
+            <span class="cmp-pill is-green">Persisted FuelCons sources</span>
+            <span class="cmp-pill">Reference optional</span>
+            <span class="cmp-pill">Quick Scenarios · in memory</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_comparison_section(number: int, title: str, caption: str) -> None:
+    st.markdown(
+        (
+            "<div class='cmp-section'>"
+            f"<span class='cmp-section-number'>{number}</span>"
+            f"<div><strong>{escape(title)}</strong><span>{escape(caption)}</span></div>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _available(value: object) -> str:
+    if value is None or str(value).strip() == "":
+        return "Unavailable"
+    return str(value)
+
+
+def _render_working_set_context(dataset: ComparisonDataset) -> None:
+    """Expose only stored/resolved facts already present in the dataset."""
+
+    rows: list[dict[str, str]] = []
+    for item in dataset_items(dataset):
+        header = build_scenario_header(item)
+        aggregate = item.vde.get("aggregate") or {}
+        available_bases = [
+            basis
+            for basis, value in (("TOTAL", aggregate.get("total")), ("NET", aggregate.get("net")))
+            if value is not None
+        ]
+        rows.append(
+            {
+                "Role": header["role"],
+                "Scenario": _available(header["label"]),
+                "Cycle": _available(item.vehicle.get("cycle_name")),
+                "Legislation": _available(item.vehicle.get("legislation")),
+                "Vehicle Demand basis": " + ".join(available_bases) if available_bases else "Unavailable",
+                "Provenance": _available(header["provenance_text"]),
+            }
+        )
+    _render_comparison_section(
+        2,
+        "Factual comparison context",
+        "Stored identity, cycle, energy-demand basis and provenance used by the selected working set.",
+    )
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    st.markdown(
+        "<div class='cmp-context-note'>Vehicle Demand (TOTAL/NET) is physical energy demand. "
+        "Fuel and energy consumption remain separate FuelCons outputs; unavailable facts are not inferred.</div>",
+        unsafe_allow_html=True,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -1821,21 +1959,32 @@ def _render_explore_tab(scorecard_dataset: ComparisonDataset | None) -> None:
 
 # -----------------------------------------------------------------------------
 def render_comparison_report() -> None:
-    st.title("Program Energy & Fuel Economy Review")
-    st.caption("Reference-optional engineering comparison across FuelCons scenarios and physical VDEs.")
+    inject_comparison_report_style()
+    _render_comparison_header()
 
     catalog_rows = _load_catalog()
     if not catalog_rows:
         st.info("No FuelCons scenarios are available yet. Save at least one Powertrain Scenario first.")
         return
 
+    _render_comparison_section(
+        1,
+        "Build the working set",
+        "Browse persisted scenarios, choose an optional Reference and add up to ten comparisons.",
+    )
     state = _render_selection(catalog_rows)
     dataset = _build_scorecard_dataset(state)
     primary_kpi = _DELTA_METRIC_OPTIONS[0]
     if dataset is not None:
+        _render_working_set_context(dataset)
         _render_presentation_roles(dataset)
         primary_kpi = _render_primary_kpi_and_target()
 
+    _render_comparison_section(
+        3,
+        "Review the evidence",
+        "Move from program KPIs to physical drivers, audit detail, exploration and temporary scenarios.",
+    )
     program_review_tab, energy_drivers_tab, scorecard_tab, explore_tab, quick_scenarios_tab = st.tabs(
         ["Program Review", "Energy Drivers", "Technical Scorecard", "Explore", "Quick Scenarios"]
     )
@@ -1853,4 +2002,4 @@ def render_comparison_report() -> None:
     with explore_tab:
         _render_explore_tab(dataset)
 
-__all__ = ["render_comparison_report"]
+__all__ = ["inject_comparison_report_style", "render_comparison_report"]

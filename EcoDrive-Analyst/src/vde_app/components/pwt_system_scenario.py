@@ -363,6 +363,36 @@ def _current_draft(drafts: tuple[ScenarioDraft, ...]) -> ScenarioDraft | None:
     )
 
 
+def _render_workspace_status(
+    drafts: tuple[ScenarioDraft, ...],
+    calculations: Mapping[str, ScenarioCalculation],
+) -> None:
+    current = _current_draft(drafts)
+    proposal_count = sum(draft.identity.role.value == "PROPOSAL" for draft in drafts)
+    result_count = sum(
+        calculation.result is not None
+        for calculation in calculations.values()
+    )
+    reference_status = (
+        f"FuelCons FC-{current.fuelcons_id} selected"
+        if current is not None and current.fuelcons_id is not None
+        else "Selection required"
+    )
+    st.markdown(
+        (
+            "<div class='pwt-status-strip'>"
+            "<div class='pwt-status-item'><span>Reference state</span>"
+            f"<strong>{escape(reference_status)}</strong></div>"
+            "<div class='pwt-status-item'><span>Working set</span>"
+            f"<strong>Current + {proposal_count} of 3 proposals · in memory</strong></div>"
+            "<div class='pwt-status-item'><span>Calculated results</span>"
+            f"<strong>{result_count} of {len(drafts)} available</strong></div>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
 def _render_current_baseline_selector(
     drafts: tuple[ScenarioDraft, ...],
     baseline_labels: Mapping[int, str],
@@ -404,6 +434,21 @@ def _render_current_baseline_selector(
     if selected_vde_id is None:
         st.error("The selected FuelCons baseline is no longer linked to a VDE.")
         return None, None, False
+    energy_basis = selected_row.get("energy_basis") or "Unavailable"
+    provenance = selected_row.get("record_origin") or "Unavailable"
+    updated_at = selected_row.get("updated_at") or "Unavailable"
+    st.markdown(
+        (
+            "<div class='pwt-reference-strip'>"
+            f"<span><strong>Persisted reference</strong> · FC-{int(selected_fuelcons_id)}</span>"
+            f"<span><strong>Linked physical VDE</strong> · VDE-{int(selected_vde_id)}</span>"
+            f"<span><strong>Demand basis</strong> · {escape(str(energy_basis))}</span>"
+            f"<span><strong>Provenance</strong> · {escape(str(provenance))}</span>"
+            f"<span><strong>Updated</strong> · {escape(str(updated_at))}</span>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
     if current is None or int(selected_fuelcons_id) == current.fuelcons_id:
         return int(selected_fuelcons_id), int(selected_vde_id), False
 
@@ -1828,6 +1873,7 @@ def render_system_scenario_workspace() -> None:
         return
 
     st.session_state["current_vde_id"] = current.vde_id
+    _render_workspace_status(drafts, calculations)
     _render_baseline_summary(
         current,
         sources.get(current.vde_id),

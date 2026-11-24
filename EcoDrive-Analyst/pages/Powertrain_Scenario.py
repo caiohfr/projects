@@ -22,8 +22,16 @@ def main():
     st.markdown(
         """
         <div class="pwt-page-intro">
-            <strong>Powertrain System Scenarios</strong>
-            <span>Canonical Energy Balance L0 workspace</span>
+            <div>
+                <span class="pwt-page-kicker">Canonical Energy Balance L0</span>
+                <strong>Powertrain System Scenarios</strong>
+                <small>Compose and compare Current plus up to three in-memory proposals from a persisted FuelCons reference.</small>
+            </div>
+            <div class="pwt-page-pills">
+                <span class="pwt-page-pill is-green">Persisted reference required</span>
+                <span class="pwt-page-pill">Proposals · in memory</span>
+                <span class="pwt-page-pill">No implicit save</span>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,

@@ -105,6 +105,12 @@ class ComparisonReportPageSmokeTests(unittest.TestCase):
         app.run(timeout=90)
         self.assertEqual(len(app.exception), 0)
         self.assertGreaterEqual(len(app.dataframe), 1)
+        surface = "\n".join(item.value for item in app.markdown)
+        self.assertIn("Comparison Report", surface)
+        self.assertIn("Reference optional", surface)
+        self.assertIn("Quick Scenarios · in memory", surface)
+        self.assertIn("Factual comparison context", surface)
+        self.assertIn("Vehicle Demand (TOTAL/NET) is physical energy demand", surface)
 
     def test_benchmark_only_selection_with_no_reference_renders_without_exception(self):
         # Package 8F Increment 1: reference_fuelcons_id=None with 2+ comparisons

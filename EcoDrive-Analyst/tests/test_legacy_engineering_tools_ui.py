@@ -29,6 +29,12 @@ class _RadioStub:
     def title(self, *_args, **_kwargs):
         pass
 
+    def markdown(self, *_args, **_kwargs):
+        pass
+
+    def caption(self, *_args, **_kwargs):
+        pass
+
     def info(self, *_args, **_kwargs):
         pass
 
@@ -55,8 +61,13 @@ class LegacyEngineeringToolsAppTests(unittest.TestCase):
 
     def test_legacy_destination_starts_unloaded_and_labeled(self):
         app = self._app()
-        self.assertTrue(any("Legacy & Engineering Tools" in item.value for item in app.title))
-        self.assertTrue(any("Legacy / compatibility workspace" in item.value for item in app.warning))
+        self.assertTrue(any("Engineering Tools / Legacy" in item.value for item in app.title))
+        self.assertTrue(any("Experimental / compatibility workspace" in item.value for item in app.warning))
+        surface = "\n".join(item.value for item in app.markdown)
+        self.assertIn("Powertrain Legacy", surface)
+        self.assertIn("Comparison Legacy", surface)
+        self.assertIn("Estimate / Snapshot Management", surface)
+        self.assertIn("Planned / unavailable", surface)
         self.assertIsNotNone(app.radio(key="legacy_engineering_area"))
         self.assertFalse(any(item.label == "Active VDE snapshot" for item in app.selectbox))
         self.assertFalse(any(item.label == "Legacy comparison workflow" for item in app.radio))

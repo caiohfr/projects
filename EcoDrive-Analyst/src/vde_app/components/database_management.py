@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -8,7 +9,15 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from src.vde_app.database_management_stage import (
+    StageDatabaseIdentityError,
+    add_stage_command,
+    assert_stage_database_identity,
+    canonical_database_identity,
+    execute_sequential_commit,
+)
 from src.vde_app.components.sprint15d_style import inject_sprint15d_styles
+from src.vde_core.data_change_log_repository import fetch_change_log
 from src.vde_core.database_management_contract import ChangeCommand, EntityType, ORIGINS_BY_ENTITY
 from src.vde_core.database_management_impact_service import (
     apply_change_with_impact,
@@ -39,6 +48,9 @@ from src.vde_core.db import current_db_path
 
 
 STAGE_KEY = "database_management_staged_commands"
+STAGE_DB_IDENTITY_KEY = "database_management_stage_database_identity"
+COMMIT_REPORT_KEY = "database_management_last_commit_report"
+COMMIT_RECONCILIATION_KEY = "database_management_commit_reconciliation_required"
 IMPORT_REPORT_KEY = "database_management_last_import_report"
 
 _ENTITY_LABELS = {
@@ -97,6 +109,7 @@ def render_database_management() -> None:
     _ensure_stage()
     staged_count = len(st.session_state.get(STAGE_KEY) or [])
     runtime_path = Path(current_db_path())
+    stage_database_identity = st.session_state.get(STAGE_DB_IDENTITY_KEY)
     st.markdown('<div class="s15d-kicker">Data governance</div>', unsafe_allow_html=True)
     st.title("Database Management")
     st.markdown(
@@ -114,6 +127,11 @@ def render_database_management() -> None:
         ),
         unsafe_allow_html=True,
     )
+    if staged_count and stage_database_identity:
+        st.caption(f"Pending stage database: {stage_database_identity}")
+    elif staged_count:
+        st.error("Pending changes have no database identity. They are blocked until explicitly discarded.")
+    _render_last_commit_report()
     _render_last_import_report()
     tabs = st.tabs([_ENTITY_LABELS[entity] for entity in EntityType])
     for tab, entity in zip(tabs, EntityType):
@@ -218,9 +236,13 @@ def _render_spreadsheet_tools(entity: EntityType) -> None:
             disabled=disabled,
         ):
             commands = stage_commands_from_import(preview, confirm_unknown_columns=confirm_unknown)
+            staged_count = 0
             for command in commands:
-                _stage_command(command)
-            st.success(f"{len(commands)} import row(s) staged. Review and commit them in Review Changes.")
+                if not _stage_command(command):
+                    break
+                staged_count += 1
+            if staged_count:
+                st.success(f"{staged_count} import row(s) staged. Review and commit them in Review Changes.")
 
 
 def _render_grid(entity: EntityType, rows: list[dict], *, component_domain: str | None) -> None:
@@ -249,10 +271,10 @@ def _render_grid(entity: EntityType, rows: list[dict], *, component_domain: str 
                 if not _same_value(original.get(field), edited_row.get(field))
             }
             if payload:
-                _stage_command(
+                if _stage_command(
                     _command_payload(entity, "UPDATE", original, payload=payload, component_domain=component_domain)
-                )
-                changed += 1
+                ):
+                    changed += 1
         if changed:
             st.success(f"{changed} row(s) staged for review.")
         else:
@@ -274,7 +296,7 @@ def _render_add_form(entity: EntityType, *, component_domain: str | None) -> Non
                 payload = {**values, "record_origin": origin}
                 if entity is EntityType.COMPONENT:
                     payload["domain"] = component_domain
-                _stage_command(
+                if _stage_command(
                     {
                         "entity_type": entity.value,
                         "action": "CREATE",
@@ -283,8 +305,8 @@ def _render_add_form(entity: EntityType, *, component_domain: str | None) -> Non
                         "current_record": {},
                         "record_id": None,
                     }
-                )
-                st.success("New row staged for review.")
+                ):
+                    st.success("New row staged for review.")
 
 
 def _render_create_fields(entity: EntityType) -> dict:
@@ -375,8 +397,8 @@ def _render_detail_editor(entity: EntityType, record: dict, *, component_domain:
         edited = detail.to_dict(orient="records")[0]
         payload = {field: edited.get(field) for field in editable if not _same_value(record.get(field), edited.get(field))}
         if payload:
-            _stage_command(_command_payload(entity, "UPDATE", record, payload=payload, component_domain=component_domain))
-            st.success("Selected changes staged for review.")
+            if _stage_command(_command_payload(entity, "UPDATE", record, payload=payload, component_domain=component_domain)):
+                st.success("Selected changes staged for review.")
         else:
             st.info("No editable changes detected.")
     readonly = [field for field in fields if field not in editable and record.get(field) is not None]
@@ -395,7 +417,7 @@ def _render_record_actions(entity: EntityType, record: dict, *, component_domain
         return
     action_cols = st.columns(4)
     if action_cols[0].button("Duplicate", key=f"database_management_duplicate_{entity.value.lower()}_{record['id']}"):
-        _stage_command(
+        if _stage_command(
             _command_payload(
                 entity,
                 "DUPLICATE",
@@ -403,13 +425,13 @@ def _render_record_actions(entity: EntityType, record: dict, *, component_domain
                 payload=duplicate_payload_for(entity, record),
                 component_domain=component_domain,
             )
-        )
-        st.success("Duplicate staged for review.")
+        ):
+            st.success("Duplicate staged for review.")
     archived = not bool(record.get("is_active")) if entity is EntityType.TIRE else record.get("record_status") == "ARCHIVED"
     action = "RESTORE" if archived else "ARCHIVE"
     if action_cols[1].button("Restore" if archived else "Archive", key=f"database_management_archive_{entity.value.lower()}_{record['id']}"):
-        _stage_command(_command_payload(entity, action, record, component_domain=component_domain))
-        st.success(f"{action.title().lower()} staged for review.")
+        if _stage_command(_command_payload(entity, action, record, component_domain=component_domain)):
+            st.success(f"{action.title().lower()} staged for review.")
     dependencies = simple_dependencies(entity, record["id"])
     catalog_usage = None
     vde_dependencies = None
@@ -429,8 +451,8 @@ def _render_record_actions(entity: EntityType, record: dict, *, component_domain
             + tuple(vde_dependencies.get("baseline_requests") or ())
         )
     if action_cols[2].button("Delete permanently", key=f"database_management_delete_{entity.value.lower()}_{record['id']}", disabled=bool(dependencies)):
-        _stage_command(_command_payload(entity, "DELETE", record, component_domain=component_domain))
-        st.success("Delete staged for review.")
+        if _stage_command(_command_payload(entity, "DELETE", record, component_domain=component_domain)):
+            st.success("Delete staged for review.")
     if dependencies:
         action_cols[3].warning(f"Delete blocked: {len(dependencies)} direct dependency(ies).")
     if catalog_usage and dependencies:
@@ -445,6 +467,26 @@ def _render_review_changes() -> None:
     if not staged:
         st.caption("No changes staged.")
         return
+    stage_database_identity = st.session_state.get(STAGE_DB_IDENTITY_KEY)
+    active_database_identity = _active_database_identity()
+    try:
+        assert_stage_database_identity(
+            commands=staged,
+            stage_database_identity=stage_database_identity,
+            active_database_identity=active_database_identity,
+        )
+    except StageDatabaseIdentityError as exc:
+        st.error(str(exc))
+        _render_explicit_stage_discard()
+        return
+    if st.session_state.get(COMMIT_RECONCILIATION_KEY):
+        st.error(
+            "Commit state is uncertain and automatic retry is blocked. Review the technical log and "
+            "discard the pending stage explicitly only after reconciling the database receipt."
+        )
+        _render_explicit_stage_discard()
+        return
+    st.caption(f"Stage database: {stage_database_identity}")
     reason = st.text_area("Reason for staged corrections and lifecycle actions", key="database_management_review_reason")
     previews = [_preview_for_stage(command, reason) for command in staged]
     impact_previews = {}
@@ -471,68 +513,110 @@ def _render_review_changes() -> None:
         preview.can_commit and (index not in impact_previews or impact_previews[index].can_commit)
         for index, preview in enumerate(previews)
     )
+    st.warning(
+        "Commit applies operations sequentially. Confirmed changes before a failure remain committed; "
+        "the failed operation and all later operations stay pending for safe retry."
+    )
     action_cols = st.columns((1, 1, 3))
-    if action_cols[0].button("Clear staged changes", key="database_management_clear_stage"):
-        st.session_state[STAGE_KEY] = []
+    discard_confirmed = st.checkbox(
+        "I understand that discarding removes all pending changes without writing them",
+        key="database_management_confirm_clear_stage",
+    )
+    if action_cols[0].button(
+        "Discard staged changes",
+        key="database_management_clear_stage",
+        disabled=not discard_confirmed,
+    ):
+        _clear_stage()
         st.rerun()
     if action_cols[1].button("Commit reviewed changes", key="database_management_commit_stage", disabled=not can_commit):
-        failures: list[str] = []
-        for index, preview in enumerate(previews):
-            try:
-                impact = impact_previews.get(index)
-                command = staged[index]
-                if command.get("resolution_action"):
-                    apply_vde_dependency_resolution(
-                        preview,
-                        resolution_action=command["resolution_action"],
-                        fuel_row_ids=tuple(command.get("fuel_row_ids") or ()),
-                        replacement_vde_id=command.get("replacement_vde_id"),
-                        reason=reason,
-                    )
-                elif impact is None:
-                    apply_change(preview, reason=reason)
-                else:
-                    apply_change_with_impact(
-                        preview,
-                        impact,
-                        reason=reason,
-                        replacement_record_id=command.get("replacement_record_id"),
-                        component_domain=command.get("component_domain"),
-                    )
-            except ValueError as exc:
-                failures.append(str(exc))
-                break
-        if failures:
-            st.error("No further staged changes were committed: " + failures[0])
-        else:
-            import_reports: dict[str, dict] = {}
-            for command in staged:
-                batch_id = command.get("import_batch_id")
-                if not batch_id:
-                    continue
-                report = import_reports.setdefault(
-                    str(batch_id),
-                    {
-                        "Batch": batch_id,
-                        "File": command.get("import_filename"),
-                        **dict(command.get("import_counts") or {}),
-                    },
+        def apply_one(index: int, command: dict):
+            preview = previews[index]
+            impact = impact_previews.get(index)
+            if command.get("resolution_action"):
+                return apply_vde_dependency_resolution(
+                    preview,
+                    resolution_action=command["resolution_action"],
+                    fuel_row_ids=tuple(command.get("fuel_row_ids") or ()),
+                    replacement_vde_id=command.get("replacement_vde_id"),
+                    reason=reason,
                 )
-                report.setdefault("inserted", 0)
-                report.setdefault("updated", 0)
-                report.setdefault("skipped", 0)
-                report.setdefault("invalid", 0)
-            if import_reports:
-                st.session_state[IMPORT_REPORT_KEY] = list(import_reports.values())
-            st.session_state[STAGE_KEY] = []
-            st.success("All reviewed changes were committed and logged.")
+            if impact is None:
+                return apply_change(preview, reason=reason)
+            return apply_change_with_impact(
+                preview,
+                impact,
+                reason=reason,
+                replacement_record_id=command.get("replacement_record_id"),
+                component_domain=command.get("component_domain"),
+            )
+
+        def persist_progress(remaining: tuple[dict, ...], _entry) -> None:
+            st.session_state[STAGE_KEY] = list(remaining)
+            if not remaining:
+                st.session_state.pop(STAGE_DB_IDENTITY_KEY, None)
+
+        outcome = execute_sequential_commit(
+            staged,
+            stage_database_identity=str(stage_database_identity),
+            active_database_identity=_active_database_identity,
+            apply_one=apply_one,
+            receipt_lookup=fetch_change_log,
+            on_confirmed_progress=persist_progress,
+        )
+        st.session_state[STAGE_KEY] = list(outcome.remaining_commands)
+        if not outcome.remaining_commands:
+            st.session_state.pop(STAGE_DB_IDENTITY_KEY, None)
+        st.session_state[COMMIT_REPORT_KEY] = [
+            {
+                "Operation ID": entry.stage_operation_id,
+                "Entity": entry.entity_type,
+                "Action": entry.action,
+                "Record": entry.record_id,
+                "Status": entry.status,
+                "Receipt": entry.change_log_id,
+                "Affected records": ", ".join(entry.affected_record_ids) or None,
+                "Recovered": entry.recovered_from_receipt,
+                "Message": entry.message,
+            }
+            for entry in outcome.entries
+        ]
+        if outcome.failure_index is not None and outcome.remaining_commands:
+            failed_command = outcome.remaining_commands[0]
+            st.session_state[COMMIT_REPORT_KEY].append(
+                {
+                    "Operation ID": failed_command.get("stage_operation_id"),
+                    "Entity": failed_command.get("entity_type"),
+                    "Action": failed_command.get("action"),
+                    "Record": failed_command.get("record_id"),
+                    "Status": "PENDING_RECONCILIATION" if outcome.uncertain else "PENDING_FAILED",
+                    "Receipt": None,
+                    "Affected records": None,
+                    "Recovered": False,
+                    "Message": outcome.failure_message,
+                }
+            )
+        if outcome.uncertain:
+            st.session_state[COMMIT_RECONCILIATION_KEY] = True
+        else:
+            st.session_state.pop(COMMIT_RECONCILIATION_KEY, None)
+        _store_import_commit_report(staged, outcome)
+        if outcome.status == "COMPLETE":
+            st.success(f"{outcome.committed_count} reviewed change(s) were committed and receipt-confirmed.")
             st.rerun()
+        else:
+            pending_count = len(outcome.remaining_commands)
+            failed_position = (outcome.failure_index + 1) if outcome.failure_index is not None else "unknown"
+            st.error(
+                f"{outcome.committed_count} applied; operation {failed_position} failed or was blocked; "
+                f"{pending_count} pending. No later operation was processed. {outcome.failure_message or ''}"
+            )
     if not can_commit:
         action_cols[2].caption("Resolve validation issues and enter a reason where required before committing.")
 
 
 def _preview_for_stage(command: dict, reason: str):
-    return preview_change(
+    preview = preview_change(
         ChangeCommand(
             entity_type=command["entity_type"],
             action=command["action"],
@@ -544,6 +628,8 @@ def _preview_for_stage(command: dict, reason: str):
             physics_action=command.get("physics_action"),
         )
     )
+    operation_id = str(command.get("stage_operation_id") or "").strip()
+    return replace(preview, operation_id=operation_id) if operation_id else preview
 
 
 def _command_payload(entity: EntityType, action: str, record: dict, *, payload: dict | None = None, component_domain: str | None) -> dict:
@@ -580,8 +666,8 @@ def _render_dependency_resolution(
             "Archive instead",
             key=f"database_management_dependency_archive_{entity.value.lower()}_{record['id']}",
         ):
-            _stage_command(_command_payload(entity, "ARCHIVE", record, component_domain=component_domain))
-            st.success("Archive staged for review.")
+            if _stage_command(_command_payload(entity, "ARCHIVE", record, component_domain=component_domain)):
+                st.success("Archive staged for review.")
 
         candidates = [
             item
@@ -603,8 +689,8 @@ def _render_dependency_resolution(
                 command = _command_payload(entity, "REASSIGN_RELATIONSHIP", record, component_domain=component_domain)
                 command["replacement_record_id"] = replacement_id
                 command["physics_action"] = "RECALCULATE_UPDATE"
-                _stage_command(command)
-                st.success("Reassignment staged for impact review.")
+                if _stage_command(command):
+                    st.success("Reassignment staged for impact review.")
         else:
             cols[1].caption("No compatible active replacement is available.")
 
@@ -619,8 +705,8 @@ def _render_dependency_resolution(
         ):
             command = _command_payload(entity, "DELETE", record, component_domain=component_domain)
             command["physics_action"] = "KEEP_EXISTING"
-            _stage_command(command)
-            st.success("Permanent delete staged with explicit snapshot preservation.")
+            if _stage_command(command):
+                st.success("Permanent delete staged with explicit snapshot preservation.")
 
 
 def _render_vde_dependency_resolution(record: dict, dependencies: dict) -> None:
@@ -643,8 +729,8 @@ def _render_vde_dependency_resolution(record: dict, dependencies: dict) -> None:
             )
 
         if st.button("Archive instead", key=f"database_management_vde_dependency_archive_{record_id}"):
-            _stage_command(_command_payload(EntityType.VDE, "ARCHIVE", record, component_domain=None))
-            st.success("VDE archive staged for review.")
+            if _stage_command(_command_payload(EntityType.VDE, "ARCHIVE", record, component_domain=None)):
+                st.success("VDE archive staged for review.")
 
         candidates = [
             item
@@ -691,8 +777,8 @@ def _render_vde_dependency_resolution(record: dict, dependencies: dict) -> None:
                         "fuel_row_ids": tuple(selected_fuel_ids),
                     }
                 )
-                _stage_command(command)
-                st.success("Fuel reassignment staged for review.")
+                if _stage_command(command):
+                    st.success("Fuel reassignment staged for review.")
         elif fuel_rows:
             st.caption("No directly reassignable Fuel rows or no compatible active VDE is available.")
 
@@ -713,8 +799,8 @@ def _render_vde_dependency_resolution(record: dict, dependencies: dict) -> None:
                     "fuel_row_ids": all_fuel_ids,
                 }
             )
-            _stage_command(command)
-            st.success("Explicit Fuel-first VDE delete staged for review.")
+            if _stage_command(command):
+                st.success("Explicit Fuel-first VDE delete staged for review.")
 
         confirm_admin = st.checkbox(
             "Administrative delete: acknowledge all linked Fuel rows will be explicitly removed",
@@ -727,8 +813,8 @@ def _render_vde_dependency_resolution(record: dict, dependencies: dict) -> None:
         ):
             command = _command_payload(EntityType.VDE, "DELETE", record, component_domain=None)
             command.update({"resolution_action": "ADMIN_DELETE", "fuel_row_ids": all_fuel_ids})
-            _stage_command(command)
-            st.success("Administrative VDE delete staged for review.")
+            if _stage_command(command):
+                st.success("Administrative VDE delete staged for review.")
 
 
 def _render_impact_preview(index: int, command: dict, preview) -> object | None:
@@ -823,30 +909,25 @@ def _first_defined(*values):
     return next((value for value in values if value is not None), None)
 
 
-def _stage_command(command: dict) -> None:
+def _active_database_identity() -> str:
+    return canonical_database_identity(current_db_path())
+
+
+def _stage_command(command: dict) -> bool:
     staged = list(st.session_state.get(STAGE_KEY) or [])
-    identity = _stage_identity(command)
-    for index, existing in enumerate(staged):
-        if _stage_identity(existing) == identity:
-            merged = dict(existing)
-            merged.update({key: deepcopy(value) for key, value in command.items() if key != "payload"})
-            merged["payload"] = {**dict(existing.get("payload") or {}), **dict(command.get("payload") or {})}
-            staged[index] = merged
-            st.session_state[STAGE_KEY] = staged
-            return
-    staged.append(deepcopy(command))
-    st.session_state[STAGE_KEY] = staged
-
-
-def _stage_identity(command: dict) -> tuple:
-    if command.get("import_batch_id"):
-        return (
-            "IMPORT",
-            command.get("import_batch_id"),
-            command.get("import_sheet"),
-            command.get("import_row"),
+    try:
+        staged, identity = add_stage_command(
+            staged,
+            stage_database_identity=st.session_state.get(STAGE_DB_IDENTITY_KEY),
+            active_database_identity=_active_database_identity(),
+            command=command,
         )
-    return (command.get("entity_type"), command.get("action"), command.get("record_id"))
+    except StageDatabaseIdentityError as exc:
+        st.error(str(exc))
+        return False
+    st.session_state[STAGE_KEY] = staged
+    st.session_state[STAGE_DB_IDENTITY_KEY] = identity
+    return True
 
 
 def _grid_editable_columns(entity: EntityType, rows: list[dict], fields: tuple[str, ...]) -> set[str]:
@@ -880,6 +961,75 @@ def _same_value(first: Any, second: Any) -> bool:
 def _ensure_stage() -> None:
     if not isinstance(st.session_state.get(STAGE_KEY), list):
         st.session_state[STAGE_KEY] = []
+    if not st.session_state[STAGE_KEY]:
+        st.session_state.pop(STAGE_DB_IDENTITY_KEY, None)
+        st.session_state.pop(COMMIT_RECONCILIATION_KEY, None)
+
+
+def _clear_stage() -> None:
+    st.session_state[STAGE_KEY] = []
+    st.session_state.pop(STAGE_DB_IDENTITY_KEY, None)
+    st.session_state.pop(COMMIT_RECONCILIATION_KEY, None)
+
+
+def _render_explicit_stage_discard() -> None:
+    confirmed = st.checkbox(
+        "I understand that discarding removes all pending changes without writing them",
+        key="database_management_confirm_blocked_stage_discard",
+    )
+    if st.button(
+        "Discard blocked stage",
+        key="database_management_discard_blocked_stage",
+        disabled=not confirmed,
+    ):
+        _clear_stage()
+        st.rerun()
+
+
+def _store_import_commit_report(staged: list[dict], outcome) -> None:
+    command_by_operation = {
+        str(command.get("stage_operation_id")): command
+        for command in staged
+        if command.get("stage_operation_id")
+    }
+    committed_ids = {entry.stage_operation_id for entry in outcome.entries if entry.status == "COMMITTED"}
+    reports: dict[str, dict] = {}
+    for operation_id, command in command_by_operation.items():
+        batch_id = command.get("import_batch_id")
+        if not batch_id:
+            continue
+        report = reports.setdefault(
+            str(batch_id),
+            {
+                "Batch": batch_id,
+                "File": command.get("import_filename"),
+                "inserted": 0,
+                "updated": 0,
+                "skipped": int(dict(command.get("import_counts") or {}).get("skipped", 0)),
+                "invalid": int(dict(command.get("import_counts") or {}).get("invalid", 0)),
+                "pending": 0,
+                "status": "Complete",
+            },
+        )
+        if operation_id in committed_ids:
+            action = str(command.get("action") or "").upper()
+            report["inserted" if action == "CREATE" else "updated"] += 1
+        else:
+            report["pending"] += 1
+            report["status"] = "Partial - pending rows remain staged"
+    if reports:
+        st.session_state[IMPORT_REPORT_KEY] = list(reports.values())
+
+
+def _render_last_commit_report() -> None:
+    rows = list(st.session_state.get(COMMIT_REPORT_KEY) or [])
+    if not rows:
+        return
+    with st.expander("Last commit receipts", expanded=True):
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        if st.button("Dismiss commit receipts", key="database_management_dismiss_commit_report"):
+            st.session_state.pop(COMMIT_REPORT_KEY, None)
+            st.rerun()
 
 
 def _render_last_import_report() -> None:
@@ -896,6 +1046,8 @@ def _render_last_import_report() -> None:
                     "Updated": row.get("updated", 0),
                     "Skipped": row.get("skipped", 0),
                     "Invalid": row.get("invalid", 0),
+                    "Pending": row.get("pending", 0),
+                    "Status": row.get("status", "Complete"),
                 }
             )
         st.dataframe(pd.DataFrame(display), hide_index=True, width="stretch")

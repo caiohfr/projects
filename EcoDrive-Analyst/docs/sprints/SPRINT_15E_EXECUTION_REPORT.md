@@ -4,7 +4,11 @@ Date: 2026-11-24
 
 - Base SHA: `fdf33edb5a1b4ee36578fbb29201b105fa766795`
 - Branch: `sprint-15e-stabilization`
-- Head SHA / PR: pending publication
+- Implementation SHA: `84bb5dab41fc342aa47c548c876da2119495745b`
+- Published branch: `origin/sprint-15e-stabilization`
+- PR: creation blocked; `gh` is not installed and the connected GitHub App
+  returned `403 Resource not accessible by integration`. Manual creation URL:
+  `https://github.com/caiohfr/projects/pull/new/sprint-15e-stabilization`
 - Databases used: per-test temporary SQLite files and
   `<TEMP>/ecodrive_sprint15e_g4/eco_drive_qa.db` (synthetic only)
 - Architecture decision: `SEQUENTIAL_WITH_PARTIAL_STATUS`
